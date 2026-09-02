@@ -12,9 +12,6 @@ import (
 	"unicode"
 
 	"github.com/cloudwego/eino/components/tool"
-	"github.com/cloudwego/eino/components/tool/utils"
-
-	"git.enjoye.top/enjoydream/agentkit/textutil"
 )
 
 const (
@@ -112,42 +109,9 @@ func (l *Local) Retrieve(_ context.Context, query string, topK int, filter Filte
 
 // AsTool 把检索包成 search_knowledge 工具。
 func (l *Local) AsTool() tool.BaseTool {
-	t, err := utils.InferTool("search_knowledge",
-		"检索团队知识库（编码规范/部署约定/历史评审结论/安全清单）。返回最相关的知识片段及出处。",
-		func(_ context.Context, in *searchIn) (*searchOut, error) {
-			chunks, err := l.Retrieve(context.Background(), in.Query, defaultTopK, nil)
-			if err != nil {
-				return &searchOut{Error: err.Error()}, nil
-			}
-			var b strings.Builder
-			for _, c := range chunks {
-				content := c.Content
-				if t, tr := textutil.TruncRunes(content, toolSnippetRunes); tr {
-					content = t + "…（截断）"
-				}
-				heading := c.Metadata["heading"]
-				file := c.Metadata["file"]
-				if heading != "" {
-					fmt.Fprintf(&b, "【%s > %s】%s\n\n", file, heading, content)
-				} else {
-					fmt.Fprintf(&b, "【%s】%s\n\n", file, content)
-				}
-			}
-			return &searchOut{Results: b.String()}, nil
-		})
-	if err != nil {
-		return nil
-	}
-	return t
+	return buildAsTool(l)
 }
 
-type searchIn struct {
-	Query string `json:"query" jsonschema:"description=检索关键词或问题"`
-}
-type searchOut struct {
-	Results string `json:"results,omitempty"`
-	Error   string `json:"error,omitempty"`
-}
 
 // Rescan 强制重新扫描知识库目录（不等待自动过期）。
 func (l *Local) Rescan() {

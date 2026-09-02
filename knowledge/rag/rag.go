@@ -1,12 +1,18 @@
-// Package rag 知识检索服务（本地 RAG 实现）。
-// 检索源 = 目录下的 markdown 文件。检索算法 = 词元重叠打分（ASCII 词 + CJK 二元组），
-// 零外部向量库依赖。向量库/ES 等后端按接口换实现即可。
+// Package rag 知识检索服务。
+// 提供两种后端：Local（本地 TF-IDF）和 MilvusStore（向量数据库）。
+// 检索算法 = 词元重叠打分（ASCII 词 + CJK 二元组）或向量相似度，
+// 零外部向量库依赖（Local）或 Milvus 向量数据库（MilvusStore）。
 package rag
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/components/tool/utils"
+
+	"git.enjoye.top/enjoydream/agentkit/textutil"
 )
 
 // Chunk 检索片段。
@@ -41,3 +47,42 @@ func (n *Noop) Retrieve(_ context.Context, _ string, _ int, _ Filter) ([]Chunk, 
 func (n *Noop) AsTool() tool.BaseTool { return nil }
 
 var _ KnowledgeService = (*Noop)(nil)
+
+// buildAsTool 构建 search_knowledge eino 工具（Local 和 MilvusStore 共用）。
+func buildAsTool(svc KnowledgeService) tool.BaseTool {
+	t, err := utils.InferTool("search_knowledge",
+		"检索团队知识库（编码规范/部署约定/历史评审结论/安全清单）。返回最相关的知识片段及出处。",
+		func(_ context.Context, in *searchIn) (*searchOut, error) {
+			chunks, err := svc.Retrieve(context.Background(), in.Query, defaultTopK, nil)
+			if err != nil {
+				return &searchOut{Error: err.Error()}, nil
+			}
+			var b strings.Builder
+			for _, c := range chunks {
+				content := c.Content
+				if truncated, tr := textutil.TruncRunes(content, toolSnippetRunes); tr {
+					content = truncated + "…（截断）"
+				}
+				heading := c.Metadata["heading"]
+				file := c.Metadata["file"]
+				if heading != "" {
+					fmt.Fprintf(&b, "【%s > %s】%s\n\n", file, heading, content)
+				} else {
+					fmt.Fprintf(&b, "【%s】%s\n\n", file, content)
+				}
+			}
+			return &searchOut{Results: b.String()}, nil
+		})
+	if err != nil {
+		return nil
+	}
+	return t
+}
+
+type searchIn struct {
+	Query string `json:"query" jsonschema:"description=检索关键词或问题"`
+}
+type searchOut struct {
+	Results string `json:"results,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
