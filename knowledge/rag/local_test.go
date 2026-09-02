@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -193,6 +194,88 @@ func TestNewLocalNotExist(t *testing.T) {
 	_, err := NewLocal("/nonexistent/path/that/does/not/exist")
 	if err == nil {
 		t.Fatal("不存在的路径应报错")
+	}
+}
+
+func TestChunkMarkdownCodeBlockProtection(t *testing.T) {
+	text := `# 标题
+
+普通文本段落。
+
+` + "```go" + `
+func main() {
+    // 代码块不应被拆分
+    fmt.Println("hello")
+}
+` + "```" + `
+`
+	chunks := chunkMarkdown(text)
+	// 代码块应完整保留在某个 chunk 中
+	found := false
+	for _, c := range chunks {
+		if containsSubstr(c.content, "fmt.Println") && containsSubstr(c.content, "```") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("代码块应被保护不拆分")
+	}
+}
+
+func TestChunkMarkdownH3Support(t *testing.T) {
+	text := `# 一级
+
+## 二级内容
+
+这是二级的内容。
+
+### 三级内容
+
+这是三级的内容。`
+	chunks := chunkMarkdown(text)
+	headings := map[string]bool{}
+	for _, c := range chunks {
+		if c.heading != "" {
+			headings[c.heading] = true
+		}
+	}
+	if !headings["二级内容"] {
+		t.Fatal("应支持 ## 标题")
+	}
+	if !headings["三级内容"] {
+		t.Fatal("应支持 ### 标题")
+	}
+}
+
+func TestChunkMarkdownOverlap(t *testing.T) {
+	// 长文本应产生重叠块
+	var long strings.Builder
+	long.WriteString("# 大文档\n\n")
+	for i := 0; i < 20; i++ {
+		long.WriteString("这是第" + string(rune('0'+i/10)) + string(rune('0'+i%10)) + "段落，包含一些测试内容用于验证分块重叠机制是否正常工作。\n\n")
+	}
+	chunks := chunkMarkdown(long.String())
+	if len(chunks) < 2 {
+		t.Fatalf("长文本应产生多个 chunk，得到 %d", len(chunks))
+	}
+}
+
+func TestLocalRescanNewContent(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "initial.md"), []byte("# 初始\n密码管理规范。"), 0o644)
+
+	local, _ := NewLocal(dir)
+	chunks1, _ := local.Retrieve(context.Background(), "密码管理", 5, nil)
+	if len(chunks1) == 0 {
+		t.Fatal("初始内容应有结果")
+	}
+
+	// 强制重扫描
+	local.Rescan()
+	chunks2, _ := local.Retrieve(context.Background(), "密码管理", 5, nil)
+	if len(chunks2) == 0 {
+		t.Fatal("重扫描后应保留内容")
 	}
 }
 

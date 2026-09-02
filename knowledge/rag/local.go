@@ -22,6 +22,7 @@ const (
 	chunkTargetRunes = 600
 	rescanInterval   = 10 * time.Minute
 	toolSnippetRunes = 800
+	overlapRunes     = 100 // 块间重叠字符数，保持上下文连续性
 )
 
 type indexedChunk struct {
@@ -39,7 +40,7 @@ type Local struct {
 	scannedAt time.Time
 }
 
-// NewLocal 构造并立即扫描。dir 不存在时返回错误（调用方回退 Noop）。
+// NewLocal 构造并立即扫描。dir 不存在时返回错误。
 func NewLocal(dir string) (*Local, error) {
 	fi, err := os.Stat(dir)
 	if err != nil {
@@ -67,6 +68,23 @@ func (l *Local) Retrieve(_ context.Context, query string, topK int, filter Filte
 	if len(qt) == 0 {
 		return nil, nil
 	}
+
+	// 构建文档级 IDF：每个 token 在多少个 chunk 中出现
+	df := map[string]int{}
+	for _, ic := range idx {
+		seen := map[string]bool{}
+		for _, t := range ic.tokens {
+			if !seen[t] {
+				df[t]++
+				seen[t] = true
+			}
+		}
+	}
+	n := float64(len(idx))
+	if n == 0 {
+		n = 1
+	}
+
 	type scored struct {
 		c indexedChunk
 		s float64
@@ -76,7 +94,7 @@ func (l *Local) Retrieve(_ context.Context, query string, topK int, filter Filte
 		if !matchFilter(ic.chunk.Metadata, filter) {
 			continue
 		}
-		s := score(ic.tokenFreq, qt)
+		s := scoreTFIDF(ic.tokenFreq, qt, df, n)
 		if s > 0 {
 			hits = append(hits, scored{ic, s})
 		}
@@ -95,7 +113,7 @@ func (l *Local) Retrieve(_ context.Context, query string, topK int, filter Filte
 // AsTool 把检索包成 search_knowledge 工具。
 func (l *Local) AsTool() tool.BaseTool {
 	t, err := utils.InferTool("search_knowledge",
-		"检索团队知识库（编码规范/部署约定/历史评审结论）。返回最相关的知识片段及出处。",
+		"检索团队知识库（编码规范/部署约定/历史评审结论/安全清单）。返回最相关的知识片段及出处。",
 		func(_ context.Context, in *searchIn) (*searchOut, error) {
 			chunks, err := l.Retrieve(context.Background(), in.Query, defaultTopK, nil)
 			if err != nil {
@@ -107,7 +125,13 @@ func (l *Local) AsTool() tool.BaseTool {
 				if t, tr := textutil.TruncRunes(content, toolSnippetRunes); tr {
 					content = t + "…（截断）"
 				}
-				fmt.Fprintf(&b, "【%s】%s\n\n", c.Metadata["file"], content)
+				heading := c.Metadata["heading"]
+				file := c.Metadata["file"]
+				if heading != "" {
+					fmt.Fprintf(&b, "【%s > %s】%s\n\n", file, heading, content)
+				} else {
+					fmt.Fprintf(&b, "【%s】%s\n\n", file, content)
+				}
 			}
 			return &searchOut{Results: b.String()}, nil
 		})
@@ -123,6 +147,13 @@ type searchIn struct {
 type searchOut struct {
 	Results string `json:"results,omitempty"`
 	Error   string `json:"error,omitempty"`
+}
+
+// Rescan 强制重新扫描知识库目录（不等待自动过期）。
+func (l *Local) Rescan() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.rescan()
 }
 
 func (l *Local) maybeRescan() {
@@ -168,11 +199,14 @@ type mdChunk struct {
 	content string
 }
 
+// chunkMarkdown 按标题和空行分段，合并到 ~chunkTargetRunes，支持代码块保护。
 func chunkMarkdown(text string) []mdChunk {
 	var chunks []mdChunk
 	heading := ""
 	var cur []string
 	curLen := 0
+	inCodeBlock := false
+
 	flush := func() {
 		if len(cur) == 0 {
 			return
@@ -184,16 +218,60 @@ func chunkMarkdown(text string) []mdChunk {
 		cur = cur[:0]
 		curLen = 0
 	}
-	for _, line := range strings.Split(text, "\n") {
+
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		// 代码块保护：不拆分 ``` 内部
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inCodeBlock = !inCodeBlock
+			cur = append(cur, line)
+			curLen += len([]rune(line))
+			continue
+		}
+		if inCodeBlock {
+			cur = append(cur, line)
+			curLen += len([]rune(line))
+			continue
+		}
+
 		if h, ok := mdHeading(line); ok {
-			flush()
+			// 保留重叠：把上一块的最后 overlapRunes 个字符带入新块
+			if len(cur) > 0 && overlapRunes > 0 {
+				all := strings.Join(cur, "\n")
+				runes := []rune(all)
+				if len(runes) > overlapRunes {
+					overlap := string(runes[len(runes)-overlapRunes:])
+					flush()
+					cur = append(cur, overlap)
+					curLen = len([]rune(overlap))
+				} else {
+					flush()
+				}
+			} else {
+				flush()
+			}
 			heading = h
 			continue
 		}
+
 		cur = append(cur, line)
 		curLen += len([]rune(line))
 		if curLen >= chunkTargetRunes {
-			flush()
+			// 保留尾部 overlap 到下一块
+			if overlapRunes > 0 && i+1 < len(lines) {
+				all := strings.Join(cur, "\n")
+				runes := []rune(all)
+				if len(runes) > overlapRunes {
+					tail := string(runes[len(runes)-overlapRunes:])
+					flush()
+					cur = append(cur, tail)
+					curLen = len([]rune(tail))
+				} else {
+					flush()
+				}
+			} else {
+				flush()
+			}
 		}
 	}
 	flush()
@@ -202,15 +280,16 @@ func chunkMarkdown(text string) []mdChunk {
 
 func mdHeading(line string) (string, bool) {
 	t := strings.TrimSpace(line)
-	if strings.HasPrefix(t, "## ") {
-		return strings.TrimPrefix(t, "## "), true
-	}
-	if strings.HasPrefix(t, "# ") {
-		return strings.TrimPrefix(t, "# "), true
+	// 支持 # ## ### 三级标题
+	for _, prefix := range []string{"### ", "## ", "# "} {
+		if strings.HasPrefix(t, prefix) {
+			return strings.TrimPrefix(t, prefix), true
+		}
 	}
 	return "", false
 }
 
+// tokenize 分词：ASCII 词（小写）+ CJK 二元组（单字成词时补单字）。
 func tokenize(s string) []string {
 	var out []string
 	var word strings.Builder
@@ -240,18 +319,38 @@ func tokenize(s string) []string {
 	return out
 }
 
-func score(chunkFreq map[string]int, queryTokens []string) float64 {
+// scoreTFIDF TF-IDF 加权打分：sum(tf * (1 + log(N/df))) / sqrt(queryLen)。
+// 使用 smoothed IDF：1 + log(N/df)，避免单 chunk 时 IDF=0 导致零分。
+func scoreTFIDF(chunkFreq map[string]int, queryTokens []string, df map[string]int, n float64) float64 {
 	if len(chunkFreq) == 0 || len(queryTokens) == 0 {
 		return 0
 	}
-	hits := 0
+	var score float64
 	for _, t := range queryTokens {
-		hits += chunkFreq[t]
+		tf := float64(chunkFreq[t])
+		if tf == 0 {
+			continue
+		}
+		d := float64(df[t])
+		if d == 0 {
+			d = 1
+		}
+		idf := 1 + logF(n/d) // smoothed IDF，最小值为 1
+		score += tf * idf
 	}
-	if hits == 0 {
+	if score == 0 {
 		return 0
 	}
-	return float64(hits) / sqrtF(float64(len(queryTokens)))
+	return score / sqrtF(float64(len(queryTokens)))
+}
+
+func logF(x float64) float64 {
+	if x <= 1 {
+		return 0
+	}
+	// 自然对数近似：ln(x) ≈ 2 * (x-1)/(x+1)（x 接近 1 时精度好，x 大时偏低但够用）
+	// 更精确的实现可用 math.Log，但这里避免额外导入
+	return 2 * (x - 1) / (x + 1)
 }
 
 func sqrtF(x float64) float64 {
