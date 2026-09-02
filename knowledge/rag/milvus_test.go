@@ -27,8 +27,8 @@ func (m *mockEmbedder) Dim() int { return m.dim }
 
 func TestOpenAIEmbedderDim(t *testing.T) {
 	e := NewOpenAIEmbedder("https://api.example.com/v1", "key", "model", 128)
-	if e.Dim != 128 {
-		t.Fatalf("Dim = %d, want 128", e.Dim)
+	if e.Dim() != 128 {
+		t.Fatalf("Dim = %d, want 128", e.Dim())
 	}
 }
 

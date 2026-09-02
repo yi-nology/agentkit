@@ -21,12 +21,12 @@ type Embedder interface {
 }
 
 // OpenAIEmbedder OpenAI 兼容 Embedding API 适配器。
-// 支持 OpenAI / 百炼 / 任何兼容 /v1/embeddings 端点的服务。
+// 支持 OpenAI / 百炼 / 任何兼容 /v1/embeddings 端点。
 type OpenAIEmbedder struct {
-	BaseURL string // 如 https://api.openai.com/v1 或 https://dashscope.aliyuncs.com/compatible-mode/v1
-	APIKey  string
-	Model   string // 如 text-embedding-3-small / text-embedding-v3
-	Dim     int    // 向量维度（需与模型输出一致）
+	BaseURL  string // 如 https://api.openai.com/v1 或 https://dashscope.aliyuncs.com/compatible-mode/v1
+	APIKey   string
+	Model    string // 如 text-embedding-3-small / text-embedding-v3
+	dimension int   // 向量维度（需与模型输出一致）
 
 	client *http.Client
 }
@@ -34,13 +34,16 @@ type OpenAIEmbedder struct {
 // NewOpenAIEmbedder 创建 OpenAI 兼容 Embedding 客户端。
 func NewOpenAIEmbedder(baseURL, apiKey, model string, dim int) *OpenAIEmbedder {
 	return &OpenAIEmbedder{
-		BaseURL: strings.TrimSuffix(baseURL, "/"),
-		APIKey:  apiKey,
-		Model:   model,
-		Dim:     dim,
-		client:  &http.Client{Timeout: 30 * time.Second},
+		BaseURL:  strings.TrimSuffix(baseURL, "/"),
+		APIKey:   apiKey,
+		Model:    model,
+		dimension: dim,
+		client:   &http.Client{Timeout: 30 * time.Second},
 	}
 }
+
+// Dim 返回向量维度。
+func (e *OpenAIEmbedder) Dim() int { return e.dimension }
 
 type embedRequest struct {
 	Input []string `json:"input"`
@@ -122,8 +125,8 @@ func (e *OpenAIEmbedder) embedBatch(ctx context.Context, texts []string) ([][]fl
 
 	// 验证维度
 	for i, emb := range embeddings {
-		if len(emb) != e.Dim {
-			return nil, fmt.Errorf("embedding[%d] 维度 %d != 期望 %d", i, len(emb), e.Dim)
+		if len(emb) != e.dimension {
+			return nil, fmt.Errorf("embedding[%d] 维度 %d != 期望 %d", i, len(emb), e.dimension)
 		}
 	}
 
@@ -131,5 +134,5 @@ func (e *OpenAIEmbedder) embedBatch(ctx context.Context, texts []string) ([][]fl
 }
 
 func (e *OpenAIEmbedder) String() string {
-	return fmt.Sprintf("OpenAIEmbedder(%s, %s, dim=%d)", e.BaseURL, e.Model, e.Dim)
+	return fmt.Sprintf("OpenAIEmbedder(%s, %s, dim=%d)", e.BaseURL, e.Model, e.dimension)
 }
