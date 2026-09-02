@@ -3,7 +3,7 @@ module git.enjoye.top/enjoydream/agentkit
 go 1.25.0
 
 require (
-	git.enjoye.top/enjoydream/ekit v0.20.0
+	git.enjoye.top/enjoydream/ekit v0.20.1
 	github.com/cloudwego/eino v0.9.18
 	golang.org/x/sync v0.22.0
 	golang.org/x/time v0.15.0
