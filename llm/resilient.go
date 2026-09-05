@@ -27,6 +27,9 @@ import (
 type Generator interface {
 	Generate(ctx context.Context, stage string, msgs []*schema.Message) (*schema.Message, error)
 	GenerateJSON(ctx context.Context, stage string, msgs []*schema.Message, out any) error
+	// RawModel 返回底层 eino 模型（供 ReAct agent 等需要裸模型的场景；
+	// Resilient 返回主模型——降级仅覆盖 Generate/GenerateJSON 路径）。
+	RawModel() model.BaseChatModel
 }
 
 // 编译期断言。
@@ -145,6 +148,9 @@ func (r *Resilient) PrimaryModel() model.BaseChatModel {
 	}
 	return nil
 }
+
+// RawModel Generator 接口实现：返回主模型。
+func (r *Resilient) RawModel() model.BaseChatModel { return r.PrimaryModel() }
 
 // Generate 弹性生成：按链序尝试各 Provider，全部失败返回 *AttemptError。
 func (r *Resilient) Generate(ctx context.Context, stage string, msgs []*schema.Message) (*schema.Message, error) {

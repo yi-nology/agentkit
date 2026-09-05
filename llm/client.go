@@ -54,6 +54,9 @@ func NewClient(m model.BaseChatModel, modelName string, budget TokenAccountant) 
 	}
 }
 
+// RawModel 返回底层 eino 模型（Generator 接口实现）。
+func (c *Client) RawModel() model.BaseChatModel { return c.Model }
+
 func estimateTokens(s string) int { return len(s) / 4 }
 
 func (c *Client) account(stage string, in []*schema.Message, out *schema.Message) {
