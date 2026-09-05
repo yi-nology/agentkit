@@ -171,6 +171,15 @@ func (r *Resilient) LastModel() string {
 	return r.lastModel
 }
 
+// String 返回降级链描述（如 "openai(gpt-4o) → openai(deepseek-v4)"）。
+func (r *Resilient) String() string {
+	names := make([]string, len(r.chain.Providers))
+	for i, p := range r.chain.Providers {
+		names[i] = fmt.Sprintf("%s(%s)", p.Name(), p.ModelName())
+	}
+	return strings.Join(names, " → ")
+}
+
 // PrimaryModel 返回主模型的 BaseChatModel（供 eino agent 工具表使用）。
 func (r *Resilient) PrimaryModel() model.BaseChatModel {
 	if p := r.chain.Primary(); p != nil {
