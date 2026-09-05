@@ -1,0 +1,406 @@
+// Package llm 弹性 LLM 客户端：多模型降级链 + 熔断 + 预算短路 + 窗口自适应。
+//
+// 降级决策矩阵：
+//   - 429 rate limit   → 不重试同模型，立即切换（不同模型限速池独立）
+//   - 5xx/网络/超时     → 同模型快速重试，仍败切换
+//   - context too long → 不重试同模型，切换（大窗口备选可能救）
+//   - 输出截断          → 提升 MaxTokens 重试，仍败切换
+//   - 401/403          → 不重试同模型，切换（各 Provider 独立 APIKey）
+//   - ctx 取消/预算耗尽 → 全链中止
+package llm
+
+import (
+	"context"
+	"fmt"
+	"reflect"
+	"strings"
+	"sync"
+	"time"
+
+	"git.enjoye.top/enjoydream/agentkit/breaker"
+	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
+	"golang.org/x/time/rate"
+)
+
+// Generator LLM 生成接口：*Client 与 *Resilient 都满足，调用方无感切换。
+type Generator interface {
+	Generate(ctx context.Context, stage string, msgs []*schema.Message) (*schema.Message, error)
+	GenerateJSON(ctx context.Context, stage string, msgs []*schema.Message, out any) error
+}
+
+// 编译期断言。
+var (
+	_ Generator = (*Client)(nil)
+	_ Generator = (*Resilient)(nil)
+)
+
+// Attempt 单模型尝试记录（AttemptError 的组成部分）。
+type Attempt struct {
+	Provider string
+	Model    string
+	Err      string
+	Duration time.Duration
+}
+
+// AttemptError 全部模型失败的聚合错误（含每个模型的失败原因链）。
+type AttemptError struct {
+	Stage    string
+	Attempts []Attempt
+}
+
+func (e *AttemptError) Error() string {
+	var parts []string
+	for _, a := range e.Attempts {
+		parts = append(parts, fmt.Sprintf("%s(%s): %s", a.Provider, a.Model, a.Err))
+	}
+	return fmt.Sprintf("llm: %s 全部 %d 个模型失败: %s", e.Stage, len(e.Attempts), strings.Join(parts, " → "))
+}
+
+// ResilientConfig 弹性客户端配置。
+type ResilientConfig struct {
+	// RetriesPerModel 每模型重试次数（不含首次），默认 2。
+	RetriesPerModel int
+	// BreakerTrip 模型熔断阈值（连续失败次数），默认 3。
+	BreakerTrip int
+	// BreakerCooldown 模型熔断冷却期，默认 5 分钟。
+	BreakerCooldown time.Duration
+	// BaseDelay 重试退避基准，默认 2s（测试可调小）。
+	BaseDelay time.Duration
+	// MaxDelay 重试退避上限，默认 30s。
+	MaxDelay time.Duration
+}
+
+func (c *ResilientConfig) fillDefaults() {
+	if c.RetriesPerModel <= 0 {
+		c.RetriesPerModel = 2
+	}
+	if c.BreakerTrip <= 0 {
+		c.BreakerTrip = breaker.DefaultTripThreshold
+	}
+	if c.BreakerCooldown <= 0 {
+		c.BreakerCooldown = breaker.DefaultCooldown
+	}
+	if c.BaseDelay <= 0 {
+		c.BaseDelay = 2 * time.Second
+	}
+	if c.MaxDelay <= 0 {
+		c.MaxDelay = 30 * time.Second
+	}
+}
+
+// timeoutProvider 可选接口：Provider 可声明单次尝试超时。
+type timeoutProvider interface {
+	AttemptTimeout() time.Duration
+}
+
+// Resilient 弹性 LLM 客户端。
+//
+// 与 *Client 方法签名一致（满足 Generator），可作 drop-in 替换。
+// 额外能力：多模型降级、按模型熔断、预算短路、每模型窗口自适应 fitInput。
+type Resilient struct {
+	chain    *FallbackChain
+	cfg      ResilientConfig
+	breakers *breaker.Breakers
+
+	// Budget 任务 token 预算（nil = 不限）。耗尽时全链短路。
+	Budget TokenAccountant
+	// Limiter 全局限速器（所有模型共享；nil = 不限速）。
+	Limiter *rate.Limiter
+	// Tracker 成本追踪器（nil = 不追踪）。记账跟随实际执行的模型。
+	Tracker *CostTracker
+	// OnUsage token 使用回调（model = 实际执行的模型）。
+	OnUsage func(model, stage string, prompt, completion int)
+	// OnFallback 降级事件回调（from = 失败模型，to = 切换到的模型）。
+	OnFallback func(from, to, stage, reason string)
+
+	mu        sync.Mutex
+	lastModel string // 最近一次成功调用使用的模型
+}
+
+// NewResilient 创建弹性客户端。空 Provider 列表报错。
+func NewResilient(chain *FallbackChain, cfg ResilientConfig) (*Resilient, error) {
+	if chain == nil || len(chain.Providers) == 0 {
+		return nil, fmt.Errorf("llm: Resilient 需要至少一个 Provider")
+	}
+	cfg.fillDefaults()
+	return &Resilient{
+		chain:    chain,
+		cfg:      cfg,
+		breakers: breaker.NewBreakers(cfg.BreakerTrip, cfg.BreakerCooldown),
+	}, nil
+}
+
+// LastModel 返回最近一次成功调用使用的模型名（无成功调用返回空）。
+func (r *Resilient) LastModel() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastModel
+}
+
+// PrimaryModel 返回主模型的 BaseChatModel（供 eino agent 工具表使用）。
+func (r *Resilient) PrimaryModel() model.BaseChatModel {
+	if p := r.chain.Primary(); p != nil {
+		return p.Model()
+	}
+	return nil
+}
+
+// Generate 弹性生成：按链序尝试各 Provider，全部失败返回 *AttemptError。
+func (r *Resilient) Generate(ctx context.Context, stage string, msgs []*schema.Message) (*schema.Message, error) {
+	out, _, err := r.generateWithTrace(ctx, stage, msgs)
+	return out, err
+}
+
+// GenerateJSON 弹性 JSON 生成：每模型内部含解析失败回喂重试，仍败切换下一模型。
+func (r *Resilient) GenerateJSON(ctx context.Context, stage string, msgs []*schema.Message, out any) error {
+	_, err := r.generateJSONWithTrace(ctx, stage, msgs, out)
+	return err
+}
+
+// generateWithTrace 带尝试链的生成核心。
+func (r *Resilient) generateWithTrace(ctx context.Context, stage string, msgs []*schema.Message) (*schema.Message, []Attempt, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	if r.Budget != nil && r.Budget.Remaining() <= 0 {
+		return nil, nil, fmt.Errorf("llm: %s 任务 token 预算已耗尽（%d）", stage, r.Budget.Used())
+	}
+
+	var attempts []Attempt
+	for _, p := range r.chain.Providers {
+		// 熔断中的模型直接跳过（不记录为 attempt——没真正尝试）
+		if !r.breakers.Allow(p.ModelName()) {
+			continue
+		}
+		// nil model 防御
+		if isNilModel(p.Model()) {
+			attempts = append(attempts, Attempt{Provider: p.Name(), Model: p.ModelName(), Err: "provider.Model() 为 nil"})
+			continue
+		}
+
+		out, err := r.tryOneProvider(ctx, p, stage, msgs, false)
+		if err == nil {
+			r.breakers.Success(p.ModelName())
+			r.rememberModel(p.ModelName())
+			return out, attempts, nil
+		}
+		// ctx 取消：用户主动中止，不再尝试其他模型
+		if ctx.Err() != nil {
+			return nil, attempts, ctx.Err()
+		}
+		attempts = append(attempts, Attempt{
+			Provider: p.Name(), Model: p.ModelName(),
+			Err: err.Error(), Duration: 0,
+		})
+		r.breakers.Failure(p.ModelName())
+		if r.OnFallback != nil {
+			r.OnFallback(p.ModelName(), "", stage, err.Error())
+		}
+	}
+
+	return nil, attempts, &AttemptError{Stage: stage, Attempts: attempts}
+}
+
+// generateJSONWithTrace 带尝试链的 JSON 生成核心。
+func (r *Resilient) generateJSONWithTrace(ctx context.Context, stage string, msgs []*schema.Message, out any) ([]Attempt, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if r.Budget != nil && r.Budget.Remaining() <= 0 {
+		return nil, fmt.Errorf("llm: %s 任务 token 预算已耗尽（%d）", stage, r.Budget.Used())
+	}
+
+	var attempts []Attempt
+	for _, p := range r.chain.Providers {
+		if !r.breakers.Allow(p.ModelName()) {
+			continue
+		}
+		if isNilModel(p.Model()) {
+			attempts = append(attempts, Attempt{Provider: p.Name(), Model: p.ModelName(), Err: "provider.Model() 为 nil"})
+			continue
+		}
+
+		err := r.tryOneProviderJSON(ctx, p, stage, msgs, out)
+		if err == nil {
+			r.breakers.Success(p.ModelName())
+			r.rememberModel(p.ModelName())
+			return attempts, nil
+		}
+		if ctx.Err() != nil {
+			return attempts, ctx.Err()
+		}
+		attempts = append(attempts, Attempt{Provider: p.Name(), Model: p.ModelName(), Err: err.Error()})
+		r.breakers.Failure(p.ModelName())
+		if r.OnFallback != nil {
+			r.OnFallback(p.ModelName(), "", stage, err.Error())
+		}
+	}
+
+	return attempts, &AttemptError{Stage: stage, Attempts: attempts}
+}
+
+// tryOneProvider 单 Provider 内部：复制 msgs（防 fitInput 污染调用方）→
+// 按该 Provider 窗口裁剪 → 可选超时 → 重试循环。
+func (r *Resilient) tryOneProvider(ctx context.Context, p Provider, stage string, msgs []*schema.Message, _ bool) (*schema.Message, error) {
+	// 复制切片：fitInput 会原地替换元素，不能污染调用方的消息
+	msgsCopy := copyMsgs(msgs)
+
+	c := r.buildClient(p)
+	c.fitInput(msgsCopy)
+
+	// 可选的单次尝试超时
+	attemptCtx := ctx
+	var cancel context.CancelFunc = func() {}
+	if tp, ok := p.(timeoutProvider); ok {
+		if d := tp.AttemptTimeout(); d > 0 {
+			attemptCtx, cancel = context.WithTimeout(ctx, d)
+		}
+	}
+	defer cancel()
+
+	maxRetries := r.cfg.RetriesPerModel + 1
+	var lastErr error
+	truncatedBoosted := false
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			// 同模型重试仅限"值得在同模型上重试"的错误：
+			// 429（限速池独立）与 context 超限/401（确定性失败）直接跳出，切换下一模型
+			if !sameModelRetryable(lastErr) {
+				break
+			}
+			select {
+			case <-attemptCtx.Done():
+				return nil, attemptCtx.Err()
+			case <-time.After(r.backoff(attempt, lastErr)):
+			}
+		}
+		if r.Limiter != nil {
+			if err := r.Limiter.Wait(attemptCtx); err != nil {
+				return nil, fmt.Errorf("llm: %s 限速等待取消: %w", stage, err)
+			}
+		}
+		var opts []model.Option
+		if IsTruncatedError(lastErr) && c.MaxOutputTokens > 0 && !truncatedBoosted {
+			opts = append(opts, model.WithMaxTokens(c.MaxOutputTokens*3/2))
+			truncatedBoosted = true
+		}
+		out, err := c.Model.Generate(attemptCtx, msgsCopy, opts...)
+		if err == nil {
+			if out.ResponseMeta != nil && out.ResponseMeta.FinishReason == "length" {
+				c.account(stage, msgsCopy, out)
+				err = fmt.Errorf("llm: %s 输出被截断（finish_reason=length）", stage)
+			} else {
+				c.account(stage, msgsCopy, out)
+				return out, nil
+			}
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+// tryOneProviderJSON 单 Provider 的 JSON 生成（复用 Client.GenerateJSON 的回喂重试）。
+func (r *Resilient) tryOneProviderJSON(ctx context.Context, p Provider, stage string, msgs []*schema.Message, out any) error {
+	msgsCopy := copyMsgs(msgs)
+	c := r.buildClient(p)
+	c.fitInput(msgsCopy)
+
+	attemptCtx := ctx
+	var cancel context.CancelFunc = func() {}
+	if tp, ok := p.(timeoutProvider); ok {
+		if d := tp.AttemptTimeout(); d > 0 {
+			attemptCtx, cancel = context.WithTimeout(ctx, d)
+		}
+	}
+	defer cancel()
+
+	return c.GenerateJSON(attemptCtx, stage, msgsCopy, out)
+}
+
+// buildClient 为指定 Provider 构造单模型 Client（记账跟随该模型）。
+func (r *Resilient) buildClient(p Provider) *Client {
+	c := NewClient(p.Model(), p.ModelName(), r.Budget)
+	c.ContextTokens = p.ContextTokens()
+	c.MaxOutputTokens = p.MaxOutputTokens()
+	c.Limiter = r.Limiter
+	c.MaxRetries = 1 // 重试由 Resilient 统一控制，Client 内不再重试
+	costPer1K := [2]float64{}
+	costPer1K[0], costPer1K[1] = p.CostPer1KTokens()
+	c.OnUsage = func(stage string, prompt, completion int) {
+		if r.OnUsage != nil {
+			r.OnUsage(p.ModelName(), stage, prompt, completion)
+		}
+		if r.Tracker != nil {
+			r.Tracker.Record(p.ModelName(), stage, prompt, completion, costPer1K)
+		}
+	}
+	return c
+}
+
+// sameModelRetryable 判断错误是否值得在同一模型上重试。
+// 429（不同模型限速池独立，等待浪费时间）、context 超限与 401/403（确定性失败，
+// 但换模型/换凭证可能解决）→ 不重试同模型，交由降级链切换。
+func sameModelRetryable(err error) bool {
+	if err == nil {
+		return true
+	}
+	hint := ClassifyLLMError(err)
+	if hint.IsRateLimit {
+		return false
+	}
+	return hint.Retryable
+}
+
+// isNilModel 判断模型是否为 nil（含包装在接口里的 typed nil 指针）。
+func isNilModel(m model.BaseChatModel) bool {
+	if m == nil {
+		return true
+	}
+	v := reflect.ValueOf(m)
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Map, reflect.Slice, reflect.Interface, reflect.Func:
+		return v.IsNil()
+	}
+	return false
+}
+
+// backoff 指数退避 + jitter；429 下限 5s。
+func (r *Resilient) backoff(attempt int, err error) time.Duration {
+	base := r.cfg.BaseDelay
+	minDelay := base
+	if IsRateLimitError(err) {
+		minDelay = 5 * time.Second
+		if minDelay > r.cfg.MaxDelay {
+			minDelay = r.cfg.MaxDelay
+		}
+	}
+	delay := base * time.Duration(1<<uint(attempt-1))
+	if delay < minDelay {
+		delay = minDelay
+	}
+	delay += time.Duration(fastRand(int64(base / 2)))
+	if delay > r.cfg.MaxDelay {
+		delay = r.cfg.MaxDelay
+	}
+	return delay
+}
+
+func (r *Resilient) rememberModel(name string) {
+	r.mu.Lock()
+	r.lastModel = name
+	r.mu.Unlock()
+}
+
+// copyMsgs 浅拷贝消息切片（fitInput 替换元素时只影响副本）。
+func copyMsgs(msgs []*schema.Message) []*schema.Message {
+	return append([]*schema.Message(nil), msgs...)
+}
+
+// fastRand 轻量随机数（避免 math/rand 全局锁热点）。
+func fastRand(n int64) int64 {
+	if n <= 0 {
+		return 0
+	}
+	return time.Now().UnixNano() % n
+}

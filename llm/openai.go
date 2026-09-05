@@ -81,3 +81,6 @@ func (p *OpenAIProvider) MaxOutputTokens() int            { return p.maxOutputTo
 func (p *OpenAIProvider) CostPer1KTokens() (float64, float64) {
 	return p.costPer1K[0], p.costPer1K[1]
 }
+
+// AttemptTimeout 单次尝试超时（Resilient 降级链按 Provider 独立限时）。
+func (p *OpenAIProvider) AttemptTimeout() time.Duration { return p.timeout }
