@@ -40,6 +40,34 @@ var (
 	_ Generator = (*Resilient)(nil)
 )
 
+// BudgetInjector 可选接口：支持运行时注入任务级预算（Dispatcher fan-out 场景）。
+// 调用方通过类型断言检测；不实现则预算保持构造时的值。
+type BudgetInjector interface {
+	WithBudget(b TokenAccountant) Generator
+}
+
+// WithBudget Client 的预算注入：浅拷贝（Client 只含无锁值字段，Budget 指针共享是有意为之）。
+func (c *Client) WithBudget(b TokenAccountant) Generator {
+	c2 := *c
+	c2.Budget = b
+	return &c2
+}
+
+// WithBudget Resilient 的预算注入：显式构造新实例（Resilient 含互斥字段不可浅拷贝）。
+// chain/breakers 共享原实例（熔断状态跨任务全局），Budget/Tracker 指向任务级。
+func (r *Resilient) WithBudget(b TokenAccountant) Generator {
+	return &Resilient{
+		chain:      r.chain,
+		cfg:        r.cfg,
+		breakers:   r.breakers,
+		Budget:     b,
+		Limiter:    r.Limiter,
+		Tracker:    r.Tracker,
+		OnUsage:    r.OnUsage,
+		OnFallback: r.OnFallback,
+	}
+}
+
 // Attempt 单模型尝试记录（AttemptError 的组成部分）。
 type Attempt struct {
 	Provider string
