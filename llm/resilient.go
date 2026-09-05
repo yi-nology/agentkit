@@ -27,6 +27,8 @@ import (
 type Generator interface {
 	Generate(ctx context.Context, stage string, msgs []*schema.Message) (*schema.Message, error)
 	GenerateJSON(ctx context.Context, stage string, msgs []*schema.Message, out any) error
+	// UsedTokens 返回该客户端累计消耗的 token 数（无预算绑定时返回 0）。
+	UsedTokens() int
 	// RawModel 返回底层 eino 模型（供 ReAct agent 等需要裸模型的场景；
 	// Resilient 返回主模型——降级仅覆盖 Generate/GenerateJSON 路径）。
 	RawModel() model.BaseChatModel
@@ -151,6 +153,14 @@ func (r *Resilient) PrimaryModel() model.BaseChatModel {
 
 // RawModel Generator 接口实现：返回主模型。
 func (r *Resilient) RawModel() model.BaseChatModel { return r.PrimaryModel() }
+
+// UsedTokens Generator 接口实现：返回预算累计消耗。
+func (r *Resilient) UsedTokens() int {
+	if r.Budget != nil {
+		return r.Budget.Used()
+	}
+	return 0
+}
 
 // Generate 弹性生成：按链序尝试各 Provider，全部失败返回 *AttemptError。
 func (r *Resilient) Generate(ctx context.Context, stage string, msgs []*schema.Message) (*schema.Message, error) {
