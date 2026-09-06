@@ -153,7 +153,32 @@ chunks, _ := knowledge.Retrieve(ctx, "如何配置 Nacos", 5, nil)
 
 // 挂为 eino 工具
 tool := knowledge.AsTool()
+
+// 或向量后端（Milvus + OpenAI 兼容 Embedding）
+store, _ := rag.NewMilvusStore(ctx, rag.MilvusConfig{
+    Address: "localhost:19530", Dimension: 1024,
+}, rag.NewOpenAIEmbedder(baseURL, apiKey, "text-embedding-v3", 1024))
 ```
+
+**性能参考**（Apple M5 实测，df 预计算后）：
+
+| 语料 | 检索延迟 | 分配 |
+|---|---|---|
+| 10 篇（~80 块） | 60µs | 25 allocs |
+| 100 篇（~800 块） | 2.2ms | 28 allocs |
+| 1000 篇（~8000 块） | 47ms | 36 allocs |
+
+基准：`go test ./knowledge/rag/ -bench BenchmarkLocal`
+
+**Milvus 集成测试**（需容器环境）：
+
+```sh
+docker compose -f docker-compose.milvus-test.yml up -d   # 等 healthy
+MILVUS_TEST_ADDR=127.0.0.1:19530 go test ./knowledge/rag/ -run TestMilvusIntegration -v
+docker compose -f docker-compose.milvus-test.yml down -v  # 用完清理
+```
+
+覆盖建连/自动建表/索引/向量相似度检索/metadata 过滤/删除全链路。
 
 ### 安全工具
 

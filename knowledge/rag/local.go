@@ -35,6 +35,7 @@ type Local struct {
 
 	mu        sync.Mutex
 	index     []indexedChunk
+	df        map[string]int // token → 出现该 token 的 chunk 数（rescan 预计算，检索时零重建）
 	scannedAt time.Time
 }
 
@@ -56,33 +57,18 @@ func NewLocal(dir string) (*Local, error) {
 func (l *Local) Retrieve(_ context.Context, query string, topK int, filter Filter) ([]Chunk, error) {
 	l.mu.Lock()
 	l.maybeRescan()
-	idx := l.index
+	idx, df := l.index, l.df
 	l.mu.Unlock()
 
 	if topK <= 0 {
 		topK = defaultTopK
 	}
 	qt := tokenize(query)
-	if len(qt) == 0 {
+	if len(qt) == 0 || len(idx) == 0 {
 		return nil, nil
 	}
 
-	// 构建文档级 IDF：每个 token 在多少个 chunk 中出现
-	df := map[string]int{}
-	for _, ic := range idx {
-		seen := map[string]bool{}
-		for _, t := range ic.tokens {
-			if !seen[t] {
-				df[t]++
-				seen[t] = true
-			}
-		}
-	}
 	n := float64(len(idx))
-	if n == 0 {
-		n = 1
-	}
-
 	type scored struct {
 		c indexedChunk
 		s float64
@@ -131,6 +117,7 @@ func (l *Local) maybeRescan() {
 func (l *Local) rescan() {
 	l.scannedAt = time.Now()
 	l.index = nil
+	l.df = map[string]int{}
 	_ = filepath.WalkDir(l.dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
 			return nil
@@ -157,6 +144,12 @@ func (l *Local) rescan() {
 		}
 		return nil
 	})
+	// IDF 文档频率预计算：检索路径零重建（每查询 O(总词元) → O(1)）
+	for _, ic := range l.index {
+		for t := range ic.tokenFreq {
+			l.df[t]++
+		}
+	}
 }
 
 type mdChunk struct {
