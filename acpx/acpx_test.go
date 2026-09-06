@@ -339,3 +339,43 @@ func (s *stubAgent) Name() string { return s.name }
 func (s *stubAgent) Run(_ context.Context, _ RunRequest) (*RunResult, error) {
 	return nil, errors.New("stub")
 }
+
+func TestLastLineWithoutNewlineFlushed(t *testing.T) {
+	// 回归：流末尾无换行符的事件不能丢（mimo error JSON 恰在流尾的真实场景）
+	// 末行（result 事件）无尾换行——正是 flush 要救的场景
+	bin := fakeCLI(t, `printf '%s\n%s' '{"type":"assistant","message":{"content":[{"type":"text","text":"first"}]}}' '{"type":"result","result":"last-no-newline","session_id":"s1"}'`)
+	a := NewClaudeCode()
+	a.Bin = bin
+
+	var texts []string
+	res, err := a.Run(context.Background(), RunRequest{
+		Prompt: "x", OnEvent: func(e Event) { texts = append(texts, e.Text) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(texts) != 2 {
+		t.Fatalf("两条消息都应回调（含无尾换行的末行），实际 %d: %v", len(texts), texts)
+	}
+	if texts[1] != "last-no-newline" {
+		t.Fatalf("末行内容不符: %q", texts[1])
+	}
+	if res.Text != "last-no-newline" {
+		t.Fatalf("res.Text = %q", res.Text)
+	}
+}
+
+func TestSuccessExitCodeZero(t *testing.T) {
+	// 回归：成功路径 ExitCode 应为 0（此前误标 -1）
+	bin := fakeCLI(t, `echo '{"role":"assistant","content":"ok"}'`)
+	a := NewClaudeCode()
+	a.Bin = bin
+
+	res, err := a.Run(context.Background(), RunRequest{Prompt: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("成功退出码应为 0，实际 %d", res.ExitCode)
+	}
+}

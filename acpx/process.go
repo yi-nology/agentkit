@@ -51,7 +51,7 @@ var baseEnvAllow = map[string]bool{
 func childEnv(extra []string) []string {
 	keep := map[string]bool{}
 	for _, k := range extra {
-		if i := indexByte(k, '='); i > 0 {
+		if i := strings.IndexByte(k, '='); i > 0 {
 			keep[k[:i]] = true
 		} else {
 			keep[k] = true
@@ -67,20 +67,9 @@ func childEnv(extra []string) []string {
 	return append(env, "GIT_TERMINAL_PROMPT=0", "CI=1")
 }
 
-func indexByte(s string, b byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == b {
-			return i
-		}
-	}
-	return -1
-}
-
-// runProcessGroup 进程组执行（照抄 Argus adapter_cli 生产范式）：
+// execCLI 进程组执行 agent CLI（照抄 Argus adapter_cli 生产范式）：
 // Setpgid 建组 → ctx 取消/超时 TERM 整组 → 3s grace 后 KILL 整组防孤儿。
 // onLine 回调按行消费 stdout（nil = 只缓冲）。
-
-// execCLI 执行 agent CLI：进程组 + 超时三段式 + 行回调。
 func execCLI(ctx context.Context, dir string, argv []string, env []string,
 	timeout time.Duration, onLine func(string)) (stdout, stderr string, exitCode int, err error) {
 
@@ -98,10 +87,12 @@ func execCLI(ctx context.Context, dir string, argv []string, env []string,
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	outBuf, errBuf := &cappedBuffer{}, &cappedBuffer{}
+	var lineW *lineWriter
 	if onLine == nil {
 		cmd.Stdout = outBuf
 	} else {
-		cmd.Stdout = &lineWriter{buf: outBuf, onLine: onLine}
+		lineW = &lineWriter{buf: outBuf, onLine: onLine}
+		cmd.Stdout = lineW
 	}
 	cmd.Stderr = errBuf
 
@@ -139,7 +130,13 @@ func execCLI(ctx context.Context, dir string, argv []string, env []string,
 	if outBuf.truncated {
 		out += "\n…（stdout 超过 8MB 上限，已截断）"
 	}
-	return out, errBuf.buf.String(), exitStatus(waitErr), nil
+	// 行缓冲收尾：最后一行无换行符时 partial 不会触发 onLine，事件会丢
+	//（mimo 的 error JSON / kimi 的最后一行都可能无尾换行）
+	if onLine != nil && len(lineW.partial) > 0 {
+		onLine(string(lineW.partial))
+		lineW.partial = nil
+	}
+	return out, errBuf.buf.String(), 0, nil // waitErr == nil → 退出码 0
 }
 
 // exitStatus 从 Wait 错误提取退出码。
@@ -160,7 +157,7 @@ type lineWriter struct {
 func (w *lineWriter) Write(p []byte) (int, error) {
 	w.partial = append(w.partial, p...)
 	for {
-		i := indexByte(string(w.partial), '\n')
+		i := bytes.IndexByte(w.partial, '\n')
 		if i < 0 {
 			break
 		}

@@ -49,14 +49,21 @@ func NewLocal(dir string) (*Local, error) {
 		return nil, fmt.Errorf("rag: %s 不是目录", dir)
 	}
 	l := &Local{dir: dir}
-	l.rescan()
+	l.Rescan()
 	return l, nil
 }
 
 // Retrieve 检索 topK 片段。
+// 重扫在锁外进行（构建新索引后原子换入）——并发检索不被文件 I/O 阻塞；
+// 多 goroutine 同时判过期会重复重扫，幂等无害，容忍。
 func (l *Local) Retrieve(_ context.Context, query string, topK int, filter Filter) ([]Chunk, error) {
 	l.mu.Lock()
-	l.maybeRescan()
+	stale := time.Since(l.scannedAt) >= rescanInterval
+	l.mu.Unlock()
+	if stale {
+		l.Rescan()
+	}
+	l.mu.Lock()
 	idx, df := l.index, l.df
 	l.mu.Unlock()
 
@@ -102,29 +109,15 @@ func (l *Local) AsTool() tool.BaseTool {
 
 // Rescan 强制重新扫描知识库目录（不等待自动过期）。
 func (l *Local) Rescan() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.rescan()
-}
-
-func (l *Local) maybeRescan() {
-	if time.Since(l.scannedAt) < rescanInterval {
-		return
-	}
-	l.rescan()
-}
-
-func (l *Local) rescan() {
-	l.scannedAt = time.Now()
-	l.index = nil
-	l.df = map[string]int{}
+	var index []indexedChunk
+	df := map[string]int{}
 	_ = filepath.WalkDir(l.dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
 			return nil
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil
+			return nil // 单文件不可读跳过，不阻塞整体索引
 		}
 		rel, _ := filepath.Rel(l.dir, path)
 		for _, c := range chunkMarkdown(string(data)) {
@@ -133,7 +126,7 @@ func (l *Local) rescan() {
 			for _, t := range toks {
 				freq[t]++
 			}
-			l.index = append(l.index, indexedChunk{
+			index = append(index, indexedChunk{
 				chunk: Chunk{
 					Content:  c.content,
 					Metadata: map[string]string{"file": rel, "heading": c.heading},
@@ -145,11 +138,15 @@ func (l *Local) rescan() {
 		return nil
 	})
 	// IDF 文档频率预计算：检索路径零重建（每查询 O(总词元) → O(1)）
-	for _, ic := range l.index {
+	for _, ic := range index {
 		for t := range ic.tokenFreq {
-			l.df[t]++
+			df[t]++
 		}
 	}
+	// 原子换入：检索侧要么看到完整旧索引、要么完整新索引，不见中间态
+	l.mu.Lock()
+	l.index, l.df, l.scannedAt = index, df, time.Now()
+	l.mu.Unlock()
 }
 
 type mdChunk struct {
