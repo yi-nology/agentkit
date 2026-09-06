@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.8.1 (2026-09-07)
+
+- **llm**: `StageRouter` — per-stage Generator multiplexing implementing `Generator`
+  (exact match first, then longest prefix — registering "R1" covers "R1a";
+  unmatched stages fall to the default chain). Enables per-stage model routing
+  (big-window model for long inputs, fast model for judgments, strong model for
+  quality-critical stages) without touching call sites. `UsedTokens` aggregates
+  all registered chains; budget injection stays the caller's responsibility.
+
 ## v0.8.0 (2026-09-07)
 
 Seven-architecture coverage sweep（Single Agent / ReAct / Plan-and-Execute /
