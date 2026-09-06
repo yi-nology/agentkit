@@ -2,6 +2,12 @@
 
 AI Agent 开发工具箱 —— 从 Argus 代码审查平台提取的通用组件库。
 
+## 架构模式支持
+
+七种常见 agent 架构（Single Agent / ReAct / Plan-and-Execute / Reflection /
+Router+Skill / Blackboard / Graph Workflow）的支持矩阵与选型指引见
+[docs/patterns.md](docs/patterns.md)。
+
 ## 模块路径
 
 ```
@@ -16,7 +22,10 @@ git.enjoye.top/enjoydream/agentkit
 | `llm` | LLM 客户端（重试/限速/预算/fitInput/JSON + Resilient 降级链） | eino, eino-ext openai, x/time |
 | `toolprior` | 工具优先级决策层（提示词/排序/限流三层约束） | eino |
 | `mcp` | MCP server 工具池（lazy 建连 + 白名单 + eino 工具适配） | eino, eino-ext tool/mcp, mcp-go |
-| `agentrun` | ReAct agent 运行样板（ADK 封装 + 事件流 + 重试） | eino adk |
+| `agentrun` | ReAct 样板 + Plan-and-Execute 样板（ADK 封装 + 事件流 + 重试） | eino adk |
+| `reflection` | Reflection 架构原语（生成→批判→修订收敛循环） | eino |
+| `router` | Router 架构原语（LLM 意图分类→选路→分发） | eino |
+| `blackboard` | Blackboard 架构原语（共享黑板 + 专家轮转） | 无 |
 | `obsx` | eino callbacks 追踪（llm.call.* 结构化日志） | eino, ekit |
 | `breaker` | 熔断器（closed→open→half-open，探测超时兜底） | 无 |
 | `worker` | DB 即队列 worker pool（心跳/panic 隔离/优雅停机） | ekit |

@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.8.0 (2026-09-07)
+
+Seven-architecture coverage sweep（Single Agent / ReAct / Plan-and-Execute /
+Reflection / Router+Skill / Blackboard / Graph Workflow）——support matrix and
+migration guide in `docs/patterns.md`.
+
+### Added
+
+- **agentrun**: `PlanAndExecute` — thin, batteries-included wrapper over eino adk
+  prebuilt planexecute (Planner/Executor/Replanner composition, tool-calling plan
+  schema, optional planner instruction via input shaping)
+- **reflection**: new package — Generate→Critique(structured pass/issues)→Revise
+  convergence loop with per-round audit trail; self-contradictory critiques
+  (pass=true with issues) treated as fail
+- **router**: new package — LLM intent classification → route dispatch with
+  confidence threshold and optional fallback; decision (route/confidence/reason)
+  fully observable
+- **blackboard**: new package — thread-safe shared board (ordered entries +
+  since-cursor incremental reads) and `Convene` specialist rotation until
+  consensus or round cap; complements eino adk supervisor (centered assignment)
+
+### Notes
+
+- Graph Workflow / Supervisor / Sequential-Parallel-Loop remain eino-native by
+  design (`compose.Graph` + adk workflow) — agentkit packages serve as node
+  building blocks; see docs/patterns.md for the composition guidance.
+
 ## v0.7.3 (2026-09-07)
 
 - **worker**: leader-election primitive for multi-replica deployments — `LeaseStore` interface (one conditional UPSERT to implement over SQL) + `LeaderElector` (ttl/interval-based campaign, `IsLeader()`, onGained/onLost callbacks, graceful yield on Stop). Complements the DB-as-queue sharding: task plane scales via `ClaimNextPending`, control plane ("only one may run" components like outbound pollers) converges via lease.
