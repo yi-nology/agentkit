@@ -12,7 +12,8 @@ git.enjoye.top/enjoydream/agentkit
 
 | 包 | 说明 | 外部依赖 |
 |---|---|---|
-| `llm` | LLM 客户端（重试/限速/预算/fitInput/JSON） | eino, x/time |
+| `acpx` | CLI 编码 agent 统一调用（claude/zcode/codex/opencode/minimax） | eino |
+| `llm` | LLM 客户端（重试/限速/预算/fitInput/JSON + Resilient 降级链） | eino, x/time |
 | `breaker` | 熔断器（closed→open→half-open） | 无 |
 | `worker` | DB 即队列 worker pool（心跳/优雅停机） | ekit |
 | `knowledge/rag` | 本地 RAG（markdown 检索 + eino tool 适配） | eino |
@@ -25,6 +26,36 @@ git.enjoye.top/enjoydream/agentkit
 | `workcopy` | Git 工作副本沙箱（singleflight + TTL 回收） | ekit, x/sync |
 
 ## 快速使用
+
+### ACPX —— 调用 CLI 编码 agent
+
+```go
+import "git.enjoye.top/enjoydream/agentkit/acpx"
+
+reg := acpx.NewRegistry() // 缺省注册 claude/zcode/codex/opencode/minimax
+
+// 直接调用
+res, err := reg.Run(ctx, "codex", acpx.RunRequest{
+    Prompt:  "修复 utils.go 中的空指针 bug 并补测试",
+    WorkDir: "/path/to/repo",
+    Sandbox: acpx.SandboxWorkspace,
+})
+fmt.Println(res.Text, res.Usage)
+
+// 流式事件
+reg.Run(ctx, "claude", acpx.RunRequest{
+    Prompt:  "重构 auth 模块",
+    OnEvent: func(e acpx.Event) { fmt.Println(e.Type, e.Text) },
+})
+
+// 包成 eino 工具挂进 ReAct agent（LLM 自主决定调哪个 agent）
+tool := reg.AsTool() // run_coding_agent(agent, prompt, work_dir)
+```
+
+各家协议由专用适配器处理：Claude Code/ZCode（`-p --output-format stream-json`）、
+Codex（`exec --json --output-last-message`）、opencode（`run --json`）。
+任意其他 CLI 用 `acpx.NewGenericAgent(name, argv 模板, isJSON)` 接入，
+模板占位符 `{prompt}`/`{model}`/`{session}`。
 
 ### LLM 客户端
 
