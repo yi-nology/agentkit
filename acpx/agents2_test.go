@@ -68,7 +68,7 @@ func TestKimiArgBuilding(t *testing.T) {
 	}
 	raw, _ := os.ReadFile(argsFile)
 	args := string(raw)
-	for _, want := range []string{"--print", "-p", "hi", "--model", "k2", "--session", "sess-7"} {
+	for _, want := range []string{"-p", "hi", "--output-format", "stream-json", "--model", "k2", "--session", "sess-7"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("参数缺 %q: %s", want, args)
 		}
@@ -152,29 +152,51 @@ func TestNewAgentNames(t *testing.T) {
 	}
 }
 
-func TestMimoIsGenericAgent(t *testing.T) {
-	// MiMo 走通用模板（CLI 约定未稳定）：验证模板执行
-	bin := fakeCLI(t, `echo "$@" > "$FAKE_ARGS_FILE"; echo "mimo done"`)
-	g := NewMimo()
-	// 替换二进制为假 CLI（保留模板其余部分）
-	g.Argv = append([]string{bin}, g.Argv[1:]...)
+func TestMimoDedicatedAdapter(t *testing.T) {
+	// 专用适配器：--format json 事件流解析（text/step_finish → usage/cost/sessionID）
+	bin := fakeCLI(t, `cat <<'EOF'
+{"type":"text","part":{"text":"mimo 结果"}}
+{"type":"step_finish","sessionID":"ses_x","part":{"tokens":{"input":100,"output":20},"cost":0.01}}
+EOF
+`)
+	m := NewMimo()
+	m.Bin = bin
+
+	res, err := m.Run(context.Background(), RunRequest{Prompt: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Text != "mimo 结果" {
+		t.Fatalf("Text = %q", res.Text)
+	}
+	if res.SessionID != "ses_x" {
+		t.Fatalf("SessionID = %q", res.SessionID)
+	}
+	if res.Usage.InputTokens != 100 || res.Usage.OutputTokens != 20 || res.Usage.CostUSD != 0.01 {
+		t.Fatalf("Usage = %+v", res.Usage)
+	}
+}
+
+func TestMimoArgBuilding(t *testing.T) {
+	bin := fakeCLI(t, `echo "$@" > "$FAKE_ARGS_FILE"`)
+	m := NewMimo()
+	m.Bin = bin
 
 	argsFile := filepath.Join(t.TempDir(), "args")
 	_ = os.Setenv("FAKE_ARGS_FILE", argsFile)
 	defer os.Unsetenv("FAKE_ARGS_FILE")
 
-	res, err := g.Run(context.Background(), RunRequest{
-		Prompt: "任务", Env: []string{"FAKE_ARGS_FILE"},
-	})
-	if err != nil {
+	if _, err := m.Run(context.Background(), RunRequest{
+		Prompt: "任务", Model: "xiaomi/mimo-v2.5-pro", SessionID: "ses_1",
+		Env: []string{"FAKE_ARGS_FILE"},
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if res.Text != "mimo done" {
-		t.Fatalf("Text = %q", res.Text)
-	}
 	raw, _ := os.ReadFile(argsFile)
-	if !strings.Contains(string(raw), "run") || !strings.Contains(string(raw), "任务") {
-		t.Fatalf("模板不符: %s", raw)
+	for _, want := range []string{"run", "任务", "--format", "json", "-m", "xiaomi/mimo-v2.5-pro", "-s", "ses_1"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("参数缺 %q: %s", want, raw)
+		}
 	}
 }
 
