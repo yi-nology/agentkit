@@ -33,13 +33,21 @@ var (
 
 // cappedBuffer 限容写入器：超限后丢弃后续写入并标记截断。
 type cappedBuffer struct {
+	limit     int
 	buf       bytes.Buffer
 	truncated bool
 }
 
+func newCappedBuffer(limit int) *cappedBuffer {
+	if limit <= 0 {
+		limit = maxChildStdout
+	}
+	return &cappedBuffer{limit: limit}
+}
+
 func (c *cappedBuffer) Write(p []byte) (int, error) {
-	if c.buf.Len()+len(p) > maxChildStdout {
-		room := maxChildStdout - c.buf.Len()
+	if c.buf.Len()+len(p) > c.limit {
+		room := c.limit - c.buf.Len()
 		if room > 0 {
 			c.buf.Write(p[:room])
 		}
@@ -87,8 +95,9 @@ func childEnv(extra []string) []string {
 // execCLI 进程组执行 agent CLI（照抄 Argus adapter_cli 生产范式）：
 // Setpgid 建组 → ctx 取消/超时 TERM 整组（cmd.Cancel）→ killGrace 后框架 SIGKILL
 // leader（cmd.WaitDelay）→ Wait 返回后兜底 KILL 整组清残留孙进程。
+// maxStdout stdout 采集上限（0 = maxChildStdout 缺省）。
 func execCLI(ctx context.Context, dir string, argv []string, env []string,
-	timeout time.Duration, onLine func(string)) (stdout, stderr string, exitCode int, err error) {
+	timeout time.Duration, onLine func(string), maxStdout int) (stdout, stderr string, exitCode int, err error) {
 
 	if len(argv) == 0 {
 		return "", "", -1, fmt.Errorf("acpx: 命令为空")
@@ -114,7 +123,7 @@ func execCLI(ctx context.Context, dir string, argv []string, env []string,
 	cmd.Cancel = func() error { return pgidKill(syscall.SIGTERM) }
 	cmd.WaitDelay = killGrace
 
-	outBuf, errBuf := &cappedBuffer{}, &cappedBuffer{}
+	outBuf, errBuf := newCappedBuffer(maxStdout), newCappedBuffer(0)
 	var lineW *lineWriter
 	if onLine == nil {
 		cmd.Stdout = outBuf
@@ -159,9 +168,44 @@ func execCLI(ctx context.Context, dir string, argv []string, env []string,
 	}
 	out := outBuf.buf.String()
 	if outBuf.truncated {
-		out += "\n…（stdout 超过 8MB 上限，已截断）"
+		limit := maxStdout
+		if limit <= 0 {
+			limit = maxChildStdout
+		}
+		out += fmt.Sprintf("\n…（stdout 超过 %d 字节上限，已截断）", limit)
 	}
 	return out, errBuf.buf.String(), 0, nil // waitErr == nil → 退出码 0
+}
+
+// ProcessRequest 独立进程执行请求：只要进程组托管纪律、不需要 Agent 解析层的
+// 调用方使用（如包装外部 cli 审查器）。
+type ProcessRequest struct {
+	// Argv 可执行 + 参数（argv 直传，无 shell、无注入面）。
+	Argv []string
+	// Dir 工作目录（空 = 继承当前进程）。
+	Dir string
+	// Env 子进程环境白名单（按名从当前进程透传；含 "=" 按 KEY=VALUE 字面），
+	// 叠加在 baseEnvAllow 基础集之上——绝不全量继承。
+	Env []string
+	// Timeout 单次执行超时（0 = 10 分钟缺省）。
+	Timeout time.Duration
+	// OnLine 可选 stdout 按行回调（nil = 只缓冲；回调在读取 goroutine 中执行，
+	// 不得阻塞/panic；单行超 maxLineLen 会被丢弃）。
+	OnLine func(string)
+	// MaxStdout stdout 采集上限（0 = 8MB 缺省）。
+	MaxStdout int
+}
+
+// RunProcess 以进程组纪律执行外部命令：Setpgid 建组 → 超时/取消 TERM 整组 →
+// killGrace 宽限后 SIGKILL。超时/取消可经 errors.Is(err, ErrTimeout/ErrCanceled)
+// 程序化区分；非零退出返回 error（含 stderr 尾巴），exitCode 一并返回。
+// 环境走白名单——待审仓库里的 cli 可执行任意代码，全量环境等于泄漏宿主凭证。
+func RunProcess(ctx context.Context, req ProcessRequest) (stdout, stderr string, exitCode int, err error) {
+	timeout := req.Timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+	}
+	return execCLI(ctx, req.Dir, req.Argv, childEnv(req.Env), timeout, req.OnLine, req.MaxStdout)
 }
 
 // exitStatus 从 Wait 错误提取退出码。

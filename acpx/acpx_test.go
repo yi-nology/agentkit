@@ -478,3 +478,34 @@ func TestTimeoutAndCancelSentinels(t *testing.T) {
 		t.Fatalf("取消不得同时命中 ErrTimeout: %v", err)
 	}
 }
+
+func TestRunProcess(t *testing.T) {
+	// 导出 API：进程组纪律 + 白名单环境 + 限容 + sentinel，供非 Agent 抽象调用方使用
+	bin := fakeCLI(t, `echo "$RUNPROC_OK"; echo '{"findings":[]}'`)
+	dir := t.TempDir()
+	t.Setenv("RUNPROC_SECRET", "leak-me")
+	t.Setenv("RUNPROC_OK", "passed")
+
+	stdout, _, code, err := RunProcess(context.Background(), ProcessRequest{
+		Argv: []string{bin}, Dir: dir,
+		Env:       []string{"RUNPROC_OK"},
+		Timeout:   30 * time.Second,
+		MaxStdout: 1 << 20,
+	})
+	if err != nil || code != 0 {
+		t.Fatalf("RunProcess 失败: %v code=%d", err, code)
+	}
+	if !strings.Contains(stdout, "passed") {
+		t.Fatalf("白名单变量的值应透传: %q", stdout)
+	}
+	if strings.Contains(stdout, "leak-me") || strings.Contains(stdout, "RUNPROC_SECRET") {
+		t.Fatalf("非白名单变量不得继承: %q", stdout)
+	}
+
+	// 超时 → ErrTimeout sentinel
+	if _, _, _, err := RunProcess(context.Background(), ProcessRequest{
+		Argv: []string{fakeCLI(t, `sleep 30`)}, Timeout: 150 * time.Millisecond,
+	}); !errors.Is(err, ErrTimeout) {
+		t.Fatalf("超时应 errors.Is ErrTimeout: %v", err)
+	}
+}

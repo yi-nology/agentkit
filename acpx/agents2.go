@@ -52,7 +52,7 @@ func (k *Kimi) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		}
 	}
 
-	stdout, _, code, err := execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), onLine)
+	stdout, _, code, err := execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), onLine, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +129,7 @@ func (g *Gemini) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		argv = append(argv, "--approval-mode", "yolo")
 	}
 
-	stdout, _, code, err := execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), nil)
+	stdout, _, code, err := execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), nil, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -236,7 +236,7 @@ func (m *Mimo) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		}
 	}
 
-	stdout, _, code, err := execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), onLine)
+	stdout, _, code, err := execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), onLine, 0)
 	if err != nil {
 		return nil, err
 	}

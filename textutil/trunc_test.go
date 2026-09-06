@@ -1,6 +1,9 @@
 package textutil
 
-import "testing"
+import (
+	"testing"
+	"unicode/utf8"
+)
 
 func TestTruncRunes(t *testing.T) {
 	cases := []struct {
@@ -44,5 +47,26 @@ func TestTruncRunesNegative(t *testing.T) {
 	got, truncated := TruncRunes("abc", -1)
 	if got != "" || !truncated {
 		t.Fatalf("负上限应返回空串+true，得到 %q/%v", got, truncated)
+	}
+}
+
+func TestSplitRunes(t *testing.T) {
+	// 等分：3 块 2+2+1，最后一块可不足
+	got := SplitRunes("你好世界啊", 2)
+	if len(got) != 3 || got[0] != "你好" || got[2] != "啊" {
+		t.Fatalf("SplitRunes = %v", got)
+	}
+	// 不需分块 / n<=0
+	if got := SplitRunes("abc", 10); len(got) != 1 || got[0] != "abc" {
+		t.Fatalf("短串应单块: %v", got)
+	}
+	if got := SplitRunes("abc", 0); len(got) != 1 || got[0] != "abc" {
+		t.Fatalf("n<=0 应整串单块: %v", got)
+	}
+	// 多字节不被腰斩
+	for _, part := range SplitRunes("中文内容分块测试", 3) {
+		if !utf8.ValidString(part) {
+			t.Fatalf("分块产生非法 UTF-8: %q", part)
+		}
 	}
 }

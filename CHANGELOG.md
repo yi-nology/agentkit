@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.7.1 (2026-09-07)
+
+Exported building blocks requested by consumers (Argus adapter_cli dedup):
+
+- **acpx**: `RunProcess(ProcessRequest)` — the process-group discipline (Setpgid → TERM group → grace → SIGKILL), env whitelist, stdout cap (configurable `MaxStdout`) and `ErrTimeout`/`ErrCanceled` sentinels, for callers that wrap external CLIs without the Agent abstraction
+- **textutil**: `SplitRunes(s, n)` — even rune-safe chunking for large-text LLM pipelines
+
 ## v0.7.0 (2026-09-06)
 
 Full-library audit fixes: 3 Critical + ~20 Important across 16 packages, each with regression tests.

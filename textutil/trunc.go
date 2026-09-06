@@ -3,6 +3,25 @@ package textutil
 
 import "unicode/utf8"
 
+// SplitRunes 按 rune 等分为 ≤n 字符的块（最后一块可不足）。
+// n<=0 返回整串单块。大文本分块送 LLM 的公共原语。
+func SplitRunes(s string, n int) []string {
+	if n <= 0 {
+		return []string{s}
+	}
+	r := []rune(s)
+	var out []string
+	for len(r) > 0 {
+		k := n
+		if len(r) < k {
+			k = len(r)
+		}
+		out = append(out, string(r[:k]))
+		r = r[k:]
+	}
+	return out
+}
+
 // TruncRunes 按 rune 截断，避免多字节字符被腰斩产生非法 UTF-8。
 // 第二个返回值 = 是否真发生了截断。
 // n<0 视为非法上限，按"全部截断"处理（返回空串），不 panic。

@@ -107,7 +107,7 @@ func (c *ClaudeCode) Run(ctx context.Context, req RunRequest) (*RunResult, error
 		}
 	}
 
-	stdout, _, code, err := execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), onLine)
+	stdout, _, code, err := execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), onLine, 0)
 	if err != nil {
 		// result 事件已到达（agent 正常完成但进程退出码非零）：以结果为准
 		if result != nil && result.Text != "" {
@@ -213,7 +213,7 @@ func (c *Codex) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		}
 	}
 
-	stdout, _, code, err := execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), onLine)
+	stdout, _, code, err := execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), onLine, 0)
 	if err != nil {
 		// 与 claude 族一致：output-last-message 已有最终消息（agent 正常完成但
 		// 退出码非零）时以结果为准
@@ -267,7 +267,7 @@ func (c *OpenCode) Run(ctx context.Context, req RunRequest) (*RunResult, error) 
 		argv = append(argv, "--session", req.SessionID)
 	}
 
-	stdout, _, code, err := execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), nil)
+	stdout, _, code, err := execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), nil, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -346,7 +346,7 @@ func (g *GenericAgent) Run(ctx context.Context, req RunRequest) (*RunResult, err
 			argv = append(argv, a)
 		}
 	}
-	stdout, _, code, err := execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), nil)
+	stdout, _, code, err := execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), nil, 0)
 	if err != nil {
 		return nil, err
 	}
