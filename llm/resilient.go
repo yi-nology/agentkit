@@ -12,6 +12,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"reflect"
 	"strings"
 	"sync"
@@ -450,10 +451,11 @@ func copyMsgs(msgs []*schema.Message) []*schema.Message {
 	return append([]*schema.Message(nil), msgs...)
 }
 
-// fastRand 轻量随机数（避免 math/rand 全局锁热点）。
+// fastRand 抖动随机数。math/rand 全局函数自 Go 1.20 起为 per-thread 源（无全局锁热点），
+// 且带并发安全保证——优于手写无锁 xorshift（那是数据竞争）。
 func fastRand(n int64) int64 {
 	if n <= 0 {
 		return 0
 	}
-	return time.Now().UnixNano() % n
+	return rand.Int63n(n)
 }
