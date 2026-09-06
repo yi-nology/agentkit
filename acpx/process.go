@@ -3,6 +3,7 @@ package acpx
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,22 @@ import (
 
 // maxChildStdout 子进程 stdout 采集上限（异常 agent 刷屏防内存放大）。
 const maxChildStdout = 8 << 20 // 8MB（stream-json 事件量大，比 Argus 的 1MB 放宽）
+
+// maxLineLen lineWriter 单行缓冲上限：超限丢弃该行不再回调。partial 若无上限，
+// 单行无换行洪泛会绕过 maxChildStdout 限容（claude stream-json 每个事件就是一行，
+// 一个含超大 diff 的 result 事件即可冲出数百 MB 峰值）。
+const maxLineLen = 1 << 20 // 1MB
+
+// killGrace 超时/取消后 TERM 整组到 SIGKILL 的宽限期。
+const killGrace = 3 * time.Second
+
+// sentinel 错误：调用方可 errors.Is 分类（超时 / 被取消 / 启动失败）。
+var (
+	// ErrTimeout 运行超过 Timeout 被终止。
+	ErrTimeout = errors.New("执行超时")
+	// ErrCanceled 运行被调用方 context 取消。
+	ErrCanceled = errors.New("执行被取消")
+)
 
 // cappedBuffer 限容写入器：超限后丢弃后续写入并标记截断。
 type cappedBuffer struct {
@@ -68,8 +85,8 @@ func childEnv(extra []string) []string {
 }
 
 // execCLI 进程组执行 agent CLI（照抄 Argus adapter_cli 生产范式）：
-// Setpgid 建组 → ctx 取消/超时 TERM 整组 → 3s grace 后 KILL 整组防孤儿。
-// onLine 回调按行消费 stdout（nil = 只缓冲）。
+// Setpgid 建组 → ctx 取消/超时 TERM 整组（cmd.Cancel）→ killGrace 后框架 SIGKILL
+// leader（cmd.WaitDelay）→ Wait 返回后兜底 KILL 整组清残留孙进程。
 func execCLI(ctx context.Context, dir string, argv []string, env []string,
 	timeout time.Duration, onLine func(string)) (stdout, stderr string, exitCode int, err error) {
 
@@ -86,6 +103,17 @@ func execCLI(ctx context.Context, dir string, argv []string, env []string,
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
+	// CommandContext 缺省在 ctx done 时直接 SIGKILL leader，会抢在宽限前面——
+	// 用 cmd.Cancel 接管为 TERM 整组，宽限内的 SIGKILL 由 WaitDelay 兜底
+	pgidKill := func(sig syscall.Signal) error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return syscall.Kill(-cmd.Process.Pid, sig)
+	}
+	cmd.Cancel = func() error { return pgidKill(syscall.SIGTERM) }
+	cmd.WaitDelay = killGrace
+
 	outBuf, errBuf := &cappedBuffer{}, &cappedBuffer{}
 	var lineW *lineWriter
 	if onLine == nil {
@@ -97,44 +125,41 @@ func execCLI(ctx context.Context, dir string, argv []string, env []string,
 	cmd.Stderr = errBuf
 
 	if err := cmd.Start(); err != nil {
-		return "", "", -1, fmt.Errorf("启动 %s 失败: %w", argv[0], err)
+		return "", "", -1, fmt.Errorf("acpx: 启动 %s 失败: %w", argv[0], err)
 	}
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-cctx.Done(): // 超时/取消：TERM 整组 → grace 后 KILL 整组
-			if cmd.Process != nil {
-				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-				time.Sleep(3 * time.Second)
-				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			}
-		case <-done:
-		}
-	}()
 	waitErr := cmd.Wait()
-	close(done)
 	if waitErr != nil {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) // 兜底清组
+		// 兜底清组：leader 已死，这里清的是 TERM 宽限后仍未退出的孙进程
+		_ = pgidKill(syscall.SIGKILL)
+	}
+	// 行缓冲收尾（放在错误判断之前）：失败路径的流尾事件同样要 flush——
+	// mimo 的 error JSON / kimi 的最后一行可能无尾换行，claude 的 result
+	// 事件到达后进程仍可能非零退出，"result 优先"策略依赖这里救回结果
+	if onLine != nil && len(lineW.partial) > 0 && !lineW.overflow {
+		onLine(string(lineW.partial))
+		lineW.partial = nil
+	}
+
+	if waitErr != nil {
 		tail := errBuf.buf.String()
 		if len(tail) > 400 {
 			tail = tail[len(tail)-400:]
 		}
-		if cctx.Err() != nil {
+		switch {
+		case ctx.Err() != nil: // 调用方主动取消（含调用方自己的 deadline）
 			return outBuf.buf.String(), errBuf.buf.String(), exitStatus(waitErr),
-				fmt.Errorf("acpx: %s 执行超时（%s）", argv[0], timeout)
+				fmt.Errorf("acpx: %s %w: %w", argv[0], ErrCanceled, ctx.Err())
+		case errors.Is(cctx.Err(), context.DeadlineExceeded): // 本地 Timeout
+			return outBuf.buf.String(), errBuf.buf.String(), exitStatus(waitErr),
+				fmt.Errorf("acpx: %s %w（%s）", argv[0], ErrTimeout, timeout)
+		default:
+			return outBuf.buf.String(), errBuf.buf.String(), exitStatus(waitErr),
+				fmt.Errorf("acpx: %s 执行失败: %w: %s", argv[0], waitErr, strings.TrimSpace(tail))
 		}
-		return outBuf.buf.String(), errBuf.buf.String(), exitStatus(waitErr),
-			fmt.Errorf("acpx: %s 执行失败: %v: %s", argv[0], waitErr, strings.TrimSpace(tail))
 	}
 	out := outBuf.buf.String()
 	if outBuf.truncated {
 		out += "\n…（stdout 超过 8MB 上限，已截断）"
-	}
-	// 行缓冲收尾：最后一行无换行符时 partial 不会触发 onLine，事件会丢
-	//（mimo 的 error JSON / kimi 的最后一行都可能无尾换行）
-	if onLine != nil && len(lineW.partial) > 0 {
-		onLine(string(lineW.partial))
-		lineW.partial = nil
 	}
 	return out, errBuf.buf.String(), 0, nil // waitErr == nil → 退出码 0
 }
@@ -148,13 +173,30 @@ func exitStatus(err error) int {
 }
 
 // lineWriter 按行拆分 stdout，回调后仍写入 buf 保留全文。
+// 单行超过 maxLineLen 时丢弃该行（overflow 置位后不回调，直到扫到行尾重新同步），
+// buf 照常限容写入保留全文供兜底。
 type lineWriter struct {
-	buf    *cappedBuffer
-	onLine func(string)
-	partial []byte
+	buf      *cappedBuffer
+	onLine   func(string)
+	partial  []byte
+	overflow bool
 }
 
 func (w *lineWriter) Write(p []byte) (int, error) {
+	_, _ = w.buf.Write(p)
+	if w.overflow {
+		// 超限行继续流入：不再累积，只找行尾重新同步
+		if i := bytes.LastIndexByte(p, '\n'); i >= 0 {
+			w.overflow = false
+			w.partial = append(w.partial[:0], p[i+1:]...)
+		}
+		return len(p), nil
+	}
+	if len(w.partial)+len(p) > maxLineLen {
+		w.overflow = true // 整行丢弃（含已累积部分），防 partial 无限放大
+		w.partial = w.partial[:0]
+		return len(p), nil
+	}
 	w.partial = append(w.partial, p...)
 	for {
 		i := bytes.IndexByte(w.partial, '\n')
@@ -167,6 +209,5 @@ func (w *lineWriter) Write(p []byte) (int, error) {
 			w.onLine(line)
 		}
 	}
-	_, _ = w.buf.Write(p)
 	return len(p), nil
 }

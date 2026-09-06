@@ -21,6 +21,17 @@ func TestClassifyLLMError(t *testing.T) {
 		{errors.New("too many requests"), true, true, false},
 		{errors.New("finish_reason=length"), true, false, true},
 		{errors.New("connection reset"), true, false, false},
+		// 确定性 4xx：参数错/模型不存在，重试无意义
+		{errors.New("error, status code: 400, message: max_tokens too large"), false, false, false},
+		{errors.New("error, status code: 404, message: model not found"), false, false, false},
+		{errors.New("400 bad request: invalid parameter"), false, false, false},
+		{errors.New("unknown model: gpt-99"), false, false, false},
+		// 408/429 仍可重试
+		{errors.New("408 request timeout"), true, false, false},
+		// 词边界：状态码不得命中耗时/计数等数字文案
+		{errors.New("request failed after 1429ms"), true, false, false},
+		{errors.New("batch 1401 done"), true, false, false},
+		{errors.New("error, status code: 429, message: rate limited"), true, true, false},
 	}
 	for _, c := range cases {
 		hint := ClassifyLLMError(c.err)

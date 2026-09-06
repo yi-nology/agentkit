@@ -63,7 +63,7 @@ func TestLocalRetrieve(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("Top 结果应包含编码规范相关内容，得到: %q", chunks[0].Content[:min(80, len(chunks[0].Content))])
+		t.Fatalf("Top 结果应包含编码规范相关内容，得到: %q", chunks[0].Content[:testMin(80, len(chunks[0].Content))])
 	}
 
 	// 检索 "ArgoCD 部署"
@@ -292,9 +292,30 @@ func containsSubstr(s, sub string) bool {
 	return false
 }
 
-func min(a, b int) int {
+func testMin(a, b int) int { // 不遮蔽内建 min（否则测试与生产各解析到不同实现）
 	if a < b {
 		return a
 	}
 	return b
+}
+
+func TestChunkMarkdownHardCap(t *testing.T) {
+	// 回归：超长单行/未闭合代码块强制成块——保护 Milvus VarChar 65535 字节上限
+	base64Line := strings.Repeat("QUJD", maxChunkRunes) // 远超 maxChunkRunes 的单行
+	md := "# 标题\n\n" + base64Line + "\n\n正常段落"
+	// 断言用 2 倍余量：curLen 计数不含 join 换行符，逐行块会膨胀 ~20%；
+	// 关键是"有界"（远小于 VarChar 65535 字节）而非精确值
+	chunks := chunkMarkdown(md)
+	for i, c := range chunks {
+		if len([]rune(c.content)) > maxChunkRunes*2 {
+			t.Fatalf("块 %d 超过硬上限: %d runes", i, len([]rune(c.content)))
+		}
+	}
+	// 未闭合代码块内超限也要能成块
+	unclosed := "```go\n" + strings.Repeat("x = 1\n", maxChunkRunes)
+	for i, c := range chunkMarkdown(unclosed) {
+		if len([]rune(c.content)) > maxChunkRunes*2 {
+			t.Fatalf("未闭合代码块 %d 超过硬上限: %d runes", i, len([]rune(c.content)))
+		}
+	}
 }

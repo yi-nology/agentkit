@@ -14,12 +14,19 @@ type Logger struct {
 }
 
 // New 创建审计日志器。service 用于日志前缀（如 "argus-audit"）。
+// log 为 nil 时回退到缺省 slog logger——审计留痕不应随业务日志级别配置丢失。
 func New(log logx.Logger, service string) *Logger {
+	if log == nil {
+		log = logx.NewSlogLogger(service)
+	}
 	return &Logger{log: log.WithService(service)}
 }
 
-// Log 记录一条审计事件。
+// Log 记录一条审计事件（nil receiver 安全）。
 func (l *Logger) Log(action Action, fields ...any) {
+	if l == nil || l.log == nil {
+		return
+	}
 	args := append([]any{"action", string(action)}, fields...)
 	l.log.Info("audit.event", args...)
 }

@@ -57,8 +57,7 @@ func TestKimiArgBuilding(t *testing.T) {
 	k.Bin = bin
 
 	argsFile := filepath.Join(t.TempDir(), "args")
-	_ = os.Setenv("FAKE_ARGS_FILE", argsFile)
-	defer os.Unsetenv("FAKE_ARGS_FILE")
+	t.Setenv("FAKE_ARGS_FILE", argsFile)
 
 	if _, err := k.Run(context.Background(), RunRequest{
 		Prompt: "hi", Model: "k2", SessionID: "sess-7",
@@ -78,7 +77,7 @@ func TestKimiArgBuilding(t *testing.T) {
 func TestGeminiJSON(t *testing.T) {
 	// 官方协议：-p + --output-format json → 单 JSON 对象
 	bin := fakeCLI(t, `cat <<'EOF'
-{"response":"Gemini 的回答","stats":{"models":{"gemini-2.5-pro":{"tokens":{"prompt":300,"candidates":120}}},"models":{"gemini-2.5-pro":{"tokens":{"prompt":300,"candidates":120}}}}}
+{"response":"Gemini 的回答","stats":{"models":{"gemini-2.5-pro":{"tokens":{"prompt":300,"candidates":120}}}}}
 EOF
 `)
 	g := NewGemini()
@@ -102,8 +101,7 @@ func TestGeminiArgBuilding(t *testing.T) {
 	g.Bin = bin
 
 	argsFile := filepath.Join(t.TempDir(), "args")
-	_ = os.Setenv("FAKE_ARGS_FILE", argsFile)
-	defer os.Unsetenv("FAKE_ARGS_FILE")
+	t.Setenv("FAKE_ARGS_FILE", argsFile)
 
 	if _, err := g.Run(context.Background(), RunRequest{
 		Prompt: "x", Model: "gemini-3", Sandbox: SandboxFull,
@@ -183,8 +181,7 @@ func TestMimoArgBuilding(t *testing.T) {
 	m.Bin = bin
 
 	argsFile := filepath.Join(t.TempDir(), "args")
-	_ = os.Setenv("FAKE_ARGS_FILE", argsFile)
-	defer os.Unsetenv("FAKE_ARGS_FILE")
+	t.Setenv("FAKE_ARGS_FILE", argsFile)
 
 	if _, err := m.Run(context.Background(), RunRequest{
 		Prompt: "任务", Model: "xiaomi/mimo-v2.5-pro", SessionID: "ses_1",

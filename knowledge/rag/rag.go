@@ -52,8 +52,9 @@ var _ KnowledgeService = (*Noop)(nil)
 func buildAsTool(svc KnowledgeService) tool.BaseTool {
 	t, err := utils.InferTool("search_knowledge",
 		"检索团队知识库（编码规范/部署约定/历史评审结论/安全清单）。返回最相关的知识片段及出处。",
-		func(_ context.Context, in *searchIn) (*searchOut, error) {
-			chunks, err := svc.Retrieve(context.Background(), in.Query, defaultTopK, nil)
+		func(ctx context.Context, in *searchIn) (*searchOut, error) {
+			// 透传 eino 工具调用 ctx：上层取消/超时要能中断检索
+			chunks, err := svc.Retrieve(ctx, in.Query, defaultTopK, nil)
 			if err != nil {
 				return &searchOut{Error: err.Error()}, nil
 			}

@@ -39,8 +39,8 @@ func TestNewOpenAIProviderExplicitConfig(t *testing.T) {
 	p, err := NewOpenAIProvider(context.Background(), OpenAIProviderConfig{
 		BaseURL: "https://api.example.com/v1", APIKey: "k", Model: "m",
 		ContextTokens: 1_000_000, MaxOutputTokens: 50_000,
-		Timeout:           120 * time.Second,
-		CostPer1KPrompt:   0.001,
+		Timeout:             120 * time.Second,
+		CostPer1KPrompt:     0.001,
 		CostPer1KCompletion: 0.002,
 	})
 	if err != nil {

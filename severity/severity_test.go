@@ -115,3 +115,23 @@ func TestGlobMatch(t *testing.T) {
 		}
 	}
 }
+
+func TestGlobMatchGitignoreSemantics(t *testing.T) {
+	// 回归：尾随 `/**` 只匹配目录内部，不含目录自身（.gitignore 语义）
+	if GlobMatch("web/**", "web") {
+		t.Fatal("web/** 不应匹配 web 自身")
+	}
+	if !GlobMatch("web/**", "web/a.go") {
+		t.Fatal("web/** 应匹配目录内部")
+	}
+	if !GlobMatch("web/**", "web/a/b.go") {
+		t.Fatal("web/** 应匹配深层路径")
+	}
+	// `?` 按 rune 消耗：多字节文件名不漏配
+	if !GlobMatch("?.go", "你.go") {
+		t.Fatal("? 应消耗一个 rune（多字节文件名）")
+	}
+	if GlobMatch("??.go", "你.go") {
+		t.Fatal("两个 ? 不应被单个 rune 满足")
+	}
+}

@@ -107,8 +107,7 @@ func TestClaudeCodeArgBuilding(t *testing.T) {
 
 	argsFile := filepath.Join(t.TempDir(), "args")
 	workDir := t.TempDir()
-	_ = os.Setenv("FAKE_ARGS_FILE", argsFile)
-	defer os.Unsetenv("FAKE_ARGS_FILE")
+	t.Setenv("FAKE_ARGS_FILE", argsFile)
 
 	_, err := a.Run(context.Background(), RunRequest{
 		Prompt: "hi", WorkDir: workDir, Model: "sonnet", Env: []string{"FAKE_ARGS_FILE"},
@@ -188,8 +187,7 @@ func TestCodexSandboxArgs(t *testing.T) {
 
 	argsFile := filepath.Join(t.TempDir(), "args")
 	workDir := t.TempDir()
-	_ = os.Setenv("FAKE_ARGS_FILE", argsFile)
-	defer os.Unsetenv("FAKE_ARGS_FILE")
+	t.Setenv("FAKE_ARGS_FILE", argsFile)
 
 	if _, err := a.Run(context.Background(), RunRequest{
 		Prompt: "x", WorkDir: workDir, Model: "o3", Env: []string{"FAKE_ARGS_FILE"},
@@ -247,8 +245,7 @@ func TestGenericAgentTemplate(t *testing.T) {
 	_ = bin
 
 	argsFile := filepath.Join(t.TempDir(), "args")
-	_ = os.Setenv("FAKE_ARGS_FILE", argsFile)
-	defer os.Unsetenv("FAKE_ARGS_FILE")
+	t.Setenv("FAKE_ARGS_FILE", argsFile)
 
 	res, err := g.Run(context.Background(), RunRequest{Prompt: "任务", Model: "m1", Env: []string{"FAKE_ARGS_FILE"}})
 	if err != nil {
@@ -318,9 +315,7 @@ func TestRequestValidation(t *testing.T) {
 }
 
 func TestEnvAllowlist(t *testing.T) {
-	_ = os.Setenv("SECRET_TOKEN", "leak-me")
-	_ = os.Setenv("PATH", os.Getenv("PATH"))
-	defer os.Unsetenv("SECRET_TOKEN")
+	t.Setenv("SECRET_TOKEN", "leak-me")
 
 	env := childEnv(nil)
 	joined := strings.Join(env, "\n")
@@ -377,5 +372,109 @@ func TestSuccessExitCodeZero(t *testing.T) {
 	}
 	if res.ExitCode != 0 {
 		t.Fatalf("成功退出码应为 0，实际 %d", res.ExitCode)
+	}
+}
+
+func TestPromptArgGuard(t *testing.T) {
+	// C2 回归：以 "-" 开头的 prompt 必须被前置换行，否则会被 CLI flag 解析器消费
+	if got := promptArg("--dangerously-bypass-approvals-and-sandbox"); !strings.HasPrefix(got, "\n-") {
+		t.Fatalf("- 开头的 prompt 应加前置换行: %q", got)
+	}
+	if got := promptArg("正常任务"); got != "正常任务" {
+		t.Fatalf("正常 prompt 不应被改写: %q", got)
+	}
+
+	// 端到端：假 CLI 回显参数，验证注入形态的 prompt 到达子进程时不再是裸 flag token
+	bin := fakeCLI(t, `echo "$2" > "$FAKE_ARGS_FILE"; echo '{"type":"result","result":"ok"}'`)
+	a := NewClaudeCode()
+	a.Bin = bin
+	argsFile := filepath.Join(t.TempDir(), "args")
+	workDir := t.TempDir()
+	t.Setenv("FAKE_ARGS_FILE", argsFile)
+
+	if _, err := a.Run(context.Background(), RunRequest{
+		Prompt:  "--dangerously-bypass-approvals-and-sandbox",
+		WorkDir: workDir, Env: []string{"FAKE_ARGS_FILE"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(argsFile)
+	if !strings.HasPrefix(string(raw), "\n--dangerously") {
+		t.Fatalf("注入形态 prompt 未被防护: %q", string(raw))
+	}
+}
+
+func TestLineWriterFloodCap(t *testing.T) {
+	// C3 回归：单行无换行洪泛不得绕过限容（partial 上限），且后续正常行可恢复
+	var lines []string
+	lw := &lineWriter{buf: &cappedBuffer{}, onLine: func(l string) { lines = append(lines, l) }}
+
+	big := strings.Repeat("A", 3<<20) // 3MB 单行，无换行
+	if _, err := lw.Write([]byte(big)); err != nil {
+		t.Fatal(err)
+	}
+	if !lw.overflow {
+		t.Fatal("超限后 overflow 应置位")
+	}
+	if len(lw.partial) > maxLineLen {
+		t.Fatalf("partial 应被限容: %d", len(lw.partial))
+	}
+	if len(lines) != 0 {
+		t.Fatalf("超限行不应回调: %d", len(lines))
+	}
+	// 洪泛结束（出现换行）→ 重新同步，后续正常行照常回调
+	if _, err := lw.Write([]byte("tail\n")); err != nil {
+		t.Fatal(err)
+	}
+	if lw.overflow {
+		t.Fatal("行尾后应解除 overflow")
+	}
+	if _, err := lw.Write([]byte(`{"type":"result","result":"ok"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], `"result":"ok"`) {
+		t.Fatalf("洪泛后正常行应恢复回调: %v", lines)
+	}
+}
+
+func TestFailureFlushesPartial(t *testing.T) {
+	// I-2 回归：失败路径也必须 flush 无尾换行的流尾事件——
+	// result 已产出但进程非零退出时，"result 优先"策略应救回结果
+	bin := fakeCLI(t, `printf '%s' '{"type":"result","result":"救回的结果","session_id":"s9"}'
+exit 1
+`)
+	a := NewClaudeCode()
+	a.Bin = bin
+
+	res, err := a.Run(context.Background(), RunRequest{Prompt: "x"})
+	if err != nil {
+		t.Fatalf("失败路径的流尾 result 应被 flush 并救回: %v", err)
+	}
+	if res.Text != "救回的结果" || res.SessionID != "s9" {
+		t.Fatalf("Text/SessionID = %q/%q", res.Text, res.SessionID)
+	}
+	if res.ExitCode != 1 {
+		t.Fatalf("ExitCode = %d", res.ExitCode)
+	}
+}
+
+func TestTimeoutAndCancelSentinels(t *testing.T) {
+	// I-3 回归：超时与调用方取消必须可程序化区分（sentinel + errors.Is）
+	bin := fakeCLI(t, `sleep 30`)
+	a := NewClaudeCode()
+	a.Bin = bin
+
+	if _, err := a.Run(context.Background(), RunRequest{Prompt: "x", Timeout: 150 * time.Millisecond}); !errors.Is(err, ErrTimeout) {
+		t.Fatalf("超时应 errors.Is ErrTimeout: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(100 * time.Millisecond); cancel() }()
+	_, err := a.Run(ctx, RunRequest{Prompt: "x"})
+	if !errors.Is(err, ErrCanceled) {
+		t.Fatalf("调用方取消应 errors.Is ErrCanceled（不得误报超时）: %v", err)
+	}
+	if errors.Is(err, ErrTimeout) {
+		t.Fatalf("取消不得同时命中 ErrTimeout: %v", err)
 	}
 }

@@ -79,13 +79,13 @@ type fakeProvider struct {
 	costs     [2]float64
 }
 
-func (p *fakeProvider) Name() string                                 { return p.name }
-func (p *fakeProvider) Model() model.BaseChatModel                   { return p.model }
-func (p *fakeProvider) ModelName() string                            { return p.name + "-model" }
-func (p *fakeProvider) ContextTokens() int                           { return p.ctxTokens }
-func (p *fakeProvider) MaxOutputTokens() int                         { return p.maxOut }
-func (p *fakeProvider) CostPer1KTokens() (float64, float64)          { return p.costs[0], p.costs[1] }
-func (p *fakeProvider) AttemptTimeout() time.Duration                { return p.timeout }
+func (p *fakeProvider) Name() string                        { return p.name }
+func (p *fakeProvider) Model() model.BaseChatModel          { return p.model }
+func (p *fakeProvider) ModelName() string                   { return p.name + "-model" }
+func (p *fakeProvider) ContextTokens() int                  { return p.ctxTokens }
+func (p *fakeProvider) MaxOutputTokens() int                { return p.maxOut }
+func (p *fakeProvider) CostPer1KTokens() (float64, float64) { return p.costs[0], p.costs[1] }
+func (p *fakeProvider) AttemptTimeout() time.Duration       { return p.timeout }
 
 func newFakeProvider(name string, script ...fakeResp) *fakeProvider {
 	return &fakeProvider{

@@ -16,12 +16,15 @@ func TestLoggerLog(t *testing.T) {
 }
 
 func TestLoggerNilSafe(t *testing.T) {
-	// nil logger 不应 panic（实际 Logger 内部有 log 字段，但 Log 方法不检查 nil）
-	log := logx.NewSlogLogger("test")
-	logger := New(log, "test-audit")
+	// nil receiver 与 nil logger 都不应 panic（审计留痕缺失好过进程崩溃）
+	var l *Logger
+	l.Log("test.action", "k", "v")
+
+	logger := New(nil, "test-audit") // nil logger → 回退缺省 logger
 	if logger == nil {
 		t.Fatal("New 应返回非 nil")
 	}
+	logger.Log("test.action", "k", "v")
 }
 
 func TestActionConstants(t *testing.T) {

@@ -104,8 +104,10 @@ func (r *Registry) AsTool() tool.BaseTool {
 	t, err := utils.InferTool("run_coding_agent",
 		"调用 CLI 编码 agent（claude/zcode/codex/opencode/minimax/kimi/gemini/qwen/mimo）"+
 			"执行编码任务（写代码/改代码/跑命令/审查等）。prompt 要具体明确，包含期望产出与验收标准。",
-		func(_ context.Context, in *toolIn) (*toolOut, error) {
-			res, err := r.Run(context.Background(), in.Agent, RunRequest{
+		func(ctx context.Context, in *toolIn) (*toolOut, error) {
+			// 透传 eino 传入的 ctx：上层取消/超时必须能终止 CLI 子进程，
+			// 否则被放弃的运行会占满超时窗口与并发槽位
+			res, err := r.Run(ctx, in.Agent, RunRequest{
 				Prompt:  in.Prompt,
 				WorkDir: in.WorkDir,
 			})

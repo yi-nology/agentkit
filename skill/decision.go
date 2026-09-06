@@ -42,11 +42,19 @@ func AsSkillTool(p Provider, allowed []string) (tool.BaseTool, error) {
 	t, err := utils.InferTool("use_skill",
 		"加载指定 skill 的完整方法论内容（评分标准/检查清单/规范摘要）。"+
 			"仅当任务与可用清单中某条 skill 的描述相关时调用。",
-		func(_ context.Context, in *useSkillIn) (*useSkillOut, error) {
-			if len(set) > 0 && !set[in.Name] {
-				return &useSkillOut{Error: fmt.Sprintf("skill %q 不在允许清单内", in.Name)}, nil
+		func(ctx context.Context, in *useSkillIn) (*useSkillOut, error) {
+			// 别名归一化：模型可能用清单里的展示名（frontmatter name）回填，
+			// 加载与 allowed 校验一律以规范引用名为准
+			name := in.Name
+			if ar, ok := p.(AliasResolver); ok {
+				if n, hit := ar.CanonicalName(in.Name); hit {
+					name = n
+				}
 			}
-			s, err := p.Resolve(context.Background(), Ref{Name: in.Name})
+			if len(set) > 0 && !set[name] {
+				return &useSkillOut{Error: fmt.Sprintf("skill %q 不在允许清单内", name)}, nil
+			}
+			s, err := p.Resolve(ctx, Ref{Name: name})
 			if err != nil {
 				return &useSkillOut{Error: err.Error()}, nil
 			}
@@ -59,7 +67,12 @@ func AsSkillTool(p Provider, allowed []string) (tool.BaseTool, error) {
 }
 
 // ListPrompt 渲染可用 skill 清单（注入提示词的决策依据，不含正文）。
+// 注意：Name/Title/Description 来自仓库内 markdown，属半可信内容——
+// 恶意描述可夹带提示词注入指令；skill 目录来源不可控时，调用方应先经
+// safejson.EscapeUntrusted 处理（或收敛目录写权限）。
 // 无 skill 返回空串；有则渲染为 markdown 列表。
+// 加载名（Name）作为加粗主词——模型回填 use_skill 的名称必须与它一致；
+// 展示名（Title，frontmatter name）仅作括注。
 func ListPrompt(metas []Meta) string {
 	if len(metas) == 0 {
 		return ""
@@ -71,7 +84,11 @@ func ListPrompt(metas []Meta) string {
 		if desc == "" {
 			desc = "（无描述）"
 		}
-		fmt.Fprintf(&b, "- **%s**：%s\n", m.Name, desc)
+		if m.Title != "" && m.Title != m.Name {
+			fmt.Fprintf(&b, "- **%s**（%s）：%s\n", m.Name, m.Title, desc)
+		} else {
+			fmt.Fprintf(&b, "- **%s**：%s\n", m.Name, desc)
+		}
 	}
 	return b.String()
 }

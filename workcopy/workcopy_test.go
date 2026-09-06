@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,4 +187,65 @@ func containsStr(s, sub string) bool {
 		}
 		return false
 	})()
+}
+
+func TestSweepKeepsInUseWorktree(t *testing.T) {
+	// 回归：rc>0 的在用目录即使超 TTL 也不得被 Sweep 删除（长任务保护）
+	fixture := makeFixtureRepo(t)
+	p := newTestPool(t, fixture)
+	p.CredentialOf = func(string) (string, string, bool) { return "file://" + fixture, "x", true }
+
+	key := WorktreeKey{Platform: "gitea", Owner: "o", Repo: "r", Number: "1",
+		HeadSHA: "HEAD", DefaultBranch: "main"}
+	dir, err := p.Ensure(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p.Sweep(-time.Hour) // TTL 为负 = 一切都算过期
+	if _, err := os.Stat(filepath.Join(dir, "README.md")); err != nil {
+		t.Fatal("rc>0 的在用工作副本不得被 Sweep 删除")
+	}
+
+	// 释放后（rc=0）再次 Sweep：此时才可回收
+	p.Release(key)
+	p.Sweep(-time.Hour)
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatal("rc=0 且超 TTL 的目录应被 Sweep 回收")
+	}
+}
+
+func TestScrubRedactsTokenInPrepareError(t *testing.T) {
+	// 回归：prepare 失败路径的错误必须携带 git 详情且不含 token（scrub 参数顺序）
+	fixture := makeFixtureRepo(t)
+	p := newTestPool(t, fixture)
+	const token = "sup3rs3cret-token"
+	p.CredentialOf = func(string) (string, string, bool) { return "file://" + fixture, token, true }
+	// 不存在的分支 → clone 失败
+	key := WorktreeKey{Platform: "gitea", Owner: "o", Repo: "r", Number: "1",
+		HeadSHA: "HEAD", DefaultBranch: "no-such-branch"}
+
+	_, err := p.Ensure(context.Background(), key)
+	if err == nil {
+		t.Fatal("clone 失败应报错")
+	}
+	if !strings.Contains(err.Error(), "no-such-branch") && !strings.Contains(err.Error(), "not found") &&
+		!strings.Contains(err.Error(), "could not") {
+		t.Fatalf("错误应保留 git 失败详情: %v", err)
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Fatalf("错误不得泄漏 token: %v", err)
+	}
+}
+
+func TestCloneURLPreservesScheme(t *testing.T) {
+	// 回归：内网 http:// 地址不得被强制升级 https
+	got := cloneURL("http://gitea.internal:3000", "o", "r", "tok")
+	if !strings.HasPrefix(got, "http://oauth2:tok@gitea.internal:3000/o/r.git") {
+		t.Fatalf("http scheme 应保留: %q", got)
+	}
+	got = cloneURL("gitea.internal", "o", "r", "tok")
+	if !strings.HasPrefix(got, "https://oauth2:tok@gitea.internal/o/r.git") {
+		t.Fatalf("无 scheme 应补 https: %q", got)
+	}
 }

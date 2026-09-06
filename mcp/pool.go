@@ -14,14 +14,18 @@
 //	defer pool.Close()
 //	tools, err := pool.Tools(ctx, []mcp.ToolSpec{{Server: "docs", Allow: []string{"search_docs"}}})
 //
-// 安全模型：stdio 子进程环境走白名单透传（绝不继承密钥）；工具白名单按 spec
-// 收敛（未声明的 server/工具不暴露给 agent）。
+// 安全模型：stdio 子进程环境走白名单透传（绝不继承密钥，见 whitelistEnv）；
+// 工具白名单按 spec 收敛（未声明的 server/工具不暴露给 agent）。
 package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,7 +46,9 @@ type ServerConfig struct {
 	Name string
 	// Command stdio 传输：可执行 + 参数（子进程由本包启动与回收）。
 	Command []string
-	// Env stdio 子进程额外环境变量白名单（按名从当前进程透传）。
+	// Env stdio 子进程环境白名单：条目为纯变量名（如 "GITHUB_TOKEN"）时按名从
+	// 当前进程透传；含 "=" 时按 KEY=VALUE 字面透传。未列出的变量一律不继承
+	// （仅保留 whitelistEnv 的基础集），防止本进程密钥泄漏给外部 MCP server。
 	Env []string
 	// URL HTTP 传输（streamable http）。
 	URL string
@@ -62,7 +68,10 @@ type ToolSpec struct {
 
 // Pool MCP 连接池：lazy 建连（首次 Tools 时）、连接缓存复用、Close 全量回收。
 type Pool struct {
-	mu      sync.Mutex
+	mu sync.Mutex
+	// closed 置位后拒绝新建连接（Close 与在途建连并发时，新连接会被立即关闭，
+	// 不产生泄漏）。Close 后池不可复用。
+	closed  bool
 	cfgs    map[string]ServerConfig
 	clients map[string]client.MCPClient
 	// OnError 建连/列举失败回调（nil 安全）。返回错误不中断其余 server——
@@ -70,11 +79,18 @@ type Pool struct {
 	OnError func(server string, err error)
 }
 
-// NewPool 创建连接池（配置校验延后到 Tools 调用时——允许启动期 MCP server 未就绪）。
+// NewPool 创建连接池（建连延后到 Tools 调用时——允许启动期 MCP server 未就绪）。
+// Name 为空的配置忽略；重名保留先到者（后者忽略）——配置错误尽早收敛为确定性
+// 行为而非静默覆盖。
 func NewPool(cfgs ...ServerConfig) *Pool {
 	p := &Pool{cfgs: map[string]ServerConfig{}, clients: map[string]client.MCPClient{}}
 	for _, c := range cfgs {
-		p.cfgs[c.Name] = c
+		if c.Name == "" {
+			continue
+		}
+		if _, dup := p.cfgs[c.Name]; !dup {
+			p.cfgs[c.Name] = c
+		}
 	}
 	return p
 }
@@ -93,7 +109,8 @@ func (p *Pool) Servers() []string {
 
 // Tools 按 spec 白名单返回 eino 工具。
 // spec.Server 未配置 → 报错（配置错误应显式暴露）；server 建连失败 → OnError 钩子
-// 后跳过（部分失败容忍）。
+// 后跳过（部分失败容忍）；列举失败视为该连接失效——从缓存摘除并关闭（server 崩溃
+// 后下次调用自动重建），同样经 OnError 跳过。
 func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) ([]tool.BaseTool, error) {
 	var out []tool.BaseTool
 	for _, spec := range specs {
@@ -114,10 +131,16 @@ func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) ([]tool.BaseTool, er
 			ToolNameList: spec.Allow,
 		})
 		if err != nil {
+			p.evict(cfg.Name, cli)
 			if p.OnError != nil {
 				p.OnError(cfg.Name, err)
 			}
 			continue
+		}
+		// Allow 白名单全部未命中（拼写错误等）：eino-ext 静默返回空表，
+		// 这里经 OnError 告警，避免 agent 拿到空工具表却无从排查
+		if len(tools) == 0 && len(spec.Allow) > 0 && p.OnError != nil {
+			p.OnError(cfg.Name, fmt.Errorf("mcp: %s 白名单 %v 无一命中（返回 0 个工具）", cfg.Name, spec.Allow))
 		}
 		out = append(out, tools...)
 	}
@@ -127,6 +150,10 @@ func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) ([]tool.BaseTool, er
 // client 获取（lazy 建连 + 缓存）。失败时不缓存——下次调用重试。
 func (p *Pool) client(ctx context.Context, cfg ServerConfig) (client.MCPClient, error) {
 	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil, errors.New("mcp: 池已关闭")
+	}
 	if cli, ok := p.clients[cfg.Name]; ok {
 		p.mu.Unlock()
 		return cli, nil
@@ -155,7 +182,12 @@ func (p *Pool) client(ctx context.Context, cfg ServerConfig) (client.MCPClient, 
 	}
 
 	p.mu.Lock()
-	// 双检：并发建连时保留先到者，关闭后来者
+	// 双检：并发建连时保留先到者，关闭后来者；池已关闭则立即回收新建连接
+	if p.closed {
+		p.mu.Unlock()
+		_ = cli.Close()
+		return nil, errors.New("mcp: 池已关闭")
+	}
 	if existing, ok := p.clients[cfg.Name]; ok {
 		p.mu.Unlock()
 		_ = cli.Close()
@@ -166,12 +198,32 @@ func (p *Pool) client(ctx context.Context, cfg ServerConfig) (client.MCPClient, 
 	return cli, nil
 }
 
+// evict 连接失效时从缓存摘除并关闭（仅当缓存中的仍是该连接），下次调用走重建。
+func (p *Pool) evict(name string, cli client.MCPClient) {
+	p.mu.Lock()
+	cached, ok := p.clients[name]
+	if ok && cached == cli {
+		delete(p.clients, name)
+	} else {
+		cli = nil
+	}
+	p.mu.Unlock()
+	if cli != nil {
+		_ = cli.Close()
+	}
+}
+
 // dial 按配置构造 MCP client（stdio 或 streamable http）。
 func dial(ctx context.Context, cfg ServerConfig) (client.MCPClient, error) {
 	switch {
 	case len(cfg.Command) > 0:
-		// NewStdioMCPClient 自动启动子进程
-		return client.NewStdioMCPClient(cfg.Command[0], cfg.Env, cfg.Command[1:]...)
+		// 经 CommandFunc 接管 exec.Cmd：环境只给白名单，绝不继承全量 os.Environ()
+		return client.NewStdioMCPClientWithOptions(cfg.Command[0], cfg.Env, cfg.Command[1:],
+			transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
+				cmd := exec.CommandContext(ctx, command, args...)
+				cmd.Env = whitelistEnv(env)
+				return cmd, nil
+			}))
 	case cfg.URL != "":
 		return client.NewStreamableHttpClient(cfg.URL,
 			transport.WithHTTPHeaders(cfg.Headers),
@@ -179,6 +231,39 @@ func dial(ctx context.Context, cfg ServerConfig) (client.MCPClient, error) {
 	default:
 		return nil, fmt.Errorf("stdio（command）与 http（url）均未配置")
 	}
+}
+
+// baseEnvNames stdio 子进程保留的基础变量集（PATH/HOME 等运行必需，不含密钥类）。
+var baseEnvNames = []string{"PATH", "HOME", "TMPDIR", "USER", "LOGNAME", "SHELL", "LANG"}
+
+// whitelistEnv 构造子进程环境：基础集 + 白名单条目。
+// 条目为纯变量名时按名从当前进程透传（不存在则跳过）；含 "=" 时按 KEY=VALUE 字面透传。
+func whitelistEnv(extra []string) []string {
+	out := make([]string, 0, len(baseEnvNames)+len(extra))
+	seen := map[string]bool{}
+	for _, n := range baseEnvNames {
+		if v, ok := os.LookupEnv(n); ok {
+			out = append(out, n+"="+v)
+			seen[n] = true
+		}
+	}
+	for _, e := range extra {
+		name := e
+		if i := strings.IndexByte(e, '='); i > 0 {
+			name = e[:i]
+		} else {
+			v, ok := os.LookupEnv(e)
+			if !ok {
+				continue
+			}
+			e = name + "=" + v
+		}
+		if !seen[name] {
+			out = append(out, e)
+			seen[name] = true
+		}
+	}
+	return out
 }
 
 // TimeoutOr cfg.Timeout 的非零回退。
@@ -189,9 +274,14 @@ func (c ServerConfig) TimeoutOr(d time.Duration) time.Duration {
 	return d
 }
 
-// Close 关闭全部缓存连接（幂等）。
+// Close 关闭全部缓存连接并拒绝后续建连（幂等）。Close 后池不可复用。
 func (p *Pool) Close() {
 	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
+	p.closed = true
 	clients := p.clients
 	p.clients = map[string]client.MCPClient{}
 	p.mu.Unlock()

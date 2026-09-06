@@ -5,7 +5,7 @@ import "sync"
 // Budget 任务级 token 预算累计器（TokenAccountant 的标准实现）。
 // 并发安全。
 type Budget struct {
-	mu   sync.Mutex
+	mu    sync.Mutex
 	limit int
 	used  int64
 }

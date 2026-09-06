@@ -77,19 +77,8 @@ func TestMilvusConfigDefaults(t *testing.T) {
 	cfg := MilvusConfig{Address: "localhost:19530"}
 	m := &mockEmbedder{dim: 64}
 
-	// 测试默认值填充逻辑（不实际连接 Milvus）
-	if cfg.Collection == "" {
-		cfg.Collection = milvusDefaultCollection
-	}
-	if cfg.Dimension == 0 {
-		cfg.Dimension = m.Dim()
-	}
-	if cfg.MetricType == "" {
-		cfg.MetricType = "COSINE"
-	}
-	if cfg.NProbe == 0 {
-		cfg.NProbe = 16
-	}
+	// 默认值填充走生产代码的 withDefaults 纯函数（不再手抄实现）
+	cfg = cfg.withDefaults(m.Dim())
 
 	if cfg.Collection != "agentkit_knowledge" {
 		t.Fatalf("默认集合名应为 agentkit_knowledge，得到 %s", cfg.Collection)

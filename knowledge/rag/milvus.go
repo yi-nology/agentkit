@@ -24,12 +24,12 @@ const (
 
 // MilvusConfig Milvus 连接配置。
 type MilvusConfig struct {
-	Address    string // Milvus 地址，如 "localhost:19530"
-	Collection string // 集合名，默认 "agentkit_knowledge"
-	Dimension  int    // 向量维度（需与 Embedder.Dim() 一致）
+	Address    string            // Milvus 地址，如 "localhost:19530"
+	Collection string            // 集合名，默认 "agentkit_knowledge"
+	Dimension  int               // 向量维度（需与 Embedder.Dim() 一致）
 	MetricType entity.MetricType // 距离度量，默认 COSINE
-	IndexType  string // 索引类型，默认 "IVF_FLAT"
-	NProbe     int    // 搜索时的 nprobe，默认 16
+	IndexType  string            // 索引类型，默认 "IVF_FLAT"
+	NProbe     int               // 搜索时的 nprobe，默认 16
 }
 
 // MilvusStore Milvus 向量检索后端。
@@ -39,23 +39,29 @@ type MilvusStore struct {
 	embedder Embedder
 }
 
+// withDefaults 填充缺省配置（纯函数，构造器与测试共用）。
+func (c MilvusConfig) withDefaults(dim int) MilvusConfig {
+	if c.Collection == "" {
+		c.Collection = milvusDefaultCollection
+	}
+	if c.Dimension == 0 {
+		c.Dimension = dim
+	}
+	if c.MetricType == "" {
+		c.MetricType = entity.COSINE
+	}
+	if c.IndexType == "" {
+		c.IndexType = "IVF_FLAT"
+	}
+	if c.NProbe <= 0 { // 负数同样回退默认（透传给 SDK 会被运行期拒绝）
+		c.NProbe = 16
+	}
+	return c
+}
+
 // NewMilvusStore 创建 Milvus 向量检索后端。
 func NewMilvusStore(ctx context.Context, cfg MilvusConfig, embedder Embedder) (*MilvusStore, error) {
-	if cfg.Collection == "" {
-		cfg.Collection = milvusDefaultCollection
-	}
-	if cfg.Dimension == 0 {
-		cfg.Dimension = embedder.Dim()
-	}
-	if cfg.MetricType == "" {
-		cfg.MetricType = entity.COSINE
-	}
-	if cfg.IndexType == "" {
-		cfg.IndexType = "IVF_FLAT"
-	}
-	if cfg.NProbe == 0 {
-		cfg.NProbe = 16
-	}
+	cfg = cfg.withDefaults(embedder.Dim())
 
 	c, err := client.NewClient(ctx, client.Config{Address: cfg.Address})
 	if err != nil {
@@ -146,7 +152,9 @@ func (s *MilvusStore) Index(ctx context.Context, file string, content string) er
 	headingCol := entity.NewColumnVarChar(milvusHeadingField, headings)
 	vectorCol := entity.NewColumnFloatVector(milvusVectorField, s.cfg.Dimension, vectors)
 
-	if _, err := s.client.Insert(ctx, s.cfg.Collection, "", idCol, contentCol, fileCol, headingCol, vectorCol); err != nil {
+	// Upsert 而非 Insert：主键确定性（file#chunk_N），重复 Index 同一文件时
+	// 覆盖旧行——否则消费方每次重启重刷都会累积重复主键行挤占 topK 名额
+	if _, err := s.client.Upsert(ctx, s.cfg.Collection, "", idCol, contentCol, fileCol, headingCol, vectorCol); err != nil {
 		return fmt.Errorf("milvus: 插入失败: %w", err)
 	}
 
@@ -178,18 +186,25 @@ func (s *MilvusStore) Retrieve(ctx context.Context, query string, topK int, filt
 		return nil, fmt.Errorf("milvus: 查询 embedding 为空")
 	}
 
-	// 构建过滤表达式
+	// 构建过滤表达式：key 白名单（schema 外的字段名/特殊字符会让整个检索报错，
+	// 也构成表达式注入面）；value 已转义
 	var expr string
 	if filter != nil {
 		var parts []string
 		for k, v := range filter {
+			if !milvusFilterKeys[k] {
+				return nil, fmt.Errorf("milvus: 不支持的过滤字段 %q（可用: file, heading）", k)
+			}
 			parts = append(parts, fmt.Sprintf(`%s == "%s"`, k, escapeMilvus(v)))
 		}
 		expr = strings.Join(parts, " and ")
 	}
 
-	// 搜索参数
-	sp, _ := entity.NewIndexIvfFlatSearchParam(s.cfg.NProbe)
+	// 搜索参数（构造错误显式返回——吞掉后 nil sp 的报错晦涩难排查）
+	sp, err := entity.NewIndexIvfFlatSearchParam(s.cfg.NProbe)
+	if err != nil {
+		return nil, fmt.Errorf("milvus: 搜索参数构造失败（nprobe=%d）: %w", s.cfg.NProbe, err)
+	}
 
 	// 执行搜索
 	searchVectors := []entity.Vector{entity.FloatVector(vectors[0])}
@@ -271,6 +286,9 @@ func columnValueAt(col *entity.ColumnVarChar, idx int) string {
 	}
 	return val
 }
+
+// milvusFilterKeys 检索过滤字段白名单（schema 标量字段）。
+var milvusFilterKeys = map[string]bool{milvusFileField: true, milvusHeadingField: true}
 
 // escapeMilvus 转义 Milvus 表达式中的特殊字符。
 func escapeMilvus(s string) string {

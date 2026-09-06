@@ -6,8 +6,9 @@ package safejson
 import "strings"
 
 // EscapeUntrusted 中和不可信文本中的 markdown 结构与 HTML 注释边界。
-// 策略：HTML 注释开/闭序列实体化；行首标题/引用/代码围栏/列表标记前插零宽空格；
-// 反引号替换为同类引号防打断代码段。
+// 策略：HTML 注释开/闭序列实体化；行首标题/引用/代码围栏/列表标记/水平线/
+// 表格行/引用定义前插零宽空格；反引号替换为同类引号防打断代码段。
+// 前提：下游渲染器仍需自行 sanitize 裸 HTML（本包不处理 <img>/<script> 等标签）。
 func EscapeUntrusted(s string) string {
 	if s == "" {
 		return s
@@ -28,6 +29,15 @@ func EscapeUntrusted(s string) string {
 			inject = true
 		case len(trimmed) >= 2 && strings.Trim(trimmed, "=-") == "":
 			inject = true
+		case len(trimmed) >= 3 && strings.Trim(trimmed, "*_- ") == "":
+			// 水平线 *** / ___ / * * *（--- 已由上一条覆盖）
+			inject = true
+		case strings.HasPrefix(trimmed, "|"):
+			// 表格行（| --- | 伪造"汇总表"是常见注入形态）
+			inject = true
+		case strings.HasPrefix(trimmed, "[") && strings.Contains(trimmed, "]:"):
+			// 引用定义 [ref]: url，可劫持后文 [text][ref] 的渲染
+			inject = true
 		case strings.HasPrefix(trimmed, "- "), strings.HasPrefix(trimmed, "+ "), strings.HasPrefix(trimmed, "* "):
 			inject = true
 		case isOrderedMarker(trimmed):
@@ -47,5 +57,6 @@ func isOrderedMarker(trimmed string) bool {
 	for i < len(trimmed) && trimmed[i] >= '0' && trimmed[i] <= '9' {
 		i++
 	}
-	return i > 0 && i+1 < len(trimmed) && trimmed[i] == '.' && trimmed[i+1] == ' '
+	return i > 0 && i+1 < len(trimmed) && trimmed[i] == '.' &&
+		(trimmed[i+1] == ' ' || trimmed[i+1] == '\t') // CommonMark 允许 tab
 }

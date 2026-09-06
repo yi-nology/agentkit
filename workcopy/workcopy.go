@@ -83,24 +83,43 @@ func (p *Pool) Ensure(ctx context.Context, key WorktreeKey) (string, error) {
 	}
 	p.mu.Unlock()
 
-	result, err, _ := p.group.Do(k, func() (any, error) {
-		return p.prepare(ctx, key, baseURL, token)
-	})
-	if err != nil {
-		return "", err
-	}
-	dir := result.(string)
+	// 建仓与登记同在 singleflight 内完成（条目 rc=0，引用由 Do 返回后统一加）：
+	// 共享者退出时若条目已消失（同 flight 先到者已 Release 删除），重走一次建仓，
+	// 杜绝拿到已删除目录
+	for round := 0; ; round++ {
+		result, err, _ := p.group.Do(k, func() (any, error) {
+			dir, err := p.prepare(ctx, key, baseURL, token)
+			if err != nil {
+				return nil, err
+			}
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			if e, ok := p.entries[k]; ok { // 双检：并发建仓时保留先到者
+				_ = os.RemoveAll(dir)
+				return e.dir, nil
+			}
+			p.entries[k] = &wcEntry{dir: dir, lastUsed: time.Now()}
+			return dir, nil
+		})
+		if err != nil {
+			return "", err
+		}
+		dir := result.(string)
 
-	p.mu.Lock()
-	if e, ok := p.entries[k]; ok {
-		e.refCount++
+		p.mu.Lock()
+		e, ok := p.entries[k]
+		if ok {
+			e.refCount++
+			e.lastUsed = time.Now()
+			dir = e.dir
+			p.mu.Unlock()
+			return dir, nil
+		}
 		p.mu.Unlock()
-		_ = os.RemoveAll(dir)
-		return e.dir, nil
+		if round >= 1 {
+			return "", fmt.Errorf("workcopy: %s 工作副本登记后丢失（并发释放竞争）", k)
+		}
 	}
-	p.entries[k] = &wcEntry{dir: dir, refCount: 1, lastUsed: time.Now()}
-	p.mu.Unlock()
-	return dir, nil
 }
 
 // Release 任务结束后释放（引用归零即删沙箱目录）。
@@ -136,10 +155,13 @@ func cloneURL(baseURL, owner, repo, token string) string {
 	for _, suffix := range []string{"/api/v1", "/api/v4", "/api/v3", "/api"} {
 		u = strings.TrimSuffix(u, suffix)
 	}
-	if !strings.HasPrefix(u, "http") {
-		u = "https://" + u
+	// 保留原有 scheme——内网 http://gitea 被强制升 https 会导致克隆失败
+	scheme := "https://"
+	if i := strings.Index(u, "://"); i >= 0 {
+		scheme = u[:i+3]
+		u = u[i+3:]
 	}
-	return fmt.Sprintf("https://oauth2:%s@%s/%s/%s.git", token, stripScheme(u), owner, repo)
+	return fmt.Sprintf("%soauth2:%s@%s/%s/%s.git", scheme, token, u, owner, repo)
 }
 
 func stripScheme(u string) string {
@@ -172,8 +194,10 @@ func (p *Pool) prepare(ctx context.Context, key WorktreeKey, baseURL, token stri
 	for _, args := range steps {
 		if err := runGit(ctx, args, insecureTLS); err != nil {
 			_ = os.RemoveAll(dir)
+			// msg 为脱敏载体，token 必须作为 secret 传入（此前参数顺序传反，
+			// git 失败详情整体丢失、脱敏形同虚设）
 			return "", fmt.Errorf("workcopy: %s#%s 准备失败: %s",
-				key.Owner, key.Repo, scrub(key.Number, err.Error(), token))
+				key.Owner, key.Repo, scrub(err.Error(), token))
 		}
 	}
 	p.Log.Info("agentkit.workcopy.ready", "dir", dir, "pr", key.Owner+"/"+key.Repo+"#"+key.Number)
@@ -195,8 +219,10 @@ func runGit(ctx context.Context, args []string, insecureTLS bool) error {
 	c, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(c, args[0], args[1:]...)
+	// 禁交互：认证失败时 git 弹终端提问会挂到超时
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	if insecureTLS {
-		cmd.Env = append(os.Environ(), "GIT_SSL_NO_VERIFY=true")
+		cmd.Env = append(cmd.Env, "GIT_SSL_NO_VERIFY=true")
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -209,14 +235,17 @@ func runGit(ctx context.Context, args []string, insecureTLS bool) error {
 	return nil
 }
 
-// Sweep 清理引用计数泄漏的沙箱目录（兜底 TTL 扫描）。
+// Sweep 清理泄漏的沙箱目录（兜底 TTL 扫描）。
+// 只回收引用归零且超 TTL 的条目与孤儿目录——rc>0 的在用目录一律保留
+// （长任务超 TTL 时被删即是生产事故），因此 TTL 应配置为大于最长任务时长；
+// 进程崩溃导致的泄漏目录（条目随进程消失）由下方孤儿扫描兜底。
 func (p *Pool) Sweep(ttl time.Duration) {
 	p.mu.Lock()
 	var stale []string
 	live := make(map[string]bool, len(p.entries))
 	for k, e := range p.entries {
 		live[e.dir] = true
-		if e.refCount <= 0 || time.Since(e.lastUsed) > ttl {
+		if e.refCount <= 0 && time.Since(e.lastUsed) > ttl {
 			stale = append(stale, e.dir)
 			delete(p.entries, k)
 		}

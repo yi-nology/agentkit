@@ -108,3 +108,42 @@ func TestBreakerDefaults(t *testing.T) {
 		t.Fatalf("默认 cooldown 应为 %v, 得到 %v", DefaultCooldown, b.cooldown)
 	}
 }
+
+func TestOpenPeriodFailureDoesNotExtendCooldown(t *testing.T) {
+	// 回归：open 期间被拒请求记录的 Failure 不得续期冷却（否则永远进不了半开）
+	b := New(2, time.Minute)
+	now := time.Now()
+	b.Failure(now)
+	b.Failure(now)
+	if !b.Opened(now) {
+		t.Fatal("达阈值应熔断")
+	}
+	// 冷却期内大量被拒请求的 Failure
+	for i := 0; i < 100; i++ {
+		b.Failure(now.Add(time.Duration(i) * time.Second))
+	}
+	// 冷却期结束后必须能进入半开放行探测
+	if !b.Allow(now.Add(2 * time.Minute)) {
+		t.Fatal("冷却结束后应放行半开探测（冷却期不得被续期）")
+	}
+}
+
+func TestStaleProbeDoesNotStallBreaker(t *testing.T) {
+	// 回归：探测方失联（未配对 Success/Failure）超过探测时限后，应放行新探测
+	b := New(1, time.Minute)
+	now := time.Now()
+	b.Failure(now)
+	if b.Allow(now) {
+		t.Fatal("熔断中不应放行")
+	}
+	if !b.Allow(now.Add(2 * time.Minute)) {
+		t.Fatal("冷却结束应放行探测")
+	}
+	// 探测失联：既不 Success 也不 Failure，超过 probeTimeout 后放行新探测
+	if b.Allow(now.Add(2*time.Minute + time.Second)) {
+		t.Fatal("探测在途不应放行")
+	}
+	if !b.Allow(now.Add(2*time.Minute + DefaultProbeTimeout + time.Second)) {
+		t.Fatal("探测失联超时应放行新探测（不得永久卡死）")
+	}
+}

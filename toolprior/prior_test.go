@@ -111,10 +111,19 @@ func TestWithCallLimit(t *testing.T) {
 			t.Fatalf("透传失败: %q", out)
 		}
 	}
-	// 第三次拒绝
-	_, err := lt.InvokableRun(context.Background(), "{}")
-	if err == nil || !strings.Contains(err.Error(), "上限") {
-		t.Fatalf("超限应报错: %v", err)
+	// 第三次软止损：返回固定提示文本（nil error）——error 会被 eino ToolsNode
+	// 上抛中止整个 agent 运行，模型永远看不到；文本则模型可见可收尾
+	out, err := lt.InvokableRun(context.Background(), "{}")
+	if err != nil {
+		t.Fatalf("超限应软止损（nil error）: %v", err)
+	}
+	if !strings.Contains(out, "LIMIT_REACHED") || !strings.Contains(out, "上限") {
+		t.Fatalf("超限应返回模型可见的提示文本: %q", out)
+	}
+	// 第四次同样拒绝（连续拒绝不透传内层）
+	out, err = lt.InvokableRun(context.Background(), "{}")
+	if err != nil || !strings.Contains(out, "LIMIT_REACHED") {
+		t.Fatalf("持续超限应持续拒绝: %q %v", out, err)
 	}
 	// Info 透传不受限
 	info, err := limited.Info(context.Background())

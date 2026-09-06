@@ -222,37 +222,59 @@ func (r *Resilient) generateWithTrace(ctx context.Context, stage string, msgs []
 	}
 
 	var attempts []Attempt
-	for _, p := range r.chain.Providers {
+	breakerSkipped := 0
+	for i, p := range r.chain.Providers {
+		// 预算逐 provider 复查：截断记账后本链内仍会继续烧，越早短路越省钱
+		if r.Budget != nil && r.Budget.Remaining() <= 0 {
+			return nil, attempts, fmt.Errorf("llm: %s 任务 token 预算已耗尽（%d）", stage, r.Budget.Used())
+		}
 		// 熔断中的模型直接跳过（不记录为 attempt——没真正尝试）
 		if !r.breakers.Allow(p.ModelName()) {
+			breakerSkipped++
 			continue
 		}
-		// nil model 防御
+		// nil model 防御：Allow 已放行（可能占用半开探测配额），必须配对 Failure
 		if isNilModel(p.Model()) {
+			r.breakers.Failure(p.ModelName())
 			attempts = append(attempts, Attempt{Provider: p.Name(), Model: p.ModelName(), Err: "provider.Model() 为 nil"})
 			continue
 		}
 
-		out, err := r.tryOneProvider(ctx, p, stage, msgs, false)
+		start := time.Now()
+		out, err := r.tryOneProvider(ctx, p, stage, msgs)
 		if err == nil {
 			r.breakers.Success(p.ModelName())
 			r.rememberModel(p.ModelName())
 			return out, attempts, nil
 		}
-		// ctx 取消：用户主动中止，不再尝试其他模型
+		// ctx 取消：用户主动中止，不再尝试其他模型。
+		// 这次尝试确实失败了，仍要配对 Failure——否则半开探测被提前返回吃掉，
+		// 该模型被永久逐出降级链
+		r.breakers.Failure(p.ModelName())
 		if ctx.Err() != nil {
 			return nil, attempts, ctx.Err()
 		}
 		attempts = append(attempts, Attempt{
 			Provider: p.Name(), Model: p.ModelName(),
-			Err: err.Error(), Duration: 0,
+			Err: err.Error(), Duration: time.Since(start),
 		})
-		r.breakers.Failure(p.ModelName())
 		if r.OnFallback != nil {
-			r.OnFallback(p.ModelName(), "", stage, err.Error())
+			// to = 降级链上的下一个模型（链尾为空串）
+			to := ""
+			if i+1 < len(r.chain.Providers) {
+				to = r.chain.Providers[i+1].ModelName()
+			}
+			r.OnFallback(p.ModelName(), to, stage, err.Error())
 		}
 	}
 
+	// 全部被熔断跳过时 attempts 为空——"全部 0 个模型失败"极具误导性
+	if len(attempts) == 0 {
+		if breakerSkipped > 0 {
+			return nil, nil, fmt.Errorf("llm: %s 全部 %d 个模型均处于熔断冷却中，未发起任何尝试", stage, breakerSkipped)
+		}
+		return nil, nil, fmt.Errorf("llm: %s 降级链为空", stage)
+	}
 	return nil, attempts, &AttemptError{Stage: stage, Attempts: attempts}
 }
 
@@ -266,52 +288,69 @@ func (r *Resilient) generateJSONWithTrace(ctx context.Context, stage string, msg
 	}
 
 	var attempts []Attempt
-	for _, p := range r.chain.Providers {
+	breakerSkipped := 0
+	for i, p := range r.chain.Providers {
+		// 预算逐 provider 复查（同 generateWithTrace）
+		if r.Budget != nil && r.Budget.Remaining() <= 0 {
+			return attempts, fmt.Errorf("llm: %s 任务 token 预算已耗尽（%d）", stage, r.Budget.Used())
+		}
 		if !r.breakers.Allow(p.ModelName()) {
+			breakerSkipped++
 			continue
 		}
+		// nil model 防御：Allow 已放行（可能占用半开探测配额），必须配对 Failure
 		if isNilModel(p.Model()) {
+			r.breakers.Failure(p.ModelName())
 			attempts = append(attempts, Attempt{Provider: p.Name(), Model: p.ModelName(), Err: "provider.Model() 为 nil"})
 			continue
 		}
 
+		start := time.Now()
 		err := r.tryOneProviderJSON(ctx, p, stage, msgs, out)
 		if err == nil {
 			r.breakers.Success(p.ModelName())
 			r.rememberModel(p.ModelName())
 			return attempts, nil
 		}
+		// ctx 取消路径同样配对 Failure（防止半开探测被吃掉，见 generateWithTrace）
+		r.breakers.Failure(p.ModelName())
 		if ctx.Err() != nil {
 			return attempts, ctx.Err()
 		}
-		attempts = append(attempts, Attempt{Provider: p.Name(), Model: p.ModelName(), Err: err.Error()})
-		r.breakers.Failure(p.ModelName())
+		attempts = append(attempts, Attempt{Provider: p.Name(), Model: p.ModelName(), Err: err.Error(), Duration: time.Since(start)})
 		if r.OnFallback != nil {
-			r.OnFallback(p.ModelName(), "", stage, err.Error())
+			to := ""
+			if i+1 < len(r.chain.Providers) {
+				to = r.chain.Providers[i+1].ModelName()
+			}
+			r.OnFallback(p.ModelName(), to, stage, err.Error())
 		}
 	}
 
+	if len(attempts) == 0 {
+		if breakerSkipped > 0 {
+			return nil, fmt.Errorf("llm: %s 全部 %d 个模型均处于熔断冷却中，未发起任何尝试", stage, breakerSkipped)
+		}
+		return nil, fmt.Errorf("llm: %s 降级链为空", stage)
+	}
 	return attempts, &AttemptError{Stage: stage, Attempts: attempts}
 }
 
 // tryOneProvider 单 Provider 内部：复制 msgs（防 fitInput 污染调用方）→
-// 按该 Provider 窗口裁剪 → 可选超时 → 重试循环。
-func (r *Resilient) tryOneProvider(ctx context.Context, p Provider, stage string, msgs []*schema.Message, _ bool) (*schema.Message, error) {
+// 按该 Provider 窗口裁剪 → 重试循环（每次尝试独立受 AttemptTimeout 约束）。
+func (r *Resilient) tryOneProvider(ctx context.Context, p Provider, stage string, msgs []*schema.Message) (*schema.Message, error) {
 	// 复制切片：fitInput 会原地替换元素，不能污染调用方的消息
 	msgsCopy := copyMsgs(msgs)
 
 	c := r.buildClient(p)
 	c.fitInput(msgsCopy)
 
-	// 可选的单次尝试超时
-	attemptCtx := ctx
-	var cancel context.CancelFunc = func() {}
+	// 单次尝试超时：每次尝试独立计时。不能在循环外创建一次——否则 deadline
+	// 覆盖全部重试 + 退避睡眠，首次尝试耗满后重试全部形同虚设
+	attemptTimeout := time.Duration(0)
 	if tp, ok := p.(timeoutProvider); ok {
-		if d := tp.AttemptTimeout(); d > 0 {
-			attemptCtx, cancel = context.WithTimeout(ctx, d)
-		}
+		attemptTimeout = tp.AttemptTimeout()
 	}
-	defer cancel()
 
 	maxRetries := r.cfg.RetriesPerModel + 1
 	var lastErr error
@@ -324,15 +363,21 @@ func (r *Resilient) tryOneProvider(ctx context.Context, p Provider, stage string
 				break
 			}
 			select {
-			case <-attemptCtx.Done():
-				return nil, attemptCtx.Err()
+			case <-ctx.Done():
+				return nil, ctx.Err()
 			case <-time.After(r.backoff(attempt, lastErr)):
 			}
 		}
 		if r.Limiter != nil {
-			if err := r.Limiter.Wait(attemptCtx); err != nil {
+			if err := r.Limiter.Wait(ctx); err != nil {
 				return nil, fmt.Errorf("llm: %s 限速等待取消: %w", stage, err)
 			}
+		}
+		attemptCtx := ctx
+		if attemptTimeout > 0 {
+			var cancel context.CancelFunc
+			attemptCtx, cancel = context.WithTimeout(ctx, attemptTimeout)
+			defer cancel()
 		}
 		var opts []model.Option
 		if IsTruncatedError(lastErr) && c.MaxOutputTokens > 0 && !truncatedBoosted {
@@ -360,14 +405,16 @@ func (r *Resilient) tryOneProviderJSON(ctx context.Context, p Provider, stage st
 	c := r.buildClient(p)
 	c.fitInput(msgsCopy)
 
+	// 同 tryOneProvider：超时约束单次尝试，由 Client.GenerateJSON 内部的
+	// 回喂重试循环各自继承该 deadline——语义为"单次完整生成调用"的时限
 	attemptCtx := ctx
-	var cancel context.CancelFunc = func() {}
 	if tp, ok := p.(timeoutProvider); ok {
 		if d := tp.AttemptTimeout(); d > 0 {
+			var cancel context.CancelFunc
 			attemptCtx, cancel = context.WithTimeout(ctx, d)
+			defer cancel()
 		}
 	}
-	defer cancel()
 
 	return c.GenerateJSON(attemptCtx, stage, msgsCopy, out)
 }

@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,9 +13,9 @@ import (
 
 // mockQueue 实现 TaskQueue 接口用于测试。
 type mockQueue struct {
-	mu      sync.Mutex
-	pending []string
-	claimed []string
+	mu             sync.Mutex
+	pending        []string
+	claimed        []string
 	heartbeatCalls int32
 }
 
@@ -199,4 +200,74 @@ func TestPoolZeroWorkersDefaults(t *testing.T) {
 	cancel()
 	p.Stop(time.Second)
 	// 不应 panic
+}
+
+func TestStopBeforeStartDoesNotBurnShutdown(t *testing.T) {
+	// 回归：先 Stop（未启动）后 Start，真正的 Stop 必须仍然有效
+	//（此前 sync.Once 被 Stop-before-Start 烧穿，之后停机永远失效）
+	q := newMockQueue("t1")
+	var ran atomic.Int32
+	p := &Pool{Queue: q, N: 1, Log: logx.NewSlogLogger("test"),
+		Run: func(ctx context.Context, taskID string) error {
+			ran.Add(1)
+			return nil
+		}}
+
+	p.Stop(time.Second) // 未启动时误调用
+	ctx, cancel := context.WithCancel(context.Background())
+	p.Start(ctx)
+	defer cancel()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && ran.Load() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if ran.Load() == 0 {
+		t.Fatal("任务应被执行")
+	}
+
+	p.Stop(2 * time.Second) // 真正的停机
+	select {
+	case <-p.done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stop 应在 Start 之后正常生效（done 关闭）")
+	}
+}
+
+func TestTaskPanicDoesNotKillWorker(t *testing.T) {
+	// 回归：任务 panic 只损失该任务，worker 存活继续拉取（池不得静默减员）
+	var mu sync.Mutex
+	q := newMockQueue("panic-1", "ok-1", "ok-2")
+	var done []string
+	p := &Pool{Queue: q, N: 1, Log: logx.NewSlogLogger("test"),
+		Run: func(ctx context.Context, taskID string) error {
+			if strings.HasPrefix(taskID, "panic") {
+				panic("boom")
+			}
+			mu.Lock()
+			done = append(done, taskID)
+			mu.Unlock()
+			return nil
+		}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	p.Start(ctx)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(done)
+		mu.Unlock()
+		if n == 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	p.Stop(2 * time.Second)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(done) != 2 {
+		t.Fatalf("panic 后 worker 应继续消费后续任务: %v", done)
+	}
 }

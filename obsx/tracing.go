@@ -4,8 +4,8 @@
 // callbacks.InitCallbacks(ctx, nil, handler) 注入后，eino 各组件
 // （ChatModel 等）在调用时自动触发 OnStart/OnEnd/OnError，无需侵入业务代码：
 //
-//	ctx = obsx.InitLLMObservability(ctx, log)   // 一行启用
-//	msg, err := client.Generate(ctx, "R1", msgs) // 自动产出结构化 trace
+//	ctx = obsx.InitLLMObservability(ctx, log, obsx.Options{}) // 一行启用
+//	msg, err := client.Generate(ctx, "R1", msgs)               // 自动产出结构化 trace
 //
 // 日志字段对齐可审计需求：stage（业务阶段）、component/model（哪个模型）、
 // duration、prompt/completion tokens（优先真实 usage）、慢调用告警。
@@ -77,7 +77,7 @@ func (h *TracingHandler) onEnd(ctx context.Context, info *callbacks.RunInfo,
 	output callbacks.CallbackOutput) context.Context {
 
 	state, _ := ctx.Value(startStateKey{}).(startState)
-	dur := time.Since(state.start)
+	dur := h.durationSince(state)
 	fields := []any{
 		"stage", state.stage,
 		"component", compOf(info),
@@ -112,9 +112,19 @@ func (h *TracingHandler) onError(ctx context.Context, info *callbacks.RunInfo,
 		"stage", state.stage,
 		"component", compOf(info),
 		"model", modelOf(info),
-		"duration_ms", time.Since(state.start).Milliseconds(),
+		"duration_ms", h.durationSince(state).Milliseconds(),
 		"error", err.Error())
 	return ctx
+}
+
+// durationSince 计算自 OnStart 以来的耗时；OnStart 缺失（handler 在调用链中段
+// 注入导致无配对）时 state.start 为零值——直接 time.Since 会产出 1.7 万年的
+// 天文数字并误触慢调用告警，这里跳过计时。
+func (h *TracingHandler) durationSince(state startState) time.Duration {
+	if state.start.IsZero() {
+		return 0
+	}
+	return time.Since(state.start)
 }
 
 // startState OnStart → OnEnd/OnError 的调用内状态。

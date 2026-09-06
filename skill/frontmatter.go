@@ -32,7 +32,7 @@ func parseFrontmatter(content string) (name, desc, body string) {
 		if !ok {
 			continue
 		}
-		val = strings.TrimSpace(strings.Trim(val, `"'`))
+		val = trimQuoted(strings.TrimSpace(val))
 		switch strings.TrimSpace(key) {
 		case "name":
 			name = val
@@ -41,6 +41,17 @@ func parseFrontmatter(content string) (name, desc, body string) {
 		}
 	}
 	return name, desc, body
+}
+
+// trimQuoted 仅当值整体被成对引号包裹时剥除——值内部以引号结尾的合法内容
+// （如：他说 "hello"）不受影响。
+func trimQuoted(v string) string {
+	for _, q := range []string{`"`, `'`} {
+		if len(v) >= 2 && strings.HasPrefix(v, q) && strings.HasSuffix(v, q) {
+			return v[1 : len(v)-1]
+		}
+	}
+	return v
 }
 
 func cut(s string, sep byte) (before, after string, found bool) {

@@ -3,7 +3,8 @@ package severity
 import "strings"
 
 // GlobMatch 极简 glob：支持 `**`（跨目录）与 `*`/`?`（单段）。
-// 语义对齐 .gitignore 常见用法：`web/**` 匹配 web/ 下一切；`*.vue` 匹配任意目录下的 .vue。
+// 语义对齐 .gitignore 常见用法：`web/**` 匹配 web/ 下一切（不含 web 自身）；
+// `*.vue` 匹配任意目录下的 .vue；`?` 消耗一个 rune（多字节文件名安全）。
 func GlobMatch(pattern, path string) bool {
 	if pattern == "" {
 		return false
@@ -21,7 +22,8 @@ func globMatch(pat, seg []string) bool {
 	for len(pat) > 0 {
 		if pat[0] == "**" {
 			if len(pat) == 1 {
-				return true
+				// 尾随 `/**` 只匹配目录内部（.gitignore 语义），不含目录自身
+				return len(seg) > 0
 			}
 			for i := 0; i <= len(seg); i++ {
 				if globMatch(pat[1:], seg[i:]) {
@@ -42,18 +44,21 @@ func globMatch(pat, seg []string) bool {
 }
 
 func segmentMatch(pattern, s string) bool {
+	// rune 级回溯：`?` 消耗一个 rune，多字节（中文等）文件名不漏配
+	pat := []rune(pattern)
+	str := []rune(s)
 	var (
 		px, sx int
 		starPx = -1
 		starSx int
 	)
-	for sx < len(s) {
-		if px < len(pattern) && (pattern[px] == '?' || pattern[px] == s[sx]) {
+	for sx < len(str) {
+		if px < len(pat) && (pat[px] == '?' || pat[px] == str[sx]) {
 			px++
 			sx++
 			continue
 		}
-		if px < len(pattern) && pattern[px] == '*' {
+		if px < len(pat) && pat[px] == '*' {
 			starPx = px
 			starSx = sx
 			px++
@@ -67,8 +72,8 @@ func segmentMatch(pattern, s string) bool {
 		}
 		return false
 	}
-	for px < len(pattern) && pattern[px] == '*' {
+	for px < len(pat) && pat[px] == '*' {
 		px++
 	}
-	return px == len(pattern)
+	return px == len(pat)
 }

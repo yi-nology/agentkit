@@ -41,7 +41,7 @@ func (c *ClaudeCode) Run(ctx context.Context, req RunRequest) (*RunResult, error
 		return nil, err
 	}
 
-	argv := []string{c.Bin, "-p", req.Prompt, "--output-format", "stream-json", "--verbose"}
+	argv := []string{c.Bin, "-p", promptArg(req.Prompt), "--output-format", "stream-json", "--verbose"}
 	if req.Model != "" {
 		argv = append(argv, "--model", req.Model)
 	}
@@ -52,6 +52,8 @@ func (c *ClaudeCode) Run(ctx context.Context, req RunRequest) (*RunResult, error
 		argv = append(argv, "--max-turns", fmt.Sprint(req.MaxTurns))
 	}
 	if len(req.AllowedTools) > 0 {
+		// claude 族语义：空格分隔的单参数。工具名本身含空格会静默变形——
+		// 调用方需保证名字合法（工具名规范不含空格）
 		argv = append(argv, "--allowedTools", strings.Join(req.AllowedTools, " "))
 	}
 	switch req.Sandbox {
@@ -171,7 +173,7 @@ func (c *Codex) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	}
 	defer cleanup()
 
-	argv := []string{c.Bin, "exec", req.Prompt, "--json", "--output-last-message", lastMsg}
+	argv := []string{c.Bin, "exec", promptArg(req.Prompt), "--json", "--output-last-message", lastMsg}
 	if req.Model != "" {
 		argv = append(argv, "-m", req.Model)
 	}
@@ -203,14 +205,21 @@ func (c *Codex) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 				}
 			}
 		case "turn.completed":
+			// 多轮任务逐轮累加（与 mimo 适配器一致，只取最后一轮会少计）
 			if ev.Usage != nil {
-				usage = Usage{InputTokens: ev.Usage.InputTokens, OutputTokens: ev.Usage.OutputTokens}
+				usage.InputTokens += ev.Usage.InputTokens
+				usage.OutputTokens += ev.Usage.OutputTokens
 			}
 		}
 	}
 
 	stdout, _, code, err := execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), onLine)
 	if err != nil {
+		// 与 claude 族一致：output-last-message 已有最终消息（agent 正常完成但
+		// 退出码非零）时以结果为准
+		if text := strings.TrimSpace(readFileTrim(lastMsg)); text != "" {
+			return &RunResult{Text: text, Usage: usage, ExitCode: code, Raw: []byte(stdout)}, nil
+		}
 		return nil, err
 	}
 	text := strings.TrimSpace(readFileTrim(lastMsg))
@@ -250,7 +259,7 @@ func (c *OpenCode) Run(ctx context.Context, req RunRequest) (*RunResult, error) 
 		return nil, err
 	}
 
-	argv := []string{c.Bin, "run", req.Prompt, "--json"}
+	argv := []string{c.Bin, "run", promptArg(req.Prompt), "--json"}
 	if req.Model != "" {
 		argv = append(argv, "-m", req.Model)
 	}
@@ -324,7 +333,7 @@ func (g *GenericAgent) Run(ctx context.Context, req RunRequest) (*RunResult, err
 	for _, a := range g.Argv {
 		switch a {
 		case "{prompt}":
-			argv = append(argv, req.Prompt)
+			argv = append(argv, promptArg(req.Prompt))
 		case "{model}":
 			if req.Model != "" {
 				argv = append(argv, req.Model)

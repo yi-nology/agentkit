@@ -8,6 +8,7 @@ import (
 )
 
 // 真实 agent 冒烟测试（调用真 LLM 花钱 + 需要登录态）：
+//
 //	ACPX_SMOKE=1 go test ./acpx/ -run TestSmoke -v
 func smokeEnabled() bool { return os.Getenv("ACPX_SMOKE") == "1" }
 

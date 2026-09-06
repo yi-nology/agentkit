@@ -95,6 +95,7 @@ func (c *Client) account(stage string, in []*schema.Message, out *schema.Message
 // stage 同时注入 ctx（obsx.WithStage）——eino callbacks handler 可读到业务阶段。
 func (c *Client) Generate(ctx context.Context, stage string, msgs []*schema.Message) (*schema.Message, error) {
 	ctx = obsx.WithStage(ctx, stage)
+	msgs = copyMsgs(msgs) // fitInput 原地替换元素，不能污染调用方的切片
 	c.fitInput(msgs)
 	maxRetries := c.MaxRetries
 	if maxRetries <= 0 {
@@ -135,8 +136,13 @@ func (c *Client) Generate(ctx context.Context, stage string, msgs []*schema.Mess
 		if err == nil {
 			if out.ResponseMeta != nil && out.ResponseMeta.FinishReason == "length" {
 				c.account(stage, msgs, out)
-				err = fmt.Errorf("llm: %s 输出被截断（finish_reason=length, completion_tokens=%d）",
-					stage, out.ResponseMeta.Usage.CompletionTokens)
+				// Usage 是否存在取决于 Provider 实现（部分兼容端点缺失），不能裸解引用
+				ct := "?"
+				if out.ResponseMeta.Usage != nil {
+					ct = fmt.Sprint(out.ResponseMeta.Usage.CompletionTokens)
+				}
+				err = fmt.Errorf("llm: %s 输出被截断（finish_reason=length, completion_tokens=%s）",
+					stage, ct)
 			} else {
 				c.account(stage, msgs, out)
 				return out, nil
@@ -160,8 +166,9 @@ func (c *Client) backoffDelay(attempt int, base, ceil time.Duration, err error) 
 	if delay < minDelay {
 		delay = minDelay
 	}
-	jitter := time.Duration(rand.Int63n(int64(base / 2)))
-	delay += jitter
+	if half := int64(base / 2); half > 0 { // base=1ns 等极小值时 Int63n(0) 会 panic
+		delay += time.Duration(rand.Int63n(half))
+	}
 	if delay > ceil {
 		delay = ceil
 	}
@@ -169,19 +176,17 @@ func (c *Client) backoffDelay(attempt int, base, ceil time.Duration, err error) 
 }
 
 // GenerateJSON 生成并解析 JSON；解析失败把原始输出与错误回喂重试 1 次。
-// out 必须是 *T。截断导致的解析失败会追加精简指令。
+// out 必须是 *T。截断在 Generate 内部已转为错误返回，走到这里的 lastErr 只会是
+// json.Unmarshal 错误——回喂提示只有"输出合法 JSON"一种。
 func (c *Client) GenerateJSON(ctx context.Context, stage string, msgs []*schema.Message, out any) error {
 	ctx = obsx.WithStage(ctx, stage)
+	msgs = copyMsgs(msgs)
 	var lastErr error
 	lastRaw := ""
 	for attempt := 0; attempt < 2; attempt++ {
 		callMsgs := msgs
 		if attempt > 0 {
 			hint := "你上一轮的输出无法解析为合法 JSON（错误：%v）。\n请重新输出，且只输出合法 JSON：不要解释、不要 markdown 代码围栏。"
-			if IsTruncatedError(lastErr) {
-				hint = "你上一轮的输出因超出 token 上限被截断，导致 JSON 不完整（错误：%v）。\n" +
-					"请精简输出：只保留关键字段，删除冗余描述，确保 JSON 在 token 限制内完整输出。只输出合法 JSON。"
-			}
 			callMsgs = append(append([]*schema.Message{}, msgs...),
 				&schema.Message{Role: schema.Assistant, Content: lastRaw},
 				schema.UserMessage(fmt.Sprintf(hint, lastErr)),

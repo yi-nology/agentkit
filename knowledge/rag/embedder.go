@@ -23,10 +23,10 @@ type Embedder interface {
 // OpenAIEmbedder OpenAI 兼容 Embedding API 适配器。
 // 支持 OpenAI / 百炼 / 任何兼容 /v1/embeddings 端点。
 type OpenAIEmbedder struct {
-	BaseURL  string // 如 https://api.openai.com/v1 或 https://dashscope.aliyuncs.com/compatible-mode/v1
-	APIKey   string
-	Model    string // 如 text-embedding-3-small / text-embedding-v3
-	dimension int   // 向量维度（需与模型输出一致）
+	BaseURL   string // 如 https://api.openai.com/v1 或 https://dashscope.aliyuncs.com/compatible-mode/v1
+	APIKey    string
+	Model     string // 如 text-embedding-3-small / text-embedding-v3
+	dimension int    // 向量维度（需与模型输出一致）
 
 	client *http.Client
 }
@@ -34,11 +34,11 @@ type OpenAIEmbedder struct {
 // NewOpenAIEmbedder 创建 OpenAI 兼容 Embedding 客户端。
 func NewOpenAIEmbedder(baseURL, apiKey, model string, dim int) *OpenAIEmbedder {
 	return &OpenAIEmbedder{
-		BaseURL:  strings.TrimSuffix(baseURL, "/"),
-		APIKey:   apiKey,
-		Model:    model,
+		BaseURL:   strings.TrimSuffix(baseURL, "/"),
+		APIKey:    apiKey,
+		Model:     model,
 		dimension: dim,
-		client:   &http.Client{Timeout: 30 * time.Second},
+		client:    &http.Client{Timeout: 30 * time.Second},
 	}
 }
 

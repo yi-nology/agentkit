@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -182,6 +183,59 @@ func TestPoolClose(t *testing.T) {
 	p.Close() // 幂等
 	if len(p.clients) != 0 {
 		t.Fatal("Close 后缓存应清空")
+	}
+	// Close 后再建连应被拒绝，且不得把新连接塞回缓存（泄漏）
+	if _, err := p.client(context.Background(), ServerConfig{Name: "calc"}); err == nil {
+		t.Fatal("Close 后 client() 应报错")
+	}
+	if len(p.clients) != 0 {
+		t.Fatal("Close 后 client() 不得写入缓存")
+	}
+}
+
+func TestWhitelistEnv(t *testing.T) {
+	t.Setenv("AK_MCP_SECRET_TOKEN", "s3cret")
+	t.Setenv("AK_MCP_PLAIN", "v=1") // 值里含 = 的字面透传
+
+	out := whitelistEnv([]string{"AK_MCP_SECRET_TOKEN", "AK_MCP_MISSING_VAR", "FOO=bar"})
+	joined := strings.Join(out, "\n")
+
+	if !strings.Contains(joined, "AK_MCP_SECRET_TOKEN=s3cret") {
+		t.Fatalf("白名单变量应按名透传: %v", out)
+	}
+	if strings.Contains(joined, "AK_MCP_MISSING_VAR") {
+		t.Fatalf("不存在的变量应跳过: %v", out)
+	}
+	if !strings.Contains(joined, "FOO=bar") {
+		t.Fatalf("KEY=VALUE 字面条目应透传: %v", out)
+	}
+	// 核心安全断言：当前进程的其它环境变量（哪怕名字可疑）一律不继承
+	for _, kv := range out {
+		name := strings.SplitN(kv, "=", 2)[0]
+		if name != "PATH" && name != "HOME" && name != "TMPDIR" && name != "USER" &&
+			name != "LOGNAME" && name != "SHELL" && name != "LANG" &&
+			!strings.HasPrefix(name, "AK_MCP_") && name != "FOO" {
+			t.Fatalf("出现白名单之外的变量 %q: %v", name, out)
+		}
+	}
+}
+
+func TestWhitelistEnvRealSubprocess(t *testing.T) {
+	// 端到端：env 命令输出子进程真实环境，验证父进程的非白名单变量确实没被继承
+	t.Setenv("AK_MCP_PARENT_SECRET", "topsecret") // 未列入白名单 → 不得继承
+	t.Setenv("AK_MCP_ALLOWED", "okvalue")         // 列入白名单 → 应透传
+	cmd := exec.Command("env")
+	cmd.Env = whitelistEnv([]string{"AK_MCP_ALLOWED"})
+	out, err := cmd.Output()
+	if err != nil {
+		t.Skipf("无法运行 env: %v", err)
+	}
+	s := string(out)
+	if strings.Contains(s, "topsecret") || strings.Contains(s, "AK_MCP_PARENT_SECRET") {
+		t.Fatalf("子进程不应继承白名单之外的变量: %s", s)
+	}
+	if !strings.Contains(s, "AK_MCP_ALLOWED=okvalue") {
+		t.Fatalf("白名单变量应出现在子进程环境: %s", s)
 	}
 }
 

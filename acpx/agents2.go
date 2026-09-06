@@ -30,7 +30,7 @@ func (k *Kimi) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		return nil, err
 	}
 
-	argv := []string{k.Bin, "-p", req.Prompt, "--output-format", "stream-json"}
+	argv := []string{k.Bin, "-p", promptArg(req.Prompt), "--output-format", "stream-json"}
 	if req.Model != "" {
 		argv = append(argv, "--model", req.Model)
 	}
@@ -116,7 +116,7 @@ func (g *Gemini) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		return nil, err
 	}
 
-	argv := []string{g.Bin, "-p", req.Prompt, "--output-format", "json"}
+	argv := []string{g.Bin, "-p", promptArg(req.Prompt), "--output-format", "json"}
 	if req.Model != "" {
 		argv = append(argv, "-m", req.Model)
 	}
@@ -190,7 +190,7 @@ func (m *Mimo) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		return nil, err
 	}
 
-	argv := []string{m.Bin, "run", req.Prompt, "--format", "json"}
+	argv := []string{m.Bin, "run", promptArg(req.Prompt), "--format", "json"}
 	if req.Model != "" {
 		argv = append(argv, "-m", req.Model)
 	}

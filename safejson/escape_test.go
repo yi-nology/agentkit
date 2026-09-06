@@ -98,3 +98,25 @@ func TestIsOrderedMarker(t *testing.T) {
 		t.Error("普通文本不是有序列表")
 	}
 }
+
+func TestEscapeUntrustedStructuralCoverage(t *testing.T) {
+	// 回归：水平线/表格行/引用定义/tab 有序列表都要中和（伪造报告结构的常见形态）
+	cases := []struct{ name, in, marker string }{
+		{"stars HR", "***", "&#8203;***"},
+		{"underscore HR", "___", "&#8203;___"},
+		{"spaced stars HR", "* * *", "&#8203;* * *"},
+		{"table row", "| 严重度 | 数量 |\n| --- | --- |", "&#8203;|"},
+		{"ref definition", "[x]: https://evil.example", "&#8203;["},
+		{"tab ordered list", "1.\t伪造条目", "&#8203;1."},
+	}
+	for _, c := range cases {
+		got := EscapeUntrusted(c.in)
+		if !strings.Contains(got, c.marker) {
+			t.Errorf("%s: 未中和（输出 %q）", c.name, got)
+		}
+	}
+	// 强调文本（***bold***）不是水平线，不得误伤
+	if got := EscapeUntrusted("***bold***"); strings.Contains(got, "&#8203;***bold") {
+		t.Fatalf("强调文本被误伤: %q", got)
+	}
+}

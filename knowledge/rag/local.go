@@ -13,6 +13,8 @@ import (
 	"unicode"
 
 	"github.com/cloudwego/eino/components/tool"
+
+	"git.enjoye.top/enjoydream/ekit/observability/logx"
 )
 
 const (
@@ -20,12 +22,12 @@ const (
 	chunkTargetRunes = 600
 	rescanInterval   = 10 * time.Minute
 	toolSnippetRunes = 800
-	overlapRunes     = 100 // 块间重叠字符数，保持上下文连续性
+	overlapRunes     = 100  // 块间重叠字符数，保持上下文连续性
+	maxChunkRunes    = 4000 // 块硬上限：粘贴 base64/超长日志、未闭合代码块保护 Milvus VarChar 65535 字节
 )
 
 type indexedChunk struct {
 	chunk     Chunk
-	tokens    []string
 	tokenFreq map[string]int
 }
 
@@ -56,7 +58,8 @@ func NewLocal(dir string) (*Local, error) {
 // Retrieve 检索 topK 片段。
 // 重扫在锁外进行（构建新索引后原子换入）——并发检索不被文件 I/O 阻塞；
 // 多 goroutine 同时判过期会重复重扫，幂等无害，容忍。
-func (l *Local) Retrieve(_ context.Context, query string, topK int, filter Filter) ([]Chunk, error) {
+func (l *Local) Retrieve(ctx context.Context, query string, topK int, filter Filter) ([]Chunk, error) {
+	_ = ctx // 当前实现无阻塞点，保留 ctx 以面向未来（接口契约）
 	l.mu.Lock()
 	stale := time.Since(l.scannedAt) >= rescanInterval
 	l.mu.Unlock()
@@ -106,9 +109,14 @@ func (l *Local) AsTool() tool.BaseTool {
 	return buildAsTool(l)
 }
 
-
 // Rescan 强制重新扫描知识库目录（不等待自动过期）。
+// 根目录不可达（卷卸载/被删）时保留旧索引并告警——静默换入空索引会让
+// 知识库"消失"且无任何信号。
 func (l *Local) Rescan() {
+	if _, err := os.Stat(l.dir); err != nil {
+		logx.NewSlogLogger("agentkit-rag").Warn("agentkit.rag.rescan_root_missing", "dir", l.dir, "error", err.Error())
+		return
+	}
 	var index []indexedChunk
 	df := map[string]int{}
 	_ = filepath.WalkDir(l.dir, func(path string, d os.DirEntry, err error) error {
@@ -131,8 +139,7 @@ func (l *Local) Rescan() {
 					Content:  c.content,
 					Metadata: map[string]string{"file": rel, "heading": c.heading},
 				},
-				tokens:    toks,
-				tokenFreq: freq,
+				tokenFreq: freq, // 打分只用词频表；词元切片不再保留（省一份内存）
 			})
 		}
 		return nil
@@ -186,6 +193,11 @@ func chunkMarkdown(text string) []mdChunk {
 		if inCodeBlock {
 			cur = append(cur, line)
 			curLen += len([]rune(line))
+			// 硬上限保护：未闭合代码块 + 超长内容强制成块，避免单块超
+			// Milvus VarChar 65535 字节导致整个文件 Insert 失败
+			if curLen >= maxChunkRunes {
+				flush()
+			}
 			continue
 		}
 
@@ -209,6 +221,16 @@ func chunkMarkdown(text string) []mdChunk {
 			continue
 		}
 
+		// 硬上限保护：单行超限（粘贴 base64/日志）强制截断
+		if lineRunes := len([]rune(line)); lineRunes > maxChunkRunes {
+			if len(cur) > 0 {
+				flush()
+			}
+			runes := []rune(line)
+			chunks = append(chunks, mdChunk{heading: heading,
+				content: string(runes[:maxChunkRunes]) + "…（超长行截断）"})
+			continue
+		}
 		cur = append(cur, line)
 		curLen += len([]rune(line))
 		if curLen >= chunkTargetRunes {
@@ -306,15 +328,12 @@ func logF(x float64) float64 {
 	return math.Log(x)
 }
 
+// sqrtF 平方根（x<=0 时返回 1 作中性分母）。
 func sqrtF(x float64) float64 {
 	if x <= 0 {
 		return 1
 	}
-	g := x
-	for i := 0; i < 4; i++ {
-		g = (g + x/g) / 2
-	}
-	return g
+	return math.Sqrt(x) // 手写牛顿迭代只迭代 4 次，大 x 误差可达 60%+
 }
 
 func matchFilter(meta map[string]string, filter Filter) bool {

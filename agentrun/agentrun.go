@@ -19,6 +19,7 @@ package agentrun
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
@@ -41,22 +42,29 @@ type Config struct {
 	// Model eino ChatModel（llm.Generator 的 RawModel()）。
 	Model model.BaseChatModel
 	// Tools 工具表（建议经 toolprior.Table.Ordered(ctx) 产出）。
+	// 与 ToolsFactory 二选一；两者都设置时 ToolsFactory 优先。
 	Tools []tool.BaseTool
+	// ToolsFactory 工具表工厂：每次 run 调用新建一份工具表。
+	// RunWithRetry 场景建议设置——工具表含 toolprior.WithCallLimit 等
+	// 有状态包装时，复用同一实例会让限流计数跨重试累计（重试继承 0 余额，
+	// 每次调用立即被拒）。工厂内每次重新包装即可让预算按尝试重置。
+	ToolsFactory func() []tool.BaseTool
 	// MaxIterations ReAct 循环轮数上限（默认 12）。
 	MaxIterations int
 }
 
 // Event agent 运行过程事件（OnEvent 回调载荷，观测/进度展示用）。
 type Event struct {
-	Type string // text | tool_call
+	Type string // text | tool_call | tool_result
 	Text string
-	Tool string // tool_call 的工具名
+	Tool string // tool_call/tool_result 的工具名
 }
 
 // 事件类型词表。
 const (
-	EventText     = "text"
-	EventToolCall = "tool_call"
+	EventText       = "text"
+	EventToolCall   = "tool_call"
+	EventToolResult = "tool_result"
 )
 
 // Validate 校验配置必需项。
@@ -90,6 +98,8 @@ func RunWithEvents(ctx context.Context, cfg Config, query string, onEvent func(E
 // RunWithRetry 失败回喂重试一次：首次失败（或产出空文本）时以 retryQuery 再跑。
 // retryQuery 由调用方构造（可携带首轮错误/输出摘要作为反馈上下文）。
 // 两次均失败返回末次错误。
+// 注意：两次尝试共用 cfg.Tools 实例——工具表含 toolprior.WithCallLimit 等
+// 有状态包装时，限流计数会跨尝试累计；需要按尝试重置预算请设置 ToolsFactory。
 func RunWithRetry(ctx context.Context, cfg Config, query, retryQuery string) (string, error) {
 	out, err := run(ctx, cfg, query, nil)
 	if err == nil {
@@ -98,10 +108,24 @@ func RunWithRetry(ctx context.Context, cfg Config, query, retryQuery string) (st
 	return run(ctx, cfg, retryQuery, nil)
 }
 
+// RunWithEventsAndRetry 带 过程事件回调 的失败回喂重试（重试过程可观测）。
+func RunWithEventsAndRetry(ctx context.Context, cfg Config, query, retryQuery string, onEvent func(Event)) (string, error) {
+	out, err := run(ctx, cfg, query, onEvent)
+	if err == nil {
+		return out, nil
+	}
+	return run(ctx, cfg, retryQuery, onEvent)
+}
+
 // run 核心：构造 ADK agent → Runner.Query → drain 事件流。
 func run(ctx context.Context, cfg Config, query string, onEvent func(Event)) (string, error) {
 	if err := cfg.Validate(); err != nil {
 		return "", err
+	}
+
+	tools := cfg.Tools
+	if cfg.ToolsFactory != nil {
+		tools = cfg.ToolsFactory()
 	}
 
 	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
@@ -111,7 +135,7 @@ func run(ctx context.Context, cfg Config, query string, onEvent func(Event)) (st
 		Model:         cfg.Model,
 		MaxIterations: cfg.maxIterations(),
 		ToolsConfig: adk.ToolsConfig{
-			ToolsNodeConfig: compose.ToolsNodeConfig{Tools: cfg.Tools},
+			ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools},
 		},
 	})
 	if err != nil {
@@ -120,7 +144,11 @@ func run(ctx context.Context, cfg Config, query string, onEvent func(Event)) (st
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent, EnableStreaming: false})
 	iter := runner.Query(ctx, query)
 
-	var finalText string
+	var (
+		finalText  string
+		sawFinal   bool
+		toolCalled = map[string]string{} // tool_call id → 工具名（回填 tool_result 事件）
+	)
 	for {
 		event, ok := iter.Next()
 		if !ok {
@@ -130,18 +158,31 @@ func run(ctx context.Context, cfg Config, query string, onEvent func(Event)) (st
 			continue
 		}
 		if event.Err != nil {
+			// 底层事件通道是 UnboundedChan（生产者不阻塞），提前返回不会泄漏
 			return "", fmt.Errorf("agentrun: agent 事件错误: %w", event.Err)
 		}
 		if event.Output == nil || event.Output.MessageOutput == nil {
 			continue
 		}
 		mv := event.Output.MessageOutput
-		// ReAct 出口判定：assistant 且无 tool_calls 才是最终答复
-		if mv.Role == schema.Assistant && mv.Message != nil &&
-			len(mv.Message.ToolCalls) == 0 && mv.Message.Content != "" {
+		if mv.Message != nil {
+			for _, tc := range mv.Message.ToolCalls {
+				toolCalled[tc.ID] = tc.Function.Name
+			}
+		}
+		// 工具结果消息：回填 tool_result 事件（观测/进度展示需要工具返回）
+		if onEvent != nil && mv.Role == schema.Tool && mv.Message != nil {
+			name := toolCalled[mv.Message.ToolCallID]
+			onEvent(Event{Type: EventToolResult, Tool: name, Text: mv.Message.Content})
+			continue
+		}
+		// ReAct 出口判定：assistant 且无 tool_calls 即最终答复——
+		// 空内容也记录（部分推理型模型会有空最终消息），错误文案区分"空答复"与"没答复"
+		if mv.Role == schema.Assistant && mv.Message != nil && len(mv.Message.ToolCalls) == 0 {
+			sawFinal = true
 			finalText = mv.Message.Content
-			if onEvent != nil {
-				onEvent(Event{Type: EventText, Text: mv.Message.Content})
+			if onEvent != nil && finalText != "" {
+				onEvent(Event{Type: EventText, Text: finalText})
 			}
 			continue
 		}
@@ -152,8 +193,11 @@ func run(ctx context.Context, cfg Config, query string, onEvent func(Event)) (st
 			}
 		}
 	}
-	if finalText == "" {
+	if !sawFinal {
 		return "", fmt.Errorf("agentrun: agent 未产出最终文本（iterations=%d）", cfg.maxIterations())
+	}
+	if strings.TrimSpace(finalText) == "" {
+		return "", fmt.Errorf("agentrun: agent 最终答复为空（iterations=%d）", cfg.maxIterations())
 	}
 	return finalText, nil
 }

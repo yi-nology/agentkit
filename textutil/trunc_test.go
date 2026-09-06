@@ -38,3 +38,11 @@ func TestTruncRunesMultibyte(t *testing.T) {
 		t.Fatalf("应为 '你好世', 得到 %q", got)
 	}
 }
+
+func TestTruncRunesNegative(t *testing.T) {
+	// 回归：负上限按"全部截断"处理，不 panic
+	got, truncated := TruncRunes("abc", -1)
+	if got != "" || !truncated {
+		t.Fatalf("负上限应返回空串+true，得到 %q/%v", got, truncated)
+	}
+}

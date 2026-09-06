@@ -203,3 +203,53 @@ func TestMaxIterationsDefault(t *testing.T) {
 		t.Fatalf("默认迭代 = %d", (Config{}).maxIterations())
 	}
 }
+
+func TestRunWithRetryToolsFactoryFreshPerAttempt(t *testing.T) {
+	// A1 回归：RunWithRetry + ToolsFactory 时，每次尝试应拿到新建的工具表
+	//（toolprior.WithCallLimit 等有状态包装的计数按尝试重置，不跨尝试累计）
+	_, cm := newMockOpenAI(t,
+		mockResponse{content: ""}, // 首轮失败（空最终文本）
+		mockResponse{content: "重试成功"},
+	)
+
+	var builds atomic.Int32
+	cfg := Config{
+		Name: "test", Instruction: "inst", Model: cm,
+		ToolsFactory: func() []tool.BaseTool {
+			builds.Add(1)
+			return nil // 本用例无工具调用，只验证工厂按尝试调用
+		},
+	}
+
+	out, err := RunWithRetry(context.Background(), cfg, "第一问", "第二问")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "重试成功" {
+		t.Fatalf("out = %q", out)
+	}
+	if builds.Load() != 2 {
+		t.Fatalf("ToolsFactory 应按尝试各建一次（2 次），实际 %d", builds.Load())
+	}
+}
+
+func TestToolsFactoryPreferredOverTools(t *testing.T) {
+	// 两者都设置时 ToolsFactory 优先
+	_, cm := newMockOpenAI(t, mockResponse{content: "ok"})
+
+	var used bool
+	out, err := Run(context.Background(), Config{
+		Name: "test", Instruction: "inst", Model: cm,
+		Tools: []tool.BaseTool{newEchoTool(t)},
+		ToolsFactory: func() []tool.BaseTool {
+			used = true
+			return nil
+		},
+	}, "q")
+	if err != nil || out != "ok" {
+		t.Fatalf("run 失败: %v %q", err, out)
+	}
+	if !used {
+		t.Fatal("ToolsFactory 设置时应优先使用工厂")
+	}
+}

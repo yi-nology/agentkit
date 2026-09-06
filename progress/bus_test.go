@@ -2,6 +2,7 @@ package progress
 
 import (
 	"context"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -102,4 +103,48 @@ func TestBusGenericTypes(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("int bus 未收到")
 	}
+}
+
+func TestSubscribeManualCancelReleasesGoroutine(t *testing.T) {
+	// 回归：Background ctx + 手动 cancel 不得泄漏监听 goroutine
+	//（此前 cancel 只删 channel，阻塞在 ctx.Done() 的 goroutine 永久残留）
+	runtime.GC()
+	base := runtime.NumGoroutine()
+
+	b := NewBus[int]()
+	cancels := make([]func(), 0, 100)
+	for i := 0; i < 100; i++ {
+		_, cancel := b.Subscribe(context.Background())
+		cancels = append(cancels, cancel)
+	}
+	for _, c := range cancels {
+		c()
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		runtime.GC()
+		if runtime.NumGoroutine() <= base+2 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("cancel 后 goroutine 未回收: base=%d now=%d", base, runtime.NumGoroutine())
+}
+
+func TestPublishDropCounted(t *testing.T) {
+	// 订阅者积压丢弃不再完全静默：Dropped() 计数可见（进度条停在中间态可归因）
+	b := NewBus[int]()
+	ch, cancel := b.Subscribe(context.Background())
+	defer cancel()
+	<-time.After(10 * time.Millisecond) // 等订阅生效
+
+	for i := 0; i < 200; i++ { // 64 缓冲必然溢出
+		b.Publish(i)
+	}
+	if d := b.Dropped(); d == 0 {
+		t.Fatal("积压丢弃应被计数")
+	}
+	// 不消费 ch，直接校验计数即可
+	_ = ch
 }
