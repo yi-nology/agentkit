@@ -32,7 +32,8 @@ git.enjoye.top/enjoydream/agentkit
 ```go
 import "git.enjoye.top/enjoydream/agentkit/acpx"
 
-reg := acpx.NewRegistry() // 缺省注册 claude/zcode/codex/opencode/minimax
+// 缺省注册 9 家：claude/zcode/codex/opencode/minimax/kimi/gemini/qwen/mimo
+reg := acpx.NewRegistry()
 
 // 直接调用
 res, err := reg.Run(ctx, "codex", acpx.RunRequest{
@@ -52,10 +53,14 @@ reg.Run(ctx, "claude", acpx.RunRequest{
 tool := reg.AsTool() // run_coding_agent(agent, prompt, work_dir)
 ```
 
-各家协议由专用适配器处理：Claude Code/ZCode（`-p --output-format stream-json`）、
-Codex（`exec --json --output-last-message`）、opencode（`run --json`）。
-任意其他 CLI 用 `acpx.NewGenericAgent(name, argv 模板, isJSON)` 接入，
-模板占位符 `{prompt}`/`{model}`/`{session}`。
+各家协议由专用适配器处理（参数均经官方文档核实）：
+Claude Code/ZCode（`-p --output-format stream-json`）、
+Codex（`exec --json --output-last-message`）、
+opencode（`run --json`）、
+Kimi（`--print -p --output-format=stream-json`，会话 `--session`）、
+Gemini/Qwen（`-p --output-format json` + `--approval-mode`）。
+MiMo/MiniMax 等协议未稳定 CLI 走 `GenericAgent` argv 模板（`{prompt}`/`{model}`/`{session}`），
+官方稳定后一行换专用适配器。
 
 ### LLM 客户端
 

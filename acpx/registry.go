@@ -29,7 +29,8 @@ type Registry struct {
 	order  []string
 }
 
-// NewRegistry 创建注册表并注册缺省 agent（claude/zcode/codex/opencode/minimax）。
+// NewRegistry 创建注册表并注册缺省 agent
+// （claude/zcode/codex/opencode/minimax/kimi/gemini/qwen/mimo）。
 func NewRegistry() *Registry {
 	r := &Registry{agents: map[string]Agent{}}
 	r.Register(NewClaudeCode())
@@ -37,6 +38,10 @@ func NewRegistry() *Registry {
 	r.Register(NewCodex())
 	r.Register(NewOpenCode())
 	r.Register(NewMinimax())
+	r.Register(NewKimi())
+	r.Register(NewGemini())
+	r.Register(NewQwen())
+	r.Register(NewMimo())
 	return r
 }
 
@@ -72,8 +77,8 @@ func (r *Registry) Run(ctx context.Context, name string, req RunRequest) (*RunRe
 // 与 rag.KnowledgeService.AsTool 同范式。
 func (r *Registry) AsTool() tool.BaseTool {
 	t, err := utils.InferTool("run_coding_agent",
-		"调用 CLI 编码 agent（claude/zcode/codex/opencode/minimax）执行编码任务（写代码/改代码/跑命令/审查等）。"+
-			"prompt 要具体明确，包含期望产出与验收标准。",
+		"调用 CLI 编码 agent（claude/zcode/codex/opencode/minimax/kimi/gemini/qwen/mimo）"+
+			"执行编码任务（写代码/改代码/跑命令/审查等）。prompt 要具体明确，包含期望产出与验收标准。",
 		func(_ context.Context, in *toolIn) (*toolOut, error) {
 			res, err := r.Run(context.Background(), in.Agent, RunRequest{
 				Prompt:  in.Prompt,
