@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
@@ -23,10 +24,23 @@ type toolOut struct {
 	Error     string `json:"error,omitempty"`
 }
 
+// RunEvent 一次 agent 运行的观测事件（Registry.OnRun 钩子载荷）。
+type RunEvent struct {
+	Agent     string        // agent 名
+	Duration  time.Duration // 运行耗时
+	Err       error         // 非空 = 运行失败
+	TextLen   int           // 产出文本长度（不落内容，防泄露）
+	Usage     Usage
+	SessionID string
+}
+
 // Registry agent 注册表：名字 → Agent 实例。
 type Registry struct {
 	agents map[string]Agent
 	order  []string
+	// OnRun 每次经本 Registry 发起的运行结束后的回调（nil 安全）。
+	// 观测入口：接结构化日志/Prometheus/trace 均可，本包不硬依赖任何观测后端。
+	OnRun func(RunEvent)
 }
 
 // NewRegistry 创建注册表并注册缺省 agent
@@ -64,13 +78,24 @@ func (r *Registry) Names() []string {
 	return append([]string(nil), r.order...)
 }
 
-// Run 按名执行。
+// Run 按名执行（结束后发 RunEvent）。
 func (r *Registry) Run(ctx context.Context, name string, req RunRequest) (*RunResult, error) {
 	a, ok := r.agents[name]
 	if !ok {
 		return nil, fmt.Errorf("acpx: 未注册的 agent %q（可用: %s）", name, strings.Join(r.order, ","))
 	}
-	return a.Run(ctx, req)
+	start := time.Now()
+	res, err := a.Run(ctx, req)
+	if r.OnRun != nil {
+		ev := RunEvent{Agent: name, Duration: time.Since(start), Err: err}
+		if res != nil {
+			ev.TextLen = len(res.Text)
+			ev.Usage = res.Usage
+			ev.SessionID = res.SessionID
+		}
+		r.OnRun(ev)
+	}
+	return res, err
 }
 
 // AsTool 把注册表包成 eino 工具（run_coding_agent），供 ReAct agent 自主调用。

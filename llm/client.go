@@ -16,6 +16,8 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"golang.org/x/time/rate"
+
+	"git.enjoye.top/enjoydream/agentkit/obsx"
 )
 
 // TokenAccountant token 记账接口（调用方可接预算累计器或 Prometheus）。
@@ -90,7 +92,9 @@ func (c *Client) account(stage string, in []*schema.Message, out *schema.Message
 
 // Generate 带重试的普通生成（指数退避 + jitter）。
 // 确定性失败（鉴权/权限/上下文超限）不重试。
+// stage 同时注入 ctx（obsx.WithStage）——eino callbacks handler 可读到业务阶段。
 func (c *Client) Generate(ctx context.Context, stage string, msgs []*schema.Message) (*schema.Message, error) {
+	ctx = obsx.WithStage(ctx, stage)
 	c.fitInput(msgs)
 	maxRetries := c.MaxRetries
 	if maxRetries <= 0 {
@@ -167,6 +171,7 @@ func (c *Client) backoffDelay(attempt int, base, ceil time.Duration, err error) 
 // GenerateJSON 生成并解析 JSON；解析失败把原始输出与错误回喂重试 1 次。
 // out 必须是 *T。截断导致的解析失败会追加精简指令。
 func (c *Client) GenerateJSON(ctx context.Context, stage string, msgs []*schema.Message, out any) error {
+	ctx = obsx.WithStage(ctx, stage)
 	var lastErr error
 	lastRaw := ""
 	for attempt := 0; attempt < 2; attempt++ {
