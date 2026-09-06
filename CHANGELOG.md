@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.7.3 (2026-09-07)
+
+- **worker**: leader-election primitive for multi-replica deployments — `LeaseStore` interface (one conditional UPSERT to implement over SQL) + `LeaderElector` (ttl/interval-based campaign, `IsLeader()`, onGained/onLost callbacks, graceful yield on Stop). Complements the DB-as-queue sharding: task plane scales via `ClaimNextPending`, control plane ("only one may run" components like outbound pollers) converges via lease.
+
 ## v0.7.2 (2026-09-07)
 
 - **obsx**: `Options.OnUsage func(component, model, stage string, prompt, completion int)` — real token-usage callback fired on every traced model call. Covers the RawModel bypass (ReAct agents driving `BaseChatModel` directly) that `llm.Client.OnUsage` cannot see; stage comes from the ctx marker. Consumer (Argus) uses it for per-task cost accounting.
