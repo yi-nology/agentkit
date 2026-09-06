@@ -3,6 +3,7 @@ package rag
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -312,9 +313,7 @@ func logF(x float64) float64 {
 	if x <= 1 {
 		return 0
 	}
-	// 自然对数近似：ln(x) ≈ 2 * (x-1)/(x+1)（x 接近 1 时精度好，x 大时偏低但够用）
-	// 更精确的实现可用 math.Log，但这里避免额外导入
-	return 2 * (x - 1) / (x + 1)
+	return math.Log(x)
 }
 
 func sqrtF(x float64) float64 {
