@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.7.2 (2026-09-07)
+
+- **obsx**: `Options.OnUsage func(component, model, stage string, prompt, completion int)` — real token-usage callback fired on every traced model call. Covers the RawModel bypass (ReAct agents driving `BaseChatModel` directly) that `llm.Client.OnUsage` cannot see; stage comes from the ctx marker. Consumer (Argus) uses it for per-task cost accounting.
+
 ## v0.7.1 (2026-09-07)
 
 Exported building blocks requested by consumers (Argus adapter_cli dedup):
