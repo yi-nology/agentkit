@@ -1,6 +1,11 @@
 # agentkit
 
 AI Agent 开发工具箱 —— 从 Argus 代码审查平台提取的通用组件库。
+当前版本 **v0.8.1** · Go ≥ 1.25 · 19 个包。
+
+> 📖 **完整框架文档**：[docs/FRAMEWORK.md](docs/FRAMEWORK.md) —— 设计原则、六层架构、
+> 19 包逐一详解（API/示例/边界契约）、横向能力专题（可靠性/成本/多副本/安全）、
+> 生产实践参考、版本纪律与陷阱清单。
 
 ## 七种 Agent 架构：何时用 / 何时不用
 
@@ -60,8 +65,8 @@ git.enjoye.top/enjoydream/agentkit
 
 | 包 | 说明 | 外部依赖 |
 |---|---|---|
-| `acpx` | CLI 编码 agent 统一调用（9 家 + GenericAgent 通用出口） | eino |
-| `llm` | LLM 客户端（重试/限速/预算/fitInput/JSON + Resilient 降级链） | eino, eino-ext openai, x/time |
+| `acpx` | CLI 编码 agent 统一调用（9 家 + GenericAgent）+ RunProcess 进程托管 | eino |
+| `llm` | LLM 客户端（重试/限速/预算/fitInput/JSON + Resilient 降级链 + StageRouter 路由 + CostTracker） | eino, eino-ext openai, x/time |
 | `toolprior` | 工具优先级决策层（提示词/排序/限流三层约束） | eino |
 | `mcp` | MCP server 工具池（lazy 建连 + 白名单 + eino 工具适配） | eino, eino-ext tool/mcp, mcp-go |
 | `agentrun` | ReAct 样板 + Plan-and-Execute 样板（ADK 封装 + 事件流 + 重试） | eino adk |
@@ -70,14 +75,14 @@ git.enjoye.top/enjoydream/agentkit
 | `blackboard` | Blackboard 架构原语（共享黑板 + 专家轮转） | 无 |
 | `obsx` | eino callbacks 追踪（llm.call.* 结构化日志） | eino, ekit |
 | `breaker` | 熔断器（closed→open→half-open，探测超时兜底） | 无 |
-| `worker` | DB 即队列 worker pool（心跳/panic 隔离/优雅停机） | ekit |
+| `worker` | DB 即队列 worker pool（心跳/panic 隔离/优雅停机）+ LeaderElector 选主 | ekit |
 | `knowledge/rag` | 双后端 RAG（Local TF-IDF + Milvus 向量） | eino, milvus-sdk-go |
 | `progress` | 泛型事件总线 `Bus[T]`（有损广播 + 丢弃计数） | ekit |
 | `skill` | SKILL.md 解析器 + 决策使用（渐进披露） | eino（仅 decision 部分） |
 | `severity` | 严重级别归一化 + 指纹 + glob 匹配 | 无 |
 | `safejson` | Markdown/HTML 反注入 | 无 |
 | `audit` | 审计日志 | ekit |
-| `textutil` | rune 安全截断等文本工具 | 无 |
+| `textutil` | rune 安全截断 + 等分块 | 无 |
 | `workcopy` | Git 工作副本沙箱（singleflight + 引用计数 + TTL 回收） | ekit, x/sync |
 
 ## 快速使用
@@ -106,6 +111,12 @@ reg.Run(ctx, "claude", acpx.RunRequest{
 
 // 包成 eino 工具挂进 ReAct agent（LLM 自主决定调哪个 agent）
 tool := reg.AsTool() // run_coding_agent(agent, prompt, work_dir)
+
+// RunProcess：只要进程组托管纪律、不需要 Agent 解析层时（v0.7.1）
+stdout, stderr, code, err := acpx.RunProcess(ctx, acpx.ProcessRequest{
+    Argv: []string{"my-cli", "run"}, Dir: workDir, Env: []string{"NEEDED_VAR"},
+    Timeout: 5 * time.Minute, MaxStdout: 1 << 20,
+})
 ```
 
 各家协议由专用适配器处理（参数均经官方文档/真机核实）：
@@ -164,9 +175,10 @@ fallback, _ := llm.NewOpenAIProvider(ctx, llm.OpenAIProviderConfig{
     BaseURL: "https://fallback.example.com/v1", APIKey: key2, Model: "backup-model",
 })
 
-r := llm.NewResilient("my-service",
-    llm.NewFallbackChain(primary, fallback),
-    llm.ResilientConfig{RetriesPerModel: 2})
+r := llm.NewResilient(llm.NewFallbackChain(primary, fallback), llm.ResilientConfig{
+    RetriesPerModel: 2,
+    Tracker:         llm.NewCostTracker(), // 可选：内置成本记账（费率来自 Provider 配置）
+})
 r.OnFallback = func(from, to, stage, reason string) {
     log.Warn("模型降级", "from", from, "to", to, "stage", stage, "reason", reason)
 }
@@ -176,6 +188,21 @@ msg, attempts, err := r.GenerateWithTrace(ctx, "R1", messages)
 // ⚠️ RawModel() 返回裸模型——绕过重试/降级/熔断/记账。
 // ReAct agent 等需要 model.BaseChatModel 的场景请自行权衡（降级链覆盖不到该流量）。
 ```
+
+**StageRouter 分阶段模型路由**（v0.8.1）——不同阶段配不同模型，调用点零改动：
+
+```go
+sr := llm.NewStageRouter(defaultGen) // 缺省 = 主链（含预算注入）
+sr.Use("R1", bigWindowGen)           // 前缀路由："R1" 命中 "R1a"
+sr.Use("qa", fastGen)                // 精确路由
+// 之后 sr.Generate(ctx, "R1a", msgs) 自动走 bigWindowGen；UsedTokens 聚合全部链
+```
+
+**成本记账双口径**：`llm.Client.OnUsage` 覆盖 Generate 直连路径；ReAct（RawModel
+直用）路径的真实 usage 经 `obsx.Options.OnUsage` 回流（见 OBSX 节）→ 汇入
+`llm.CostTracker`（`Record(model, stage, p, c, 费率)` / `Summary()` 按模型汇总，
+1 万条封顶）。
+
 
 ### ToolPrior —— 工具优先级决策层
 
@@ -233,6 +260,44 @@ out, err := agentrun.RunWithEvents(ctx, agentrun.Config{
 out, err = agentrun.RunWithEventsAndRetry(ctx, cfg, query, retryQuery, onEvent)
 ```
 
+**PlanAndExecute**（计划先行编排，适合目标明确、步骤可预规划的长链路任务）：
+
+```go
+res, err := agentrun.PlanAndExecute(ctx, agentrun.PlanExecuteConfig{
+    Planner:  plannerModel,  // 须支持 tool calling（计划结构强制产出）
+    Executor: executorModel,
+    Tools:    tools,
+    MaxSteps: 10,
+}, goal)
+fmt.Println(res.Answer)
+```
+
+姊妹原语（v0.8.0）：
+
+```go
+// Reflection：生成→Rubric 批判→修订收敛（硬质量标准场景）
+res, _ := reflection.Refine(ctx, &reflection.Config{
+    Model: chatModel, Task: "实现函数", Input: 需求,
+    Rubric: "1. 处理空切片 2. 无 data race", MaxIterations: 3,
+})
+// res.Output / res.Converged / res.Rounds
+
+// Router：LLM 意图分类→选路→分发（入口意图可枚举场景）
+r, _ := router.New(&router.Config{Model: fastModel, Routes: []router.Route{
+    {Name: "bug-fix", Description: "修代码类", Handle: fixChain},
+    {Name: "explain", Description: "解释类", Handle: explainChain},
+}, MinConfidence: 0.6, Fallback: fallbackFn})
+d, out, _ := r.Do(ctx, userInput) // d.Route/d.Confidence/d.Reason 可观测
+
+// Blackboard：无中心多专家互看协作（多视角分析场景）
+board := blackboard.NewBoard()
+board.Seed("material", 材料文本)
+res, _ := blackboard.Convene(ctx, board, []blackboard.Specialist{
+    {Name: "security", Act: observeAndContribute},
+    {Name: "perf", Act: observeAndContribute},
+}, &blackboard.ConveneOptions{MaxRounds: 3})
+```
+
 ### OBSX —— eino 调用追踪
 
 ```go
@@ -243,6 +308,9 @@ import "git.enjoye.top/enjoydream/agentkit/obsx"
 ctx = obsx.InitLLMObservability(ctx, log, obsx.Options{
     SlowThreshold: 30 * time.Second,
     PreviewLen:    0, // 默认 0 = 不落内容（消息可能含用户代码/凭证）
+    OnUsage: func(component, model, stage string, prompt, completion int) {
+        // v0.7.2：真实 usage 回流——覆盖 ReAct RawModel 旁路（Client.OnUsage 看不到）
+    },
 })
 ```
 
@@ -287,6 +355,16 @@ pool := &worker.Pool{
 pool.Start(ctx)
 defer pool.Stop(60 * time.Second)
 // 任务 panic 只损失该任务（worker 存活，心跳过期后复位重跑）
+
+// LeaderElector（v0.7.3）：多副本时"只能跑一份"的控制面组件（出站轮询/定时清理）
+// 存储：实现 worker.LeaseStore（SQL 一条条件 UPSERT 即可）
+e := worker.NewLeaderElector(store, "argus/poller", instanceID,
+    30*time.Second, 10*time.Second,
+    worker.WithOnGained(func() { log.Info("当选") }),
+    worker.WithLeaderLogger(log))
+e.Start(ctx)
+if e.IsLeader() { /* 仅 leader 执行 */ }
+defer e.Stop() // 主动让位，缩短换主窗口
 ```
 
 ### 泛型事件总线
@@ -382,14 +460,26 @@ useSkill, _ := skill.AsSkillTool(provider, nil) // use_skill(name) eino 工具
 // 模型用展示名（frontmatter name）调用也会被归一化到目录名
 ```
 
+### TextUtil —— rune 安全文本工具
+
+```go
+import "git.enjoye.top/enjoydream/agentkit/textutil"
+
+trunc, trimmed := textutil.TruncRunes(longText, 800) // rune 截断（多字节不腰斩）
+chunks := textutil.SplitRunes(bigText, 4000)         // 等分块（大文本分批送 LLM）
+```
+
 ## 依赖关系
 
 ```
 你的项目
     │
     ▼
-agentkit/llm          ← LLM 调用（重试/降级/限速/预算）
-agentkit/agentrun     ← ReAct 运行样板
+agentkit/llm          ← LLM 调用（重试/降级/限速/预算/阶段路由/成本）
+agentkit/agentrun     ← ReAct / Plan-and-Execute 样板
+agentkit/reflection   ← 反思循环
+agentkit/router       ← 意图路由
+agentkit/blackboard   ← 多专家黑板协作
 agentkit/toolprior    ← 工具优先级决策
 agentkit/mcp          ← MCP 工具池
 agentkit/acpx         ← CLI 编码 agent
