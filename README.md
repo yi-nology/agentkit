@@ -469,6 +469,102 @@ trunc, trimmed := textutil.TruncRunes(longText, 800) // rune 截断（多字节�
 chunks := textutil.SplitRunes(bigText, 4000)         // 等分块（大文本分批送 LLM）
 ```
 
+## 细节与边界契约（必读）
+
+> 每个包的完整契约见对应 godoc；此处集中列出**最容易踩的细节**（全部来自生产审查实战）。
+
+### 横切契约
+
+- **context 传播**：所有 eino 工具包装（acpx.AsTool / rag.AsTool / skill.AsSkillTool /
+  mcp 池）都透传调用方 ctx——上层取消/超时会真正终止子进程与网络调用。
+- **哨兵错误**：`errors.Is(err, acpx.ErrTimeout / ErrCanceled)` 区分 CLI 超时与取消；
+  llm 全链失败返回 `*llm.AttemptError`（含每次尝试的 Provider/Model/Err/Duration）；
+  其余包错误均 `%w` wrap，可逐层解包。
+- **并发模型**：llm/agentrun/mcp.Pool/breaker/progress/blackboard.Board/worker.Pool
+  并发安全；**例外**——toolprior.Table 与 skill.FileProvider 的注册/首扫是
+  build-then-read（构建后只读），skill 缓存无淘汰（假设进程内内容不变）。
+- **模型测试桩**：eino v0.9 的 `model.BaseChatModel` 要求 `Generate` + `Stream`
+  **两个方法都实现**，只写 Generate 编译不过。
+- **测试门控**：`ACPX_SMOKE=1` 触发 acpx 真机冒烟（真调 LLM，花钱）；
+  `MILVUS_TEST_ADDR=127.0.0.1:19530` 触发 Milvus 集成测试（需容器）。
+- **私有模块**：`go mod tidy` 需 `GONOSUMCHECK='git.enjoye.top/*'`（或 GOPRIVATE）。
+
+### 逐包细节速查
+
+**llm**
+- Client 缺省：MaxRetries=3（含首次）、BaseDelay=2s、MaxDelay=30s；429 退避下限 5s。
+- `GenerateJSON` 解析失败只回喂重试 1 次；截断在 `Generate` 内部已转错误，不会流到这里。
+- `MaxOutputTokens < 0` = 不下发 `max_tokens` 参数（推理模型兼容）；`0` = 走派生缺省。
+- fitInput 截断发生在最长 **user** 消息上并追加留痕标记；巨型 system 消息不在裁剪范围。
+- 预算注入：Client 浅拷贝 / Resilient 显式副本（共享熔断状态）——都用 `BudgetInjector`。
+- CostTracker 上限 1 万条（超限丢最旧）；费率来自 Provider 的 CostPer1K 配置。
+- StageRouter：`Use` 的 stage 既可以是精确名（"qa"）也可以是前缀（"R1" 命中 "R1a"）；
+  预算注入在注册前完成；`RawModel()` 恒透传缺省链。
+
+**acpx**
+- 缺省超时 10 分钟；stdout 8MB / 单行 1MB 上限；stderr 只留尾部 400 字节进错误。
+- 子进程环境 = 基础集（PATH/HOME/TMPDIR/代理/CA/XDG 等）+ `Env` 按名透传；
+  额外注入 `GIT_TERMINAL_PROMPT=0`、`CI=1`。
+- mimo 运行期错误 **exit code 仍为 0**，只能从 error 事件识别；codex 的 usage 是
+  逐轮累加口径；kimi 新版 `-p` 直跑（无 `--print`，不可与 `--auto` 组合）。
+- `OnEvent` 回调在 stdout 读取 goroutine 中同步执行——不得阻塞、不得 panic。
+- `Registry` 构建期注册、运行期只读；`AsTool` 丢弃 Model/Sandbox 等字段（只传
+  Prompt/WorkDir）——需要沙箱约束时自行构造 RunRequest 而非走 AsTool。
+
+**mcp**
+- Timeout 覆盖连接 + Initialize（30s 缺省），不含子进程 spawn 阶段。
+- 列举失败自动摘除坏连接（下次调用重建）；`Close` 后池不可复用；重名 server 保留先到。
+- `Allow` 白名单全部未命中时经 `OnError` 告警（返回 0 个工具不报错）。
+
+**toolprior**
+- `WithCallLimit` 每次调用**新建包装实例**（计数不跨任务共享）——跨重试需要重置
+  预算时配合 agentrun `ToolsFactory`。
+- 超限返回 `LIMIT_REACHED: ...` 文本（nil error）：模型可见、可收尾；不要改回
+  返回 error——那会中止整个 agent 运行。
+- `Table` 构建后只读；`Add` nil Tool 直接 panic。
+
+**skill**
+- frontmatter 只解析 name/description（`---` 围栏）；缓存无淘汰（进程内内容不变假设）；
+  symlink 不在路径防护范围（root 应为可信目录）。
+- `Format` 用 eino FString（pyfmt）：正文含裸 `{`/`}` 需写成 `{{`/`}}`。
+- `Meta.Name` = 目录名（use_skill/allowed 唯一依据）；`Meta.Title` = frontmatter
+  展示别名；模型用别名回填会被归一化。
+
+**agentrun**
+- 出口判定 = assistant 消息且无 tool_calls；空内容答复报错文案区分"空答复"与"没答复"。
+- `MaxIterations` 默认 12（比 ADK 缺省 20 更收紧）。
+- `RunWithRetry` 两次尝试**共用 Tools 实例**——有状态包装（限流）跨尝试累计，
+  需要重置请用 `ToolsFactory`。
+
+**reflection**
+- Critic 输出 `{"pass":bool,"issues":[]}`；pass=true 仍带 issues 判不通过。
+- MaxIterations 默认 3；收敛只代表符合 Rubric，不代表正确。
+
+**blackboard**
+- Board 是内存态；`Convene` 每轮**串行**调用各专家（专家内部自行并发）；
+  游标语义 = 错过的增量不重看（每轮都是新起点）。
+
+**knowledge/rag**
+- chunk 缺省：目标 600 rune / 硬上限 4000 / 块间重叠 100 / 重扫间隔 10min；
+  topK 缺省 5；工具返回单片段截断 800 rune。
+- 过滤字段白名单：`file` / `heading`（其他 key 直接报错）。
+- Local 分词 = ASCII 词 + 中文二元组（日韩文暂不支持）；Milvus 索引固定 IVF_FLAT
+  （`IndexType` 字段保留但未生效）；COSINE 下 Score 是相似度（越大越好）。
+- Embedder 每批 16 条串行、带维度校验；集成测试需 `MILVUS_TEST_ADDR` 门控。
+
+**worker**
+- 心跳 20s / 过期判定 90s（`StaleRunningAfter`）——任务须短于此或自行续期。
+- `ClaimNextPending` 实现必须原子（多副本正确性的根）；`Log`/`Queue`/`Run` 为 nil
+  会在启动或消费期回退/报错。
+- 多副本要求共享 DB 为网络库；`Stop(grace)` 后心跳可能还有 ≤5s 尾巴。
+
+**breaker / progress / audit / textutil**
+- breaker：`Allow==true` 后必须恰好配对一次 Success/Failure；`Breakers.Now` 仅
+  启动期可注入。
+- progress：订阅缓冲 64，满了丢（`Dropped()` 可观测）；cancel 与 ctx 双向收口。
+- audit：走 Info 级别——日志级别调到 Warn 以上会吞掉审计事件（可用独立 sink）。
+- textutil：`TruncRunes(s, -1)` 返回空串 + true（不 panic）；`SplitRunes(s, 0)` 整串单块。
+
 ## 依赖关系
 
 ```
