@@ -8,6 +8,11 @@
   (big-window model for long inputs, fast model for judgments, strong model for
   quality-critical stages) without touching call sites. `UsedTokens` aggregates
   all registered chains; budget injection stays the caller's responsibility.
+- **docs**: `docs/FRAMEWORK.md` — complete framework documentation (positioning &
+  design principles, 6-layer architecture, all 19 packages with APIs/examples/
+  contracts, seven-architecture matrix, horizontal capability deep-dives
+  (reliability/cost/multi-replica/security), Argus production reference, release
+  discipline & pitfalls checklist).
 
 ## v0.8.0 (2026-09-07)
 
