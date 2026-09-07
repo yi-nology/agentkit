@@ -3,6 +3,9 @@
 > 版本：v0.8.1 · Go ≥ 1.25 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
 > 配套文档：[架构模式支持矩阵](patterns.md)（七架构何时用/何时不用）· [README](../README.md)（快速上手）
 
+> 文中架构图使用 Mermaid：Forgejo/GitHub 等端原生渲染；不支持渲染的查看端，
+> 代码块本身仍按文本可读。
+
 ---
 
 ## 目录
@@ -158,6 +161,27 @@ msg, attempts, err := r.GenerateWithTrace(ctx, "R1", msgs) // attempts 留痕每
 - 半开探测有 `DefaultProbeTimeout` 超时兜底——探测失联不会永久逐出模型；
 - `AttemptError` 全链失败留痕每次尝试（Provider/Model/Err/Duration）。
 
+```mermaid
+flowchart TD
+    REQ["Generate(stage)"] --> SR{"StageRouter"}
+    SR -- "未命中" --> GEN["缺省链"]
+    SR -- "R1/R2/qa 覆盖" --> SGEN["阶段覆盖链（各自预算注入）"]
+    GEN --> BUD{"预算剩余？"}
+    SGEN --> BUD
+    BUD -- "否" --> SHORT["预算短路报错"]
+    BUD -- "是" --> ALLOW{"熔断 Allow？"}
+    ALLOW -- "否（含探测超时兜底）" --> SKIP["跳过该模型"]
+    ALLOW -- "是（半开放行探测）" --> TRY["Provider 调用"]
+    TRY -- "成功" --> OK["Success + 记账 + 返回"]
+    TRY -- "失败" --> CLS{"ClassifyLLMError"}
+    CLS -- "4xx 确定性" --> SWITCH["切下一模型"]
+    CLS -- "5xx/网络/截断" --> RETRY["同模型重试 ≤N（退避+jitter）"]
+    RETRY -- "耗尽" --> SWITCH
+    CLS -- "429" --> SWITCH
+    SWITCH -- "还有模型" --> ALLOW
+    SWITCH -- "全链失败" --> ATT["AttemptError 全链留痕"]
+```
+
 ### Budget —— 任务级预算
 
 ```go
@@ -230,6 +254,23 @@ out, err := agentrun.RunWithEvents(ctx, agentrun.Config{
 - MaxIterations 默认 12；迭代耗尽/空答复返回明确错误，无死循环；
 - 失败语义：与 toolprior 软止损配合（超限返回 LIMIT_REACHED 文本而非 error，
   不会中止整图丢弃进展）。
+
+```mermaid
+sequenceDiagram
+    participant C as 调用方
+    participant A as agentrun
+    participant M as ChatModel（可被 R3ChatModel 覆盖）
+    participant T as 工具表（toolprior 三层约束）
+    C->>A: Run(query)
+    loop MaxIterations 内
+        A->>M: 指令 + 对话历史
+        M-->>A: assistant + tool_calls → 事件 tool_call
+        A->>T: 执行（超限返回 LIMIT_REACHED 文本软止损）
+        T-->>A: 工具结果 → 事件 tool_result
+    end
+    M-->>A: assistant 无 tool_calls → 事件 text
+    A-->>C: 最终答复
+```
 
 ### agentrun.PlanAndExecute —— 计划先行编排
 
@@ -320,6 +361,13 @@ limited := toolprior.WithCallLimit(invokableTool, 5) // 每次包装新建实例
 
 档位：Core(0) < Support(1) < External(2)，自定义数值可插中间。`Table` 构建期写入、
 构建后只读；`Add(nil Tool)` 直接 panic（注册期 fail fast）。
+
+```mermaid
+flowchart TD
+    T["Table（注册期）"] --> L1["层1 软：StrategyPrompt<br/>优先级序/何时用/成本 → 注入 instruction"]
+    T --> L2["层2 隐式：Ordered<br/>按优先级稳定排序 → 模型表序注意力"]
+    T --> L3["层3 硬：WithCallLimit<br/>超限返回 LIMIT_REACHED 文本（模型可见）<br/>不返回 error——不中止整图"]
+```
 
 ### skill —— SKILL.md 渐进披露
 
@@ -480,6 +528,29 @@ e.Start(ctx)
 if e.IsLeader() { ... } // 失联 ≤ttl 自动换主；Stop 主动让位
 ```
 
+多副本全景（任务面分片 + 控制面选主）：
+
+```mermaid
+flowchart TD
+    subgraph 实例A
+      WA["worker pool ×N"] --> QA["ClaimNextPending 原子抢占"]
+      HA["心跳续期 running 任务"]
+      EA["LeaderElector 竞选"]
+    end
+    subgraph 实例B
+      WB["worker pool ×N"] --> QB["ClaimNextPending"]
+      HB["心跳"]
+      EB["LeaderElector 竞选"]
+    end
+    QA --> DB[("tasks 表：pending / running / done")]
+    QB --> DB
+    HA --> DB
+    HB --> DB
+    EA --> LS[("leader_leases 租约")]
+    EB --> LS
+    LS -- "仅 leader 放行 tick" --> P["出站轮询 poller"]
+```
+
 ### progress —— 泛型事件总线
 
 ```go
@@ -536,6 +607,15 @@ ctx = obsx.InitLLMObservability(ctx, log, obsx.Options{
 ```
 
 `WithStage(ctx, "R1")` 标记业务阶段（llm 包自动注入）；慢调用自动升级 Warn。
+
+```mermaid
+flowchart LR
+    CALL["任意 eino 模型调用<br/>（直连 Generate 或 ReAct RawModel）"] --> CB["callbacks 触发"]
+    CB --> H["obsx TracingHandler"]
+    H --> LOG["llm.call.start / end / error<br/>stage/model/耗时/真实 usage"]
+    H -- "Options.OnUsage" --> CT["CostTracker<br/>（任务级 + 全局）"]
+```
+
 
 ---
 
@@ -618,6 +698,27 @@ webhook/poller ──▶ worker pool（多副本，ClaimNextPending 分片 + 心
 
 新项目接入建议按同一顺序装配：存储 → LLM（Client/Resilient + 预算）→ 观测 →
 工具层 → 编排 → 队列。
+
+同链路的渲染版全景：
+
+```mermaid
+flowchart TD
+    WH["webhook / poller（选主收敛）"] --> WP["worker pool 多副本"]
+    WP --> EX["runner.Execute"]
+    EX --> OBS["obsx 追踪 + 成本回流"]
+    EX --> SR["StageRouter（R1/R2 覆盖 + 预算注入）"]
+    EX --> WF["Workflow"]
+    WF --> R1["R1 需求解析（GenerateJSON）"]
+    WF --> R2["R2 变更理解（SplitRunes 分块）"]
+    WF --> R3["R3 ReAct（toolprior 工具表 + R3ChatModel 覆盖）"]
+    WF --> R4["R4 专家 fan-out<br/>builtin ReAct / cli=RunProcess / acpx 9 家 / squads 编队"]
+    WF --> R5["R5 Merger（指纹去重 + 抑制 + 分歧标注）"]
+    R3 -. "search_knowledge" .-> KW[("Milvus 知识库<br/>含误报回流")]
+    R4 -. "工作副本" .-> WC[("workcopy 沙箱")]
+    R5 --> POST["报告回帖（safejson 反注入）"]
+    EX --> BUS["progress 总线 → SSE"]
+```
+
 
 ---
 

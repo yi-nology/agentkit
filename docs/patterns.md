@@ -1,5 +1,7 @@
 # Agent 架构模式支持矩阵
 
+> 架构图使用 Mermaid；不支持渲染的查看端，代码块本身仍按文本可读。
+
 七种常见 agent 架构在 agentkit（+ eino 底座）上的支持情况。原则：**编排原语不重复 eino**，
 agentkit 提供的是"原语之上的样板与领域件"（降级链/工具纪律/限流/知识）。
 
@@ -39,6 +41,13 @@ agentkit 提供的是"原语之上的样板与领域件"（降级链/工具纪�
 
 无编排，一次调用。90% 的场景从这里开始；所有上层架构的节点最终都是一个 Single Agent。
 
+```mermaid
+flowchart LR
+    A["输入 msgs"] --> B["Client：fitInput / 限速 / 重试"]
+    B --> C[("模型")]
+    C --> D["输出；JSON 版解析失败回喂重试"]
+```
+
 **✅ 该用**
 - 一次调用能完成：分类、抽取、改写、格式转换、单点问答、摘要
 - 无外部事实依赖（不需要先查工具再回答）
@@ -66,6 +75,23 @@ err = client.GenerateJSON(ctx, "stage", msgs, &out)      // JSON 版（解析失
 ## 2. ReAct —— `agentrun` + `toolprior`
 
 边思考边调用工具的循环。**首选默认架构**——目标模糊、步骤不可预知时用它。
+
+```mermaid
+sequenceDiagram
+    participant C as 调用方
+    participant A as agentrun
+    participant M as ChatModel
+    participant T as 工具表（toolprior）
+    C->>A: Run(query)
+    loop MaxIterations 内
+        A->>M: 指令 + 对话历史
+        M-->>A: assistant + tool_calls
+        A->>T: 执行工具（限流计数）
+        T-->>A: 工具结果
+    end
+    M-->>A: assistant 无 tool_calls = 最终答复
+    A-->>C: 事件流（text/tool_call/tool_result）+ 最终文本
+```
 
 ```go
 out, err := agentrun.RunWithEvents(ctx, agentrun.Config{
@@ -101,6 +127,15 @@ out, err := agentrun.RunWithEvents(ctx, agentrun.Config{
 决定完成或修订计划，循环收敛。**目标明确、步骤可预规划的长链路任务**用它（区别于
 ReAct 的边想边做）；每步执行结果可审计。
 
+```mermaid
+flowchart TD
+    G["目标 goal"] --> P["Planner：拆解为分步计划（tool-calling 强制结构）"]
+    P --> E["Executor：执行当前步（带工具）"]
+    E --> R["Replanner：评估进度"]
+    R -- "未完成：修订计划" --> E
+    R -- "完成" --> A["最终答复 Answer"]
+```
+
 ```go
 res, err := agentrun.PlanAndExecute(ctx, agentrun.PlanExecuteConfig{
     Planner:  plannerModel,     // 须支持 tool calling（计划结构以 tool-calling 强制产出）
@@ -132,6 +167,16 @@ fmt.Println(res.Answer)
 ## 4. Reflection —— `agentkit/reflection`
 
 生成 → 按 Rubric 自我批判（结构化 pass/issues）→ 带全量问题修订 → 收敛或达轮次上限。
+
+```mermaid
+flowchart TD
+    T["Task + Input"] --> G["生成初稿"]
+    G --> C["Critic：按 Rubric 结构化评审"]
+    C -- "pass=true" --> OUT["输出末稿（Converged）"]
+    C -- "pass=false + issues" --> R["修订：带全量问题重写"]
+    R --> C
+    C -- "达 MaxIterations" --> OUT
+```
 **产出质量有可判定的硬标准**时用它；标准主观或需外部事实核验的场景 Critic 不可靠，
 不要用。
 
@@ -166,6 +211,14 @@ fmt.Println(res.Output, res.Converged, len(res.Rounds)) // Rounds 含每稿与�
 ## 5. Router + Skill —— `agentkit/router` + `agentkit/skill`
 
 两层含义互补：
+
+```mermaid
+flowchart TD
+    IN["用户输入"] --> CL["分类调用（快模型，GenerateJSON）"]
+    CL -- "route 命中且置信度 ≥ 阈值" --> H1["处理链 A（任意架构）"]
+    CL -- "route 命中" --> H2["处理链 B"]
+    CL -- "未命中 / 低置信" --> FB["Fallback 兜底"]
+```
 
 - **显式路由**（`router`）：入口流量可枚举为有限意图时，先用一次廉价分类调用选路，
   再分发到对应处理链（各链可以是任意架构——ReAct/P&E/单轮）。
@@ -217,6 +270,18 @@ fmt.Println(res.Output, res.Converged, len(res.Rounds)) // Rounds 含每稿与�
 中心指派）。每位专家观察黑板增量、判断与己相关则贡献；一轮无人补充（共识）或达
 轮次上限停止。**多视角分析、贡献顺序不可预知**的场景。
 
+```mermaid
+flowchart TD
+    SEED["Seed：初始材料"] --> B(("黑板 Board"))
+    B -- "增量 since 游标" --> S1["专家 security"]
+    B -- "增量" --> S2["专家 perf"]
+    S1 -- "Write finding" --> B
+    S2 -- "Write finding" --> B
+    B --> Q{"一整轮无人贡献？"}
+    Q -- "是：共识" --> DONE["停止（MaxRounds 兜底）"]
+    Q -- "否：< MaxRounds" --> S1
+```
+
 ```go
 board := blackboard.NewBoard()
 board.Seed("material", diffText)
@@ -254,6 +319,16 @@ fmt.Println(res.Rounds, len(board.Entries()))
 
 **agentkit 不重复编排原语**——图编排直接用 eino 底座，agentkit 的包（llm/agentrun/
 toolprior/reflection/...）作为图上的节点构件：
+
+```mermaid
+flowchart LR
+    IN["START"] --> N1["LLM 节点（llm：重试/预算）"]
+    N1 --> BR{"Branch 条件边"}
+    BR -- "路径 a" --> N2["工具节点（toolprior.Ordered）"]
+    BR -- "路径 b" --> N3["复杂节点（内部 = agentrun ReAct）"]
+    N2 --> END["END"]
+    N3 --> END
+```
 
 - `compose.NewGraph[I, O]` + `AddChatModelNode/AddToolNode/AddLambdaNode` +
   `NewGraphBranch`（条件边）/并行分支——DAG/状态图/循环图；
