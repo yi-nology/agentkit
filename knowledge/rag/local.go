@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/cloudwego/eino/components/tool"
 
@@ -37,7 +38,7 @@ type Local struct {
 
 	mu        sync.Mutex
 	index     []indexedChunk
-	df        map[string]int // token → 出现该 token 的 chunk 数（rescan 预计算，检索时零重建）
+	idf       map[string]float64 // token → smoothed IDF（rescan 预计算，检索时零 log）
 	scannedAt time.Time
 }
 
@@ -61,13 +62,12 @@ func NewLocal(dir string) (*Local, error) {
 func (l *Local) Retrieve(ctx context.Context, query string, topK int, filter Filter) ([]Chunk, error) {
 	_ = ctx // 当前实现无阻塞点，保留 ctx 以面向未来（接口契约）
 	l.mu.Lock()
-	stale := time.Since(l.scannedAt) >= rescanInterval
-	l.mu.Unlock()
-	if stale {
+	if time.Since(l.scannedAt) >= rescanInterval {
+		l.mu.Unlock()
 		l.Rescan()
+		l.mu.Lock()
 	}
-	l.mu.Lock()
-	idx, df := l.index, l.df
+	idx, idf := l.index, l.idf
 	l.mu.Unlock()
 
 	if topK <= 0 {
@@ -78,27 +78,57 @@ func (l *Local) Retrieve(ctx context.Context, query string, topK int, filter Fil
 		return nil, nil
 	}
 
-	n := float64(len(idx))
+	// 固定容量小顶堆选 topK：堆顶是当前第 K 大，全程 O(chunks·log K)，
+	// 替代"全量收集 + 全排序"（大 hits 切片分配是检索路径内存开销的大头）
 	type scored struct {
 		c indexedChunk
 		s float64
 	}
-	var hits []scored
+	heap := make([]scored, 0, topK)
+	siftDown := func(i int) {
+		for {
+			l, r := 2*i+1, 2*i+2
+			m := i
+			if l < len(heap) && heap[l].s < heap[m].s {
+				m = l
+			}
+			if r < len(heap) && heap[r].s < heap[m].s {
+				m = r
+			}
+			if m == i {
+				return
+			}
+			heap[i], heap[m] = heap[m], heap[i]
+			i = m
+		}
+	}
 	for _, ic := range idx {
 		if !matchFilter(ic.chunk.Metadata, filter) {
 			continue
 		}
-		s := scoreTFIDF(ic.tokenFreq, qt, df, n)
-		if s > 0 {
-			hits = append(hits, scored{ic, s})
+		s := scoreTFIDF(ic.tokenFreq, qt, idf)
+		if s <= 0 {
+			continue
+		}
+		if len(heap) < topK {
+			heap = append(heap, scored{ic, s})
+			for i := len(heap) - 1; i > 0; {
+				p := (i - 1) / 2
+				if heap[i].s < heap[p].s {
+					heap[i], heap[p] = heap[p], heap[i]
+					i = p
+				} else {
+					break
+				}
+			}
+		} else if s > heap[0].s {
+			heap[0] = scored{ic, s}
+			siftDown(0)
 		}
 	}
-	sort.Slice(hits, func(i, j int) bool { return hits[i].s > hits[j].s })
-	if len(hits) > topK {
-		hits = hits[:topK]
-	}
-	out := make([]Chunk, 0, len(hits))
-	for _, h := range hits {
+	sort.Slice(heap, func(i, j int) bool { return heap[i].s > heap[j].s })
+	out := make([]Chunk, 0, len(heap))
+	for _, h := range heap {
 		out = append(out, h.c.chunk)
 	}
 	return out, nil
@@ -134,6 +164,9 @@ func (l *Local) Rescan() {
 			for _, t := range toks {
 				freq[t]++
 			}
+			for t := range freq { // 文档频率顺手统计，省一次全索引遍历
+				df[t]++
+			}
 			index = append(index, indexedChunk{
 				chunk: Chunk{
 					Content:  c.content,
@@ -144,15 +177,16 @@ func (l *Local) Rescan() {
 		}
 		return nil
 	})
-	// IDF 文档频率预计算：检索路径零重建（每查询 O(总词元) → O(1)）
-	for _, ic := range index {
-		for t := range ic.tokenFreq {
-			df[t]++
-		}
+	// IDF 预计算：smoothed IDF（1 + log(N/df)，最小值 1，避免单 chunk 时 IDF=0 导致零分）。
+	// 检索路径零 log——此前每 chunk×查询词都要重算一遍。
+	n := float64(len(index))
+	idf := make(map[string]float64, len(df))
+	for t, d := range df {
+		idf[t] = 1 + logF(n/float64(d))
 	}
 	// 原子换入：检索侧要么看到完整旧索引、要么完整新索引，不见中间态
 	l.mu.Lock()
-	l.index, l.df, l.scannedAt = index, df, time.Now()
+	l.index, l.idf, l.scannedAt = index, idf, time.Now()
 	l.mu.Unlock()
 }
 
@@ -187,12 +221,12 @@ func chunkMarkdown(text string) []mdChunk {
 		if strings.HasPrefix(strings.TrimSpace(line), "```") {
 			inCodeBlock = !inCodeBlock
 			cur = append(cur, line)
-			curLen += len([]rune(line))
+			curLen += utf8.RuneCountInString(line)
 			continue
 		}
 		if inCodeBlock {
 			cur = append(cur, line)
-			curLen += len([]rune(line))
+			curLen += utf8.RuneCountInString(line)
 			// 硬上限保护：未闭合代码块 + 超长内容强制成块，避免单块超
 			// Milvus VarChar 65535 字节导致整个文件 Insert 失败
 			if curLen >= maxChunkRunes {
@@ -222,7 +256,7 @@ func chunkMarkdown(text string) []mdChunk {
 		}
 
 		// 硬上限保护：单行超限（粘贴 base64/日志）强制截断
-		if lineRunes := len([]rune(line)); lineRunes > maxChunkRunes {
+		if lineRunes := utf8.RuneCountInString(line); lineRunes > maxChunkRunes {
 			if len(cur) > 0 {
 				flush()
 			}
@@ -232,7 +266,7 @@ func chunkMarkdown(text string) []mdChunk {
 			continue
 		}
 		cur = append(cur, line)
-		curLen += len([]rune(line))
+		curLen += utf8.RuneCountInString(line)
 		if curLen >= chunkTargetRunes {
 			// 保留尾部 overlap 到下一块
 			if overlapRunes > 0 && i+1 < len(lines) {
@@ -267,26 +301,36 @@ func mdHeading(line string) (string, bool) {
 }
 
 // tokenize 分词：ASCII 词（小写）+ CJK 二元组（单字成词时补单字）。
+// 字节偏移迭代：CJK bigram 直接切原串子串（零拷贝），ASCII 词写入即小写
+// （词内只可能是 ASCII 字母/数字，小写化只影响 A-Z），避免 []rune 全量拷贝。
 func tokenize(s string) []string {
 	var out []string
-	var word strings.Builder
+	var word []byte
 	addWord := func() {
-		if w := strings.ToLower(word.String()); w != "" {
-			out = append(out, w)
+		if len(word) > 0 {
+			out = append(out, string(word))
 		}
-		word.Reset()
+		word = word[:0]
 	}
-	runes := []rune(s)
-	for i, r := range runes {
+	for i, r := range s {
 		switch {
-		case unicode.IsLetter(r) && r < 128 || unicode.IsDigit(r):
-			word.WriteRune(r)
+		case (r < 128 && unicode.IsLetter(r)) || unicode.IsDigit(r):
+			if r >= 'A' && r <= 'Z' {
+				r += 'a' - 'A'
+			}
+			word = utf8.AppendRune(word, r)
 		case unicode.Is(unicode.Han, r):
 			addWord()
-			if i+1 < len(runes) && unicode.Is(unicode.Han, runes[i+1]) {
-				out = append(out, string([]rune{r, runes[i+1]}))
+			size := utf8.RuneLen(r)
+			end := i + size
+			if end < len(s) {
+				if r2, size2 := utf8.DecodeRuneInString(s[end:]); unicode.Is(unicode.Han, r2) {
+					out = append(out, s[i:end+size2])
+				} else {
+					out = append(out, s[i:end])
+				}
 			} else {
-				out = append(out, string(r))
+				out = append(out, s[i:end])
 			}
 		default:
 			addWord()
@@ -296,9 +340,10 @@ func tokenize(s string) []string {
 	return out
 }
 
-// scoreTFIDF TF-IDF 加权打分：sum(tf * (1 + log(N/df))) / sqrt(queryLen)。
-// 使用 smoothed IDF：1 + log(N/df)，避免单 chunk 时 IDF=0 导致零分。
-func scoreTFIDF(chunkFreq map[string]int, queryTokens []string, df map[string]int, n float64) float64 {
+// scoreTFIDF TF-IDF 加权打分：sum(tf * idf[t]) / sqrt(queryLen)。
+// idf 为 rescan 预计算表；tf>0 的 token 必在表中（该 chunk 含 t ⇒ df[t]≥1），
+// 兜底 w==0 时取 1 作中性权重。
+func scoreTFIDF(chunkFreq map[string]int, queryTokens []string, idf map[string]float64) float64 {
 	if len(chunkFreq) == 0 || len(queryTokens) == 0 {
 		return 0
 	}
@@ -308,12 +353,11 @@ func scoreTFIDF(chunkFreq map[string]int, queryTokens []string, df map[string]in
 		if tf == 0 {
 			continue
 		}
-		d := float64(df[t])
-		if d == 0 {
-			d = 1
+		w := idf[t]
+		if w == 0 {
+			w = 1
 		}
-		idf := 1 + logF(n/d) // smoothed IDF，最小值为 1
-		score += tf * idf
+		score += tf * w
 	}
 	if score == 0 {
 		return 0

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **knowledge/rag**: Local 检索与索引性能优化（等价变换，公共 API 与打分语义不变）——
+  IDF 在 rescan 时预计算（检索路径零 `math.Log`）；topK 改固定容量小顶堆选择
+  （替代全量收集 + 全排序）；tokenize 改字节偏移迭代 + CJK bigram 原串切片 +
+  ASCII 词写入即小写（消除 `[]rune` 全量拷贝）；rune 计数改 `utf8.RuneCountInString`；
+  非过期路径检索加锁次数 2→1。基准（M5，800/8000 chunks）：检索 -24%/-70%，
+  检索内存 -99.9%（2.15MB→944B/op，35→10 allocs），rescan -61%（allocs -79%）。
+  新增 `TestTokenize` 锁死分词语义（bigram/单字补齐/非 Han 边界），
+  `progress` 补 Publish 基准留档（subs=1 时 27ns/op，无需优化）。
+
 ## v0.8.1 (2026-09-07)
 
 - **llm**: `StageRouter` — per-stage Generator multiplexing implementing `Generator`
