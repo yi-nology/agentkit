@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **acpx**: 适配器文件重组——`agents.go`/`agents2.go` 按 agent 家族拆为
+  `claude.go`/`codex.go`/`opencode.go`/`generic.go`/`kimi.go`/`gemini.go`/`mimo.go`，
+  测试文件同步按类型拆分（跨家命名测试归 `registry_test.go`）。纯文件移动，
+  无 API 变化；此后新增 agent = 新增一个文件 + registry 一行注册。
 - **knowledge/rag**: Local 检索与索引性能优化（等价变换，公共 API 与打分语义不变）——
   IDF 在 rescan 时预计算（检索路径零 `math.Log`）；topK 改固定容量小顶堆选择
   （替代全量收集 + 全排序）；tokenize 改字节偏移迭代 + CJK bigram 原串切片 +
