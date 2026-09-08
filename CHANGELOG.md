@@ -1,7 +1,12 @@
 # Changelog
 
-## Unreleased
+## v0.8.3 (2026-09-08)
 
+- **router**: `Classify` 门槛自守——MinConfidence 置信度下限与分类合法性
+  （结果不在路由表，含 "none"）在 Classify 统一校验，未过门槛返回携带原因的
+  错误（Decision 仍返回供可观测）。此前门槛只在 `Do` 分发路径生效，只取
+  Classify 决策自行分发的编排器配置了 MinConfidence 也从不生效（死配置）。
+  **行为变化**：依赖 Classify 无条件放行的调用方升级后低置信场景将收到错误。
 - **knowledge/rag**: 可靠性修复——`Local.Rescan` 记录 WalkDir 读取错误：根目录
   stat 通过但不可 readdir 时不再静默换入空索引（全部读失败保留旧索引，部分失败
   告警后照常换入）；`OpenAIEmbedder.Embed` 防御远端响应负数 index（原会 panic），
