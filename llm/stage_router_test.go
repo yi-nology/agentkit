@@ -31,6 +31,7 @@ func (f *fakeGen) UsedTokens() int {
 	}
 	return 0
 }
+func (f *fakeGen) BoundBudget() TokenAccountant { return f.budget }
 
 func TestStageRouterExactWinsOverPrefix(t *testing.T) {
 	calls := []string{}
@@ -73,6 +74,20 @@ func TestStageRouterUsedTokensAggregates(t *testing.T) {
 	sr.Use("R3", &fakeGen{name: "r3", calls: &calls, budget: b2})
 	if got := sr.UsedTokens(); got != 50 {
 		t.Fatalf("UsedTokens 应聚合全部链: %d", got)
+	}
+}
+
+func TestStageRouterUsedTokensSharedBudgetDedup(t *testing.T) {
+	// 任务预算口径：各链共享同一 Budget，UsedTokens 必须按预算身份去重
+	// （逐链求和会得到 B×链数，夸大实际消耗）
+	calls := []string{}
+	b := NewBudget(1000)
+	b.Add(120)
+	sr := NewStageRouter(&fakeGen{name: "def", calls: &calls, budget: b})
+	sr.Use("R1", &fakeGen{name: "r1", calls: &calls, budget: b})
+	sr.Use("R3", &fakeGen{name: "r3", calls: &calls, budget: b})
+	if got := sr.UsedTokens(); got != 120 {
+		t.Fatalf("共享预算应去重: got %d, want 120", got)
 	}
 }
 

@@ -32,6 +32,12 @@ func TestClassifyLLMError(t *testing.T) {
 		{errors.New("request failed after 1429ms"), true, false, false},
 		{errors.New("batch 1401 done"), true, false, false},
 		{errors.New("error, status code: 429, message: rate limited"), true, true, false},
+		// 截断 marker 必须最先判：Client 自产截断错误文本含 completion_tokens=<n>，
+		// n 恰为 4xx/429 值时不得被数字 marker 抢先误判（否则"截断→提升
+		// MaxOutputTokens 重试"机制确定性失效）
+		{errors.New(`llm: R1 输出被截断（finish_reason=length, completion_tokens=401）`), true, false, true},
+		{errors.New(`llm: R1 输出被截断（finish_reason=length, completion_tokens=429）`), true, false, true},
+		{errors.New(`llm: R1 输出被截断（finish_reason=length, completion_tokens=404）`), true, false, true},
 	}
 	for _, c := range cases {
 		hint := ClassifyLLMError(c.err)

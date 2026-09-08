@@ -149,8 +149,19 @@ func (l *Local) Rescan() {
 	}
 	var index []indexedChunk
 	df := map[string]int{}
+	// WalkDir 对"已处理的错误"返回 nil 即跳过继续——但根目录 stat 通过而不可 readdir
+	// （权限收紧/挂载半故障）时整棵树读不到，静默换入空索引 = 知识库"消失"且无信号。
+	// 记录读取错误：全部读失败时保留旧索引（与根目录缺失同策略），部分失败告警后照常换入。
+	var walkErr error
 	_ = filepath.WalkDir(l.dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+		if err != nil {
+			if walkErr == nil {
+				walkErr = err
+			}
+			logx.NewSlogLogger("agentkit-rag").Warn("agentkit.rag.rescan_entry_error", "path", path, "error", err.Error())
+			return nil
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".md") {
 			return nil
 		}
 		data, err := os.ReadFile(path)
@@ -184,8 +195,14 @@ func (l *Local) Rescan() {
 	for t, d := range df {
 		idf[t] = 1 + logF(n/float64(d))
 	}
-	// 原子换入：检索侧要么看到完整旧索引、要么完整新索引，不见中间态
+	// 原子换入：检索侧要么看到完整旧索引、要么完整新索引，不见中间态。
+	// 全量读失败（walkErr 非空且一无所获）时保留旧索引——区分"用户清空目录"
+	// （WalkDir 无 err，正常换入空索引）与"读失败"（保留旧索引）。
 	l.mu.Lock()
+	if walkErr != nil && len(index) == 0 {
+		l.mu.Unlock()
+		return
+	}
 	l.index, l.idf, l.scannedAt = index, idf, time.Now()
 	l.mu.Unlock()
 }

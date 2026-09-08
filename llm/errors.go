@@ -38,6 +38,14 @@ func ClassifyLLMError(err error) RetryHint {
 	}
 
 	msg := strings.ToLower(err.Error())
+	// 截断 marker 必须最先判：Client 生成的截断错误文本含 "completion_tokens=<n>"
+	// 数字，若先走下方数字状态码匹配，n 恰为 401/429 等值时会误判为鉴权失败/
+	// 限速，"截断→提升 MaxOutputTokens 重试"机制确定性失效。
+	for _, marker := range []string{"finish_reason=length", "输出被截断", "output truncated"} {
+		if strings.Contains(msg, marker) {
+			return RetryHint{Retryable: true, IsTruncated: true}
+		}
+	}
 	// 鉴权/权限（部分端点不带状态码）
 	for _, marker := range []string{"401", "403", "unauthorized", "invalid api key", "invalid_api_key", "forbidden"} {
 		if containsMarker(msg, marker) {
@@ -69,11 +77,6 @@ func ClassifyLLMError(err error) RetryHint {
 	for _, marker := range []string{"429", "rate limit", "ratelimit", "too many requests", "throttl"} {
 		if containsMarker(msg, marker) {
 			return RetryHint{Retryable: true, IsRateLimit: true}
-		}
-	}
-	for _, marker := range []string{"finish_reason=length", "输出被截断", "output truncated"} {
-		if strings.Contains(msg, marker) {
-			return RetryHint{Retryable: true, IsTruncated: true}
 		}
 	}
 	return RetryHint{Retryable: true}

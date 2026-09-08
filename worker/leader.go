@@ -10,6 +10,7 @@ package worker
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"git.enjoye.top/enjoydream/ekit/concurrency/async"
@@ -40,10 +41,13 @@ type LeaderElector struct {
 	onLost   func()
 	log      logx.Logger
 
-	mu     sync.Mutex
-	leader bool
-	stop   chan struct{}
-	once   sync.Once
+	mu        sync.Mutex
+	leader    bool
+	stop      chan struct{}
+	done      chan struct{} // 竞选 goroutine 退出后关闭（Stop 等待让位完成）
+	started   atomic.Bool
+	stopOnce  sync.Once
+	startOnce sync.Once
 }
 
 // LeaderOption 选主器可选项。
@@ -75,6 +79,7 @@ func NewLeaderElector(store LeaseStore, key, holder string, ttl, interval time.D
 		interval: interval,
 		log:      logx.NewSlogLogger("agentkit-leader"),
 		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
 	}
 	for _, o := range opts {
 		o(e)
@@ -83,23 +88,38 @@ func NewLeaderElector(store LeaseStore, key, holder string, ttl, interval time.D
 }
 
 // Start 启动竞选循环：立即竞争一次（缩短冷启动等待），此后按 interval 续约。
-// ctx 取消或 Stop() 退出，退出时主动让位。
+// ctx 取消或 Stop() 退出；退出前若持有租约则主动让位（计划内交接，不触发 onLost）。
+// 重复调用为 no-op（只允许一个竞选 goroutine）。
 func (e *LeaderElector) Start(ctx context.Context) {
-	async.GoSafe(func() {
-		ticker := time.NewTicker(e.interval)
-		defer ticker.Stop()
-		e.tick(ctx)
-		for {
-			select {
-			case <-ctx.Done():
-				e.Stop()
+	e.startOnce.Do(func() {
+		async.GoSafe(func() {
+			// 先注册 done 的关闭、后置 started：Stop 看到 started=true 时
+			// 必能等到 done 关闭；反之 goroutine 自行收尾（stop 已关，无租约动作）
+			defer close(e.done)
+			defer e.started.Store(false)
+			e.started.Store(true)
+			ticker := time.NewTicker(e.interval)
+			defer ticker.Stop()
+			if !e.tick(ctx) {
+				e.yield()
 				return
-			case <-e.stop:
-				return
-			case <-ticker.C:
-				e.tick(ctx)
 			}
-		}
+			for {
+				select {
+				case <-ctx.Done():
+					e.yield()
+					return
+				case <-e.stop:
+					e.yield()
+					return
+				case <-ticker.C:
+					if !e.tick(ctx) {
+						e.yield()
+						return
+					}
+				}
+			}
+		})
 	})
 }
 
@@ -111,37 +131,80 @@ func (e *LeaderElector) IsLeader() bool {
 }
 
 // Stop 停止竞选并主动让位（幂等；优雅停机的计划内交接，不触发 onLost）。
+// 等待竞选 goroutine 退出后返回——返回后 IsLeader 必为 false 且租约已让出。
+// Start 未被调用时立即返回（无租约可让）。
 func (e *LeaderElector) Stop() {
-	e.once.Do(func() {
-		close(e.stop)
-		e.mu.Lock()
-		wasLeader := e.leader
-		e.leader = false
-		e.mu.Unlock()
-		if wasLeader {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := e.store.Release(ctx, e.key, e.holder); err != nil && e.log != nil {
-				e.log.Warn("agentkit.leader.release_failed", "key", e.key, "error", err.Error())
-			}
-			e.log.Info("agentkit.leader.yielded", "key", e.key, "holder", e.holder)
-		}
-	})
+	e.stopOnce.Do(func() { close(e.stop) })
+	if e.started.Load() {
+		<-e.done
+	}
 }
 
-func (e *LeaderElector) tick(ctx context.Context) {
+// stopping 已请求停止。
+func (e *LeaderElector) stopping() bool {
+	select {
+	case <-e.stop:
+		return true
+	default:
+		return false
+	}
+}
+
+// tick 竞争一次租约。返回 false = 竞选应终止（已停止或 ctx 取消）。
+func (e *LeaderElector) tick(ctx context.Context) bool {
+	// 停止/取消后不再发起新的竞争：避免"Stop 之后新获得租约"的让位遗漏
+	if e.stopping() || ctx.Err() != nil {
+		return false
+	}
 	ok, err := e.store.TryAcquire(ctx, e.key, e.holder, e.ttl)
 	if err != nil {
+		if ctx.Err() != nil {
+			return false // ctx 取消导致的失败不算失主，退出走 yield 让位
+		}
 		// 存储抖动：保守认为失主（回调方组件按非 leader 收敛），下个周期重试
 		e.setLeader(false)
 		e.log.Warn("agentkit.leader.acquire_failed", "key", e.key, "error", err.Error())
-		return
+		return true
+	}
+	if ok && e.stopping() {
+		// Stop 与 TryAcquire 穿插：刚获得的租约立即让位，不宣布当选
+		ctx2, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := e.store.Release(ctx2, e.key, e.holder); err != nil {
+			e.log.Warn("agentkit.leader.release_failed", "key", e.key, "error", err.Error())
+		}
+		return false
 	}
 	e.setLeader(ok)
+	return true
+}
+
+// yield 退出时让位：若持有租约则释放（计划内交接，不触发 onLost）。
+func (e *LeaderElector) yield() {
+	e.mu.Lock()
+	wasLeader := e.leader
+	e.leader = false
+	e.mu.Unlock()
+	if !wasLeader {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := e.store.Release(ctx, e.key, e.holder); err != nil && e.log != nil {
+		e.log.Warn("agentkit.leader.release_failed", "key", e.key, "error", err.Error())
+	}
+	e.log.Info("agentkit.leader.yielded", "key", e.key, "holder", e.holder)
 }
 
 func (e *LeaderElector) setLeader(v bool) {
 	e.mu.Lock()
+	if e.stopping() {
+		// 已停机：yield 负责让位，此处不再变更状态/触发回调
+		// （避免 Stop 之后才触发 onGained，或让位后误触发 onLost）
+		e.leader = false
+		e.mu.Unlock()
+		return
+	}
 	prev := e.leader
 	e.leader = v
 	e.mu.Unlock()

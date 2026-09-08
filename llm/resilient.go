@@ -47,6 +47,13 @@ type BudgetInjector interface {
 	WithBudget(b TokenAccountant) Generator
 }
 
+// BudgetHolder 可选接口：暴露 Generator 绑定的预算累计器。
+// 聚合方（StageRouter.UsedTokens）按其指针身份去重——各链共享同一 Budget 时
+// 逐链求和会按链数倍增。
+type BudgetHolder interface {
+	BoundBudget() TokenAccountant
+}
+
 // WithBudget Client 的预算注入：浅拷贝（Client 只含无锁值字段，Budget 指针共享是有意为之）。
 func (c *Client) WithBudget(b TokenAccountant) Generator {
 	c2 := *c
@@ -199,6 +206,9 @@ func (r *Resilient) UsedTokens() int {
 	}
 	return 0
 }
+
+// BoundBudget 返回绑定的预算累计器（可 nil）。BudgetHolder 接口实现。
+func (r *Resilient) BoundBudget() TokenAccountant { return r.Budget }
 
 // Generate 弹性生成：按链序尝试各 Provider，全部失败返回 *AttemptError。
 func (r *Resilient) Generate(ctx context.Context, stage string, msgs []*schema.Message) (*schema.Message, error) {

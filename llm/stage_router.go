@@ -89,13 +89,34 @@ func (r *StageRouter) GenerateJSON(ctx context.Context, stage string, msgs []*sc
 func (r *StageRouter) RawModel() model.BaseChatModel { return r.def.RawModel() }
 
 // UsedTokens 全部链（缺省 + 已注册）的预算累计和——任务预算口径下各链共享
-// 同一 Budget 时即任务总消耗。
+// 同一 Budget 时即任务总消耗。暴露 BudgetHolder 的链按预算指针身份去重，
+// 避免共享预算被按链数倍增；未暴露的链退回逐链求和。
 func (r *StageRouter) UsedTokens() int {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-	total := r.def.UsedTokens()
+	gens := make([]Generator, 0, len(r.routes)+1)
+	gens = append(gens, r.def)
 	for i := range r.routes {
-		total += r.routes[i].gen.UsedTokens()
+		gens = append(gens, r.routes[i].gen)
+	}
+	r.mu.RUnlock()
+
+	seen := map[TokenAccountant]struct{}{}
+	total := 0
+	for _, g := range gens {
+		bh, ok := g.(BudgetHolder)
+		if !ok {
+			total += g.UsedTokens()
+			continue
+		}
+		acc := bh.BoundBudget()
+		if acc == nil {
+			continue
+		}
+		if _, dup := seen[acc]; dup { // 共享同一预算只计一次
+			continue
+		}
+		seen[acc] = struct{}{}
+		total += acc.Used()
 	}
 	return total
 }

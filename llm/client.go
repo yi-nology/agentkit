@@ -67,6 +67,9 @@ func (c *Client) UsedTokens() int {
 	return 0
 }
 
+// BoundBudget 返回绑定的预算累计器（可 nil）。BudgetHolder 接口实现。
+func (c *Client) BoundBudget() TokenAccountant { return c.Budget }
+
 func estimateTokens(s string) int { return len(s) / 4 }
 
 func (c *Client) account(stage string, in []*schema.Message, out *schema.Message) {

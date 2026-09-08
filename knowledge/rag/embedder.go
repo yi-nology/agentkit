@@ -118,7 +118,9 @@ func (e *OpenAIEmbedder) embedBatch(ctx context.Context, texts []string) ([][]fl
 	// 按 index 排序（API 保证返回顺序，但防御性排序）
 	embeddings := make([][]float32, len(texts))
 	for _, d := range er.Data {
-		if d.Index < len(embeddings) {
+		// Index 来自远端 JSON，上下界都不可信（负数下标会 panic）；
+		// 被丢弃的槽位由下方维度校验兜底报错
+		if d.Index >= 0 && d.Index < len(embeddings) {
 			embeddings[d.Index] = d.Embedding
 		}
 	}

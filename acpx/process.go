@@ -73,11 +73,20 @@ var baseEnvAllow = map[string]bool{
 }
 
 // childEnv 构造子进程最小环境：白名单 + 显式透传项 + 禁交互。
+// extra 两种形态：纯名（如 "HF_TOKEN"）从当前进程按名透传（不存在则丢弃）；
+// 含 "="（如 "HF_TOKEN=xxx"）按 KEY=VALUE 字面注入，且同名父进程值不透传
+// （每 key 唯一，避免 environ 同名两项时子进程取值依实现而异）。
 func childEnv(extra []string) []string {
 	keep := map[string]bool{}
+	literal := map[string]string{} // name → KEY=VALUE
+	var litOrder []string
 	for _, k := range extra {
 		if i := strings.IndexByte(k, '='); i > 0 {
-			keep[k[:i]] = true
+			name := k[:i]
+			if _, dup := literal[name]; !dup {
+				litOrder = append(litOrder, name)
+			}
+			literal[name] = k
 		} else {
 			keep[k] = true
 		}
@@ -85,9 +94,15 @@ func childEnv(extra []string) []string {
 	var env []string
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
+		if _, isLit := literal[name]; isLit {
+			continue // 字面注入项优先，不透传父进程同名值
+		}
 		if baseEnvAllow[name] || keep[name] {
 			env = append(env, kv)
 		}
+	}
+	for _, name := range litOrder {
+		env = append(env, literal[name])
 	}
 	return append(env, "GIT_TERMINAL_PROMPT=0", "CI=1")
 }

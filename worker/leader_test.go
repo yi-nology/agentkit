@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -115,5 +116,55 @@ func TestLeaderElectorExpiryHandover(t *testing.T) {
 	}
 	if !b.IsLeader() {
 		t.Fatal("租约过期后 B 应换主当选")
+	}
+}
+
+// gatedLeaseStore 首次 TryAcquire 阻塞到 gate 关闭（模拟秒级存储调用，
+// 制造"Stop 与在途 tick 穿插"窗口）。
+type gatedLeaseStore struct {
+	memLeaseStore
+	gate  chan struct{}
+	first atomic.Bool
+}
+
+func (s *gatedLeaseStore) TryAcquire(ctx context.Context, key, holder string, ttl time.Duration) (bool, error) {
+	if s.first.CompareAndSwap(true, false) {
+		<-s.gate
+	}
+	return s.memLeaseStore.TryAcquire(ctx, key, holder, ttl)
+}
+
+func TestLeaderElectorStopWithInflightTick(t *testing.T) {
+	// Stop 到达时首次 tick 在途：在途 acquire 完成后不得宣布当选（onGained 不触发），
+	// 刚获得的租约必须立即让出；Stop 返回后 IsLeader=false 且存储中无本持有者租约。
+	store := &gatedLeaseStore{memLeaseStore: *newMemLeaseStore(), gate: make(chan struct{})}
+	store.first.Store(true) // 首次 TryAcquire 阻塞在 gate
+	var gained int
+	e := NewLeaderElector(store, "poller", "A", time.Minute, 10*time.Millisecond,
+		WithOnGained(func() { gained++ }), WithLeaderLogger(logx.NewSlogLogger("test")))
+	e.Start(context.Background())
+	time.Sleep(50 * time.Millisecond) // 等竞选 goroutine 阻塞在首次 TryAcquire 的 gate 上
+
+	// 先确保 stop 已关闭，再放行在途 tick：acquire 将在 stopping 状态下返回成功。
+	// 同包白盒：close(e.stop) 等价于 Stop() 的第一步；随后等 e.done 即
+	// Stop() 的等待段（close+wait 分开写以绕开 stopOnce 重复 close）
+	close(e.stop)
+	close(store.gate)
+	select {
+	case <-e.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("让位应在在途 tick 结束后完成（Stop 返回条件）")
+	}
+	if e.IsLeader() {
+		t.Fatal("Stop 后 IsLeader 应为 false")
+	}
+	if gained != 0 {
+		t.Fatalf("stop 后在途 acquire 不得宣布当选: onGained 触发 %d 次", gained)
+	}
+	store.mu.Lock()
+	holder, held := store.holder["poller"]
+	store.mu.Unlock()
+	if held && holder == "A" {
+		t.Fatal("stop 后在途获得的租约应已让出")
 	}
 }

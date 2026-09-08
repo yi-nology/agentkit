@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- **knowledge/rag**: 可靠性修复——`Local.Rescan` 记录 WalkDir 读取错误：根目录
+  stat 通过但不可 readdir 时不再静默换入空索引（全部读失败保留旧索引，部分失败
+  告警后照常换入）；`OpenAIEmbedder.Embed` 防御远端响应负数 index（原会 panic），
+  缺失槽位由维度校验兜底报错；`MilvusStore.Index` 改为 Delete+Upsert——文件变短
+  后不再残留过期 chunk 行，Index 真正幂等（与 Local.Rescan 全量重建同语义，
+  Milvus 集成测试验证）。
+- **llm**: 可靠性修复——`StageRouter.UsedTokens` 按 `BudgetHolder`（新可选接口，
+  Client/Resilient 实现）暴露的预算指针身份去重：各链共享同一任务 Budget 时
+  原实现按链数倍增上报（argus runner 生产装配已踩中）；`ClassifyLLMError` 截断
+  marker 提到数字状态码 marker 之前——Client 自产截断错误文本含
+  `completion_tokens=<n>`，n 恰为 401/404/429 等值时原会被误判为鉴权失败/限速，
+  "截断→提升 MaxOutputTokens 重试"机制确定性失效。
+- **worker**: 可靠性修复——`LeaderElector` 停机竞态：让位职责移入竞选 goroutine
+  （退出前若持有则 Release），Stop 与在途 tick 穿插时不再泄漏租约/onGained 不再
+  在 Stop 后触发/Stop 返回后 IsLeader 必为 false，ctx 取消导致的续约失败不再误报
+  onLost；`Pool` 的 Queue 调用（Claim/心跳/过期重置）补 panic 隔离——调用方 Queue
+  实现 panic 不再杀死 worker（池静默减员）或心跳 goroutine（在途任务被对端复位
+  双跑）；`Pool.Stop` 心跳改为排空完成后才停——原实现在停机第一时刻就停心跳，
+  grace 窗口超过 StaleRunningAfter 剩余预算时在途任务会被对端复位双跑。
+- **acpx**: `childEnv` 修复 KEY=VALUE 字面透传契约——原实现只按名透传父进程值，
+  字面值（父进程无同名时）被静默丢弃、（有同名时）被父进程值覆盖；现字面注入
+  优先且每 key 唯一（与 mcp.whitelistEnv 同语义）。
 - **acpx**: 适配器文件重组——`agents.go`/`agents2.go` 按 agent 家族拆为
   `claude.go`/`codex.go`/`opencode.go`/`generic.go`/`kimi.go`/`gemini.go`/`mimo.go`，
   测试文件同步按类型拆分（跨家命名测试归 `registry_test.go`）。纯文件移动，

@@ -120,10 +120,16 @@ func (s *MilvusStore) ensureCollection(ctx context.Context) error {
 }
 
 // Index 将文档分块并索引到 Milvus。
+// 幂等：先清该文件旧数据再写入——文件变短（删章节/内容精简）时 chunk 数变少，
+// 只 Upsert 新块会残留 chunk_M..N-1 旧行携带过期内容参与检索挤占 topK
+// （与 Local.Rescan 的全量重建同语义）。
 func (s *MilvusStore) Index(ctx context.Context, file string, content string) error {
 	chunks := chunkMarkdown(content)
+	if err := s.DeleteFile(ctx, file); err != nil {
+		return fmt.Errorf("milvus: 清理旧索引失败: %w", err)
+	}
 	if len(chunks) == 0 {
-		return nil
+		return nil // 清旧后无新内容：文件已空，索引中不残留该文件数据
 	}
 
 	// 准备文本用于 embedding

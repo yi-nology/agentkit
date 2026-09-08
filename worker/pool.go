@@ -41,9 +41,12 @@ type Pool struct {
 	started    bool
 	loopCtx    context.Context
 	runCtx     context.Context
+	hbCtx      context.Context // 心跳独立于 loopCtx：排空窗口内任务仍需续期
 	cancelLoop context.CancelFunc
 	cancelRun  context.CancelFunc
-	done       chan struct{}
+	cancelHB   context.CancelFunc
+	done       chan struct{} // 全部 worker 退出后关闭
+	hbDone     chan struct{} // 心跳 goroutine 退出后关闭
 	stopOnce   sync.Once
 }
 
@@ -67,7 +70,9 @@ func (p *Pool) Start(ctx context.Context) {
 	}
 	p.loopCtx, p.cancelLoop = context.WithCancel(ctx)
 	p.runCtx, p.cancelRun = context.WithCancel(ctx)
+	p.hbCtx, p.cancelHB = context.WithCancel(ctx)
 	p.done = make(chan struct{})
+	p.hbDone = make(chan struct{})
 	var wg sync.WaitGroup
 	for i := 0; i < p.N; i++ {
 		wg.Add(1)
@@ -76,15 +81,15 @@ func (p *Pool) Start(ctx context.Context) {
 			p.loop(p.loopCtx, p.runCtx, i)
 		})
 	}
-	// 心跳与 worker 同组等待：Stop 返回后不会再有心跳写库的尾巴
-	wg.Add(1)
-	async.GoSafe(func() {
-		defer wg.Done()
-		p.heartbeatLoop(p.loopCtx)
-	})
 	async.GoSafe(func() {
 		wg.Wait()
 		close(p.done)
+	})
+	// 心跳独立等待：Stop 在任务排空后才停心跳（在途任务的心跳不能先死），
+	// 故不与 worker 同 wg——done 关闭不依赖心跳退出
+	async.GoSafe(func() {
+		defer close(p.hbDone)
+		p.heartbeatLoop(p.hbCtx)
 	})
 	p.mu.Unlock()
 	p.logger().Info("agentkit.worker.started", "workers", p.N)
@@ -98,34 +103,57 @@ func (p *Pool) heartbeatLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// 两个调用各自限时，互不挤占；cancel 经 defer 保证释放
-			hbCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if err := p.Queue.TouchRunningHeartbeats(hbCtx); err != nil {
-				p.logger().Warn("agentkit.worker.heartbeat_failed", "error", err.Error())
-			}
-			cancel()
-			rsCtx, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
-			if n, err := p.Queue.ResetRunningToPending(rsCtx, StaleRunningAfter); err != nil {
-				p.logger().Warn("agentkit.worker.stale_reset_failed", "error", err.Error())
-			} else if n > 0 {
-				p.logger().Warn("agentkit.worker.stale_running_reset", "count", n,
-					"stale_after", StaleRunningAfter.String())
-			}
-			cancel2()
+			// 两个调用各自限时，互不挤占；cancel 经 defer 保证释放。
+			// 心跳 goroutine panic = 本实例全部在途任务心跳停止 → 90s 后被
+			// 对端复位重跑（静默双跑），故与 claim/run 同等隔离
+			p.heartbeat()
+			p.resetStale()
 		}
 	}
 }
 
-// Stop 两阶段停机：取消领取循环 → 等 grace → 硬取消执行。幂等。
-// 未启动时调用为 no-op（不消耗停机状态——Stop 在 Start 之前误调用后，
-// 真正的 Stop 依然有效）。
+// heartbeat TouchRunningHeartbeats（panic 隔离 + 5s 限时）。
+func (p *Pool) heartbeat() {
+	defer func() {
+		if r := recover(); r != nil {
+			p.logger().Error("agentkit.worker.heartbeat_panic", "panic", fmt.Sprint(r))
+		}
+	}()
+	hbCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := p.Queue.TouchRunningHeartbeats(hbCtx); err != nil {
+		p.logger().Warn("agentkit.worker.heartbeat_failed", "error", err.Error())
+	}
+}
+
+// resetStale ResetRunningToPending（panic 隔离 + 5s 限时）。
+func (p *Pool) resetStale() {
+	defer func() {
+		if r := recover(); r != nil {
+			p.logger().Error("agentkit.worker.stale_reset_panic", "panic", fmt.Sprint(r))
+		}
+	}()
+	rsCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if n, err := p.Queue.ResetRunningToPending(rsCtx, StaleRunningAfter); err != nil {
+		p.logger().Warn("agentkit.worker.stale_reset_failed", "error", err.Error())
+	} else if n > 0 {
+		p.logger().Warn("agentkit.worker.stale_running_reset", "count", n,
+			"stale_after", StaleRunningAfter.String())
+	}
+}
+
+// Stop 两阶段停机：取消领取循环 → 等 grace（排空期间心跳继续续期）→ 硬取消执行 →
+// 停心跳。幂等。未启动时调用为 no-op（不消耗停机状态——Stop 在 Start 之前
+// 误调用后，真正的 Stop 依然有效）。
 func (p *Pool) Stop(grace time.Duration) {
 	p.mu.Lock()
 	if !p.started {
 		p.mu.Unlock()
 		return
 	}
-	cancelLoop, cancelRun, done, log := p.cancelLoop, p.cancelRun, p.done, p.logger()
+	cancelLoop, cancelRun, cancelHB, done, hbDone, log :=
+		p.cancelLoop, p.cancelRun, p.cancelHB, p.done, p.hbDone, p.logger()
 	p.mu.Unlock()
 
 	p.stopOnce.Do(func() {
@@ -141,6 +169,13 @@ func (p *Pool) Stop(grace time.Duration) {
 			case <-time.After(10 * time.Second):
 			}
 		}
+		// 心跳最后停：排空窗口内（含硬取消后的收尾）在途任务仍需续期，
+		// 提前停会让对端按 StaleRunningAfter 复位仍在执行的任务造成双跑
+		cancelHB()
+		select {
+		case <-hbDone:
+		case <-time.After(10 * time.Second): // 心跳调用各自限时 5s，兜底不悬挂
+		}
 		log.Info("agentkit.worker.stopped")
 	})
 }
@@ -152,7 +187,7 @@ func (p *Pool) loop(loopCtx, runCtx context.Context, id int) {
 			return
 		default:
 		}
-		taskID, ok, err := p.Queue.ClaimNextPending(loopCtx)
+		taskID, ok, err := p.claim(loopCtx)
 		if err != nil {
 			if loopCtx.Err() != nil {
 				return
@@ -168,6 +203,18 @@ func (p *Pool) loop(loopCtx, runCtx context.Context, id int) {
 		p.logger().Info("agentkit.worker.claimed", "worker", id, "task", taskID)
 		p.runTask(runCtx, id, taskID)
 	}
+}
+
+// claim ClaimNextPending 的 panic 隔离包装：Queue 是调用方实现（GORM 等），
+// panic 若穿透会杀死该 worker goroutine——池静默减员（与 runTask 隔离同一不变量）。
+// 恢复后按 claim 失败路径退避重试。
+func (p *Pool) claim(ctx context.Context) (taskID string, ok bool, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("queue panic: %v", r)
+		}
+	}()
+	return p.Queue.ClaimNextPending(ctx)
 }
 
 // runTask 单任务执行（panic 隔离）：任务 panic 只损失该任务——worker 存活继续
