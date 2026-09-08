@@ -104,3 +104,68 @@ func TestRouterClassifyError(t *testing.T) {
 		t.Fatal("unreachable")
 	}
 }
+
+// Classify 门槛自守：低置信直接报错（编排器只取 Classify 也受 MinConfidence 约束），
+// Decision 仍返回供可观测。
+func TestRouterClassifyGatesLowConfidence(t *testing.T) {
+	r, err := New(&Config{
+		Model:  &fakeModel{resp: `{"route":"bug-fix","confidence":0.3,"reason":"不确定"}`},
+		Routes: testRoutes(), MinConfidence: 0.6,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := r.Classify(context.Background(), "x")
+	if err == nil {
+		t.Fatal("低置信分类应报错")
+	}
+	if !strings.Contains(err.Error(), "置信度") {
+		t.Fatalf("错误应说明门槛原因: %v", err)
+	}
+	if d.Route != "bug-fix" {
+		t.Fatalf("Decision 应随错误返回供可观测: %+v", d)
+	}
+}
+
+// 未知名（含 "none"）在 Classify 即报错，不再放行给调用方。
+func TestRouterClassifyGatesUnknownRoute(t *testing.T) {
+	r, err := New(&Config{
+		Model:  &fakeModel{resp: `{"route":"none","confidence":1.0,"reason":"没有合适类别"}`},
+		Routes: testRoutes(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Classify(context.Background(), "x"); err == nil || !strings.Contains(err.Error(), "不在路由表") {
+		t.Fatalf("未知名应报错: %v", err)
+	}
+}
+
+// MinConfidence=0 = 不设门槛：低置信也放行（原始语义保留）。
+func TestRouterClassifyNoGateWhenDisabled(t *testing.T) {
+	r, err := New(&Config{
+		Model:  &fakeModel{resp: `{"route":"explain","confidence":0.1,"reason":"随便"}`},
+		Routes: testRoutes(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, err := r.Classify(context.Background(), "x"); err != nil || d.Route != "explain" {
+		t.Fatalf("零门槛不应报错: %+v %v", d, err)
+	}
+}
+
+// 置信度越界钳位：LLM 幻觉出 1.5 不能借越界值绕过门槛，负值不被判为必拒。
+func TestRouterClassifyClampsConfidence(t *testing.T) {
+	r, err := New(&Config{
+		Model:  &fakeModel{resp: `{"route":"bug-fix","confidence":1.5,"reason":"幻觉"}`},
+		Routes: testRoutes(), MinConfidence: 0.9,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := r.Classify(context.Background(), "x")
+	if err != nil || d.Confidence != 1.0 {
+		t.Fatalf("越界置信度应钳位到 1.0: %+v %v", d, err)
+	}
+}

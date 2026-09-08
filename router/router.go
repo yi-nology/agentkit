@@ -85,6 +85,9 @@ func New(cfg *Config) (*Router, error) {
 }
 
 // Classify 意图分类（不执行）。
+// 门槛自守：分类合法性（结果不在路由表，含 "none"）与 MinConfidence 置信度下限
+// 在本方法统一校验，未过门槛返回携带原因的错误（Decision 仍返回，供调用方可观测）——
+// 只取 Classify 的编排器与 Do 分发共用同一闸门，不会出现"配置了阈值但没人校验"的死配置。
 func (r *Router) Classify(ctx context.Context, input string) (Decision, error) {
 	var b strings.Builder
 	b.WriteString("把用户输入路由到最合适的处理类别。\n\n可用类别：\n")
@@ -102,29 +105,37 @@ func (r *Router) Classify(ctx context.Context, input string) (Decision, error) {
 		return Decision{}, fmt.Errorf("router: 分类失败: %w", err)
 	}
 	d.Route = strings.ToLower(strings.TrimSpace(d.Route))
+	d.Confidence = clamp01(d.Confidence) // LLM 幻觉防护：越界置信度统一钳位
+	if _, ok := r.byName[d.Route]; !ok {
+		return d, fmt.Errorf("router: 分类结果 %q 不在路由表", d.Route)
+	}
+	if r.minCF > 0 && d.Confidence < r.minCF {
+		return d, fmt.Errorf("router: 置信度 %.2f 低于阈值 %.2f", d.Confidence, r.minCF)
+	}
 	return d, nil
 }
 
-// Do 分类 + 分发执行。
+// Do 分类 + 分发执行：门槛未过（Classify 报错）时走 Fallback 处理链。
 func (r *Router) Do(ctx context.Context, input string) (Decision, string, error) {
 	d, err := r.Classify(ctx, input)
 	if err != nil {
-		return d, "", err
-	}
-	rt, ok := r.byName[d.Route]
-	if !ok || (r.minCF > 0 && d.Confidence < r.minCF) {
-		reason := "无法分类"
-		if !ok {
-			reason = fmt.Sprintf("分类结果 %q 不在路由表", d.Route)
-		} else {
-			reason = fmt.Sprintf("置信度 %.2f 低于阈值 %.2f", d.Confidence, r.minCF)
-		}
 		if r.fb != nil {
-			out, ferr := r.fb(ctx, input, reason)
+			out, ferr := r.fb(ctx, input, err.Error())
 			return d, out, ferr
 		}
-		return d, "", fmt.Errorf("router: %s", reason)
+		return d, "", err
 	}
-	out, err := rt.Handle(ctx, input)
+	out, err := r.byName[d.Route].Handle(ctx, input)
 	return d, out, err
+}
+
+// clamp01 把置信度钳位到 [0,1]。
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }

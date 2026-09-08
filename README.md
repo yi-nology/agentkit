@@ -41,7 +41,7 @@ AI Agent 开发工具箱 —— 从 Argus 代码审查平台提取的通用组�
 - ✅ **该用（router 显式路由）**：入口意图可枚举（≤10）且各类别处理链差异大；想按类别配成本档；分类错误有 Fallback 兜底。
 - ✅ **该用（skill 隐式路由）**：类别多、持续增长、由领域文档承载；路由决策需要看了任务全文再定（渐进披露）。
 - ❌ **不该用**：类别间处理链相同（路由白付一次分类调用）；类别 <3 或边界模糊；skill 文档质量差（隐式路由上限 = 文档质量）。
-- ⚠️ router 的 MinConfidence + Fallback 必配；两者可组合：router 粗分到域，域内 skill 细分。
+- ⚠️ router 的 MinConfidence + Fallback 必配；两者可组合：router 粗分到域，域内 skill 细分。**门槛在 Classify 内自守**：只取 `Classify` 决策、自行分发的编排器同样受 MinConfidence 约束（低置信/未知名返回错误，Decision 随错误返回供可观测）；分类置信度钳位 [0,1]。
 
 ### 6. Blackboard —— `agentkit/blackboard`
 
