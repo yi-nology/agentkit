@@ -3,7 +3,7 @@ feature: extract-bianque-common
 status: delivered
 updated: 2026-09-10
 branch: extract/bianque-common-v0.9.0
-commits: 7de8d09..74a043c
+commits: 7de8d09..a502eb7
 ---
 
 # 从 bianque 抽取通用组件进 agentkit
