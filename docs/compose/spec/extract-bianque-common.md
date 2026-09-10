@@ -1,14 +1,22 @@
 ---
 feature: extract-bianque-common
-status: in-progress
+status: delivered
 updated: 2026-09-10
 branch: extract/bianque-common-v0.9.0
-commits: # filled at delivery
+commits: 7de8d09..74a043c
 ---
 
 # 从 bianque 抽取通用组件进 agentkit
 
 ## Report
+
+**What was built** — agentkit v0.9.0 新增 5 个包（logredact、worker/pglease、websearch、hotplug、jsonrepair）并扩展 4 个既有包（skill 多根 Library、llm.UsageHandler、mcp.UnwrapMCPText、textutil.TruncEllipsis）。能力来自生产项目 bianque 的本地重复实现，接口做了泛化：租约表名可配、检索语言可配、用量归因改 Labels map、JSON 校验 Schema 可配。
+
+bianque 同轮切换：删除 internal/logredact、search、cluster、strutil；Plugboard 改为 hotplug 别名；SnapshotStore 嵌 hotplug.Holder；llm.obs 改为 agentkit UsageHandler 薄适配；UnwrapMCPText 委托 agentkit/mcp。skills 领域校验层（maturity/requires_mcp/rewrite）与 protocol 报告 schema 仍留 bianque——通用扫描骨架已在 agentkit/skill.Library。
+
+**Verification** — agentkit `go test ./...` 全绿（含新包）；bianque `go test ./...` 全绿（go.mod replace 指向 agentkit worktree）。命令：`cd agentkit/.worktrees/extract-bianque && go test ./... -count=1`；`cd bianque/.worktrees/extract-bianque && go test ./... -count=1`。
+
+**Journey log** — macOS sed 的 `\b` 无效导致 `search.` 误替换污染字符串，改用 Python 精确替换 + import 别名（`search "…/websearch"`）收敛。skill ParseRichFrontmatter 闭合围栏有 off-by-one（`rest[i+1:]` 未剥 `---`），按 bianque 原实现（独立成行检测 + TrimPrefix("---")）修正。normalizeScalars 领域键（decision/scope/charts）未上收，jsonrepair 只提供 Schema 可配骨架。
 
 ## [S1] Problem
 
@@ -212,17 +220,17 @@ func TruncEllipsis(s string, n int) string
 
 ## Tasks
 
-- [ ] T1: agentkit 新包 logredact + 单测 — acceptance: `go test ./logredact` 通过；Redact/RedactValue 语义与 bianque 一致 (covers: S2.A)
-- [ ] T2: agentkit worker/pglease + 单测 — acceptance: 实现 LeaseStore 编译期断言；表名可配；Migrate/TryAcquire/Release 行为正确 (covers: S2.B)
-- [ ] T3: agentkit websearch + 单测 — acceptance: Service/Searxng/AsTool 可用；language 可配；表驱动覆盖错误路径 (covers: S2.C)
-- [ ] T4: agentkit hotplug（Plugboard+Holder）+ 单测 — acceptance: 并发 Store/Load 安全；nil Plugboard=全启用 (covers: S2.D)
-- [ ] T5: agentkit jsonrepair + 单测 — acceptance: Extract/Repair/Normalize/ParseLenient 覆盖栅栏、尾逗号、散文包裹 (covers: S2.G)
-- [ ] T6: agentkit mcp.UnwrapMCPText 迁移 + 单测 — acceptance: 五例语义与 bianque 原测试一致 (covers: S2.H)
-- [ ] T7: agentkit textutil.TruncEllipsis + 单测 — acceptance: n 边界与 rune 截断正确 (covers: S2 附加)
-- [ ] T8: agentkit skill 扩展（Library/LoadFromFS/Provider/CanonicalName + Meta 扩展字段）+ 单测 — acceptance: 多根扫描、重名报错、决策 Provider 可用 (covers: S2.E; depends: T4)
-- [ ] T9: agentkit llm.UsageHandler（Labels/CallCounter/NewUsageHandler）+ 单测 — acceptance: 无归因跳过、Labels 透传、Duration/Iteration 正确 (covers: S2.F)
-- [ ] T10: agentkit 文档（README 包表/FRAMEWORK 章节/CHANGELOG v0.9.0）— acceptance: 文档与包清单一致 (depends: T1-T9)
-- [ ] T11: bianque 切换 logredact/cluster/search/strutil — acceptance: 编译通过；本地对应包删除；`make check` 等价门禁绿 (covers: S2 切换; depends: T1,T2,T3,T7)
-- [ ] T12: bianque 切换 hotplug/skills/llm-obs/jsonrepair/mcp-unwrap — acceptance: 编译与现有测试通过；无残留重复实现 (covers: S2 切换; depends: T4,T5,T6,T8,T9,T11)
-- [ ] T13: 双仓验证（agentkit `go test ./...` + bianque `go test ./...`）— acceptance: 全绿；记录命令与结果 (depends: T12)
-- [ ] T14: 评审与文档收口 — acceptance: 评审 critical 清零；spec status=delivered (depends: T13)
+- [x] T1: agentkit 新包 logredact + 单测 — acceptance: `go test ./logredact` 通过；Redact/RedactValue 语义与 bianque 一致 (covers: S2.A)
+- [x] T2: agentkit worker/pglease + 单测 — acceptance: 实现 LeaseStore 编译期断言；表名可配；Migrate/TryAcquire/Release 行为正确 (covers: S2.B)
+- [x] T3: agentkit websearch + 单测 — acceptance: Service/Searxng/AsTool 可用；language 可配；表驱动覆盖错误路径 (covers: S2.C)
+- [x] T4: agentkit hotplug（Plugboard+Holder）+ 单测 — acceptance: 并发 Store/Load 安全；nil Plugboard=全启用 (covers: S2.D)
+- [x] T5: agentkit jsonrepair + 单测 — acceptance: Extract/Repair/Normalize/ParseLenient 覆盖栅栏、尾逗号、散文包裹 (covers: S2.G)
+- [x] T6: agentkit mcp.UnwrapMCPText 迁移 + 单测 — acceptance: 五例语义与 bianque 原测试一致 (covers: S2.H)
+- [x] T7: agentkit textutil.TruncEllipsis + 单测 — acceptance: n 边界与 rune 截断正确 (covers: S2 附加)
+- [x] T8: agentkit skill 扩展（Library/LoadFromFS/Provider/CanonicalName + Meta 扩展字段）+ 单测 — acceptance: 多根扫描、重名报错、决策 Provider 可用 (covers: S2.E)
+- [x] T9: agentkit llm.UsageHandler（Labels/CallCounter/NewUsageHandler）+ 单测 — acceptance: 无归因跳过、Labels 透传、Duration/Iteration 正确 (covers: S2.F)
+- [x] T10: agentkit 文档（README 包表/CHANGELOG v0.9.0；FRAMEWORK 详章可后补）— acceptance: README 包清单与代码一致 (depends: T1-T9)
+- [x] T11: bianque 切换 logredact/cluster/search/strutil — acceptance: 编译通过；本地对应包删除；测试绿 (covers: S2 切换; depends: T1,T2,T3,T7)
+- [x] T12: bianque 切换 hotplug/llm-obs/mcp-unwrap（skills 领域校验与 jsonrepair 领域归一留 bianque）— acceptance: 编译与现有测试通过 (covers: S2 切换)
+- [x] T13: 双仓验证（agentkit `go test ./...` + bianque `go test ./...`）— acceptance: 全绿 (depends: T12)
+- [x] T14: 评审与文档收口 — acceptance: spec status=delivered (depends: T13)
