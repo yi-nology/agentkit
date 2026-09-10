@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.9.0 (2026-09-10)
+
+从 bianque（智能运维多智能体平台）抽取通用组件，补齐平台级通用件缺口。
+
+### Added（新包）
+
+- **logredact**: 日志/审计凭据脱敏——`Redact`（URL 内嵌账号口令 / token= / Bearer 模式化打码）+
+  `RedactValue`（递归脱敏 JSON 形态值）。零依赖，与 safejson（反注入）正交。
+- **worker/pglease**: `worker.LeaseStore` 的 PostgreSQL 实现——原子 UPSERT 获取/续约、
+  仅持有者释放、`Migrate` 建表；表名可配（`WithTable`，缺省 `agentkit_lease`）。
+- **websearch**: 公开资料检索抽象——`Service` 接口 + SearXNG 客户端（`Language` 可配，
+  缺省 zh-CN）+ `AsTool()` 包成 `web_search` eino 工具。与 knowledge/rag 互补。
+- **hotplug**: 运行时插拔与热替换——`Plugboard`（启停视图，nil=全启用）+
+  `Holder[T]`（泛型原子快照持有点，读无锁换整体）。
+- **jsonrepair**: LLM 宽容 JSON 修复骨架——`StripFence` / `ExtractObject` / `Repair`
+  （全角结构符、非法转义、尾逗号、未闭合括号）/ `Normalize`（Schema 可配 StringKeys/ListKeys）
+  / `ParseLenient`。领域 schema 留给调用方。
+
+### Added（扩展）
+
+- **skill**: 多根 `Library`——`LoadFromFS` 扫描 `_shared/skills` + `<包>/skills`；
+  `LibMeta` 扩展 mode/maturity/version/requires_mcp/deprecated；实现 Provider/Lister/
+  AliasResolver（热替换无缓存）。`ParseRichFrontmatter`（yaml.v3）。
+- **llm**: `UsageHandler`——eino callbacks 完整用量采集（Cached/Reasoning tokens、
+  FinishReason、Duration、Iteration）；归因经 `Labels map[string]string` 泛化
+  （`WithUsageLabels` / `WithCallCounter`）。
+- **mcp**: `UnwrapMCPText` 解 MCP 工具信封取内层文本。
+- **textutil**: `TruncEllipsis` 截断并追加省略号。
+
 ## v0.8.4 (2026-09-10)
 
 - **agentrun**: `Event` 观测面补全——新增 `EventReasoning` 事件类型（推理型模型

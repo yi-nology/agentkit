@@ -1,7 +1,7 @@
 # agentkit
 
 AI Agent 开发工具箱 —— 从 Argus 代码审查平台提取的通用组件库。
-当前版本 **v0.8.1** · Go ≥ 1.25 · 19 个包。
+当前版本 **v0.9.0** · Go ≥ 1.25 · 25 个包。
 
 > 📖 **完整框架文档**：[docs/FRAMEWORK.md](docs/FRAMEWORK.md) —— 设计原则、六层架构、
 > 19 包逐一详解（API/示例/边界契约）、横向能力专题（可靠性/成本/多副本/安全）、
@@ -66,9 +66,9 @@ git.enjoye.top/enjoydream/agentkit
 | 包 | 说明 | 外部依赖 |
 |---|---|---|
 | `acpx` | CLI 编码 agent 统一调用（9 家 + GenericAgent）+ RunProcess 进程托管 | eino |
-| `llm` | LLM 客户端（重试/限速/预算/fitInput/JSON + Resilient 降级链 + StageRouter 路由 + CostTracker） | eino, eino-ext openai, x/time |
+| `llm` | LLM 客户端（重试/限速/预算/fitInput/JSON + Resilient 降级链 + StageRouter 路由 + CostTracker + UsageHandler 完整用量采集） | eino, eino-ext openai, x/time |
 | `toolprior` | 工具优先级决策层（提示词/排序/限流三层约束） | eino |
-| `mcp` | MCP server 工具池（lazy 建连 + 白名单 + eino 工具适配） | eino, eino-ext tool/mcp, mcp-go |
+| `mcp` | MCP server 工具池（lazy 建连 + 白名单 + eino 工具适配 + UnwrapMCPText 信封剥离） | eino, eino-ext tool/mcp, mcp-go |
 | `agentrun` | ReAct 样板 + Plan-and-Execute 样板（ADK 封装 + 事件流 + 重试） | eino adk |
 | `reflection` | Reflection 架构原语（生成→批判→修订收敛循环） | eino |
 | `router` | Router 架构原语（LLM 意图分类→选路→分发） | eino |
@@ -76,13 +76,18 @@ git.enjoye.top/enjoydream/agentkit
 | `obsx` | eino callbacks 追踪（llm.call.* 结构化日志） | eino, ekit |
 | `breaker` | 熔断器（closed→open→half-open，探测超时兜底） | 无 |
 | `worker` | DB 即队列 worker pool（心跳/panic 隔离/优雅停机）+ LeaderElector 选主 | ekit |
+| `worker/pglease` | LeaseStore 的 PostgreSQL 实现（原子 UPSERT + Migrate，表名可配） | 无（database/sql） |
 | `knowledge/rag` | 双后端 RAG（Local TF-IDF + Milvus 向量） | eino, milvus-sdk-go |
+| `websearch` | 公开资料检索抽象（Service + SearXNG + AsTool） | eino |
 | `progress` | 泛型事件总线 `Bus[T]`（有损广播 + 丢弃计数） | ekit |
-| `skill` | SKILL.md 解析器 + 决策使用（渐进披露） | eino（仅 decision 部分） |
+| `skill` | SKILL.md 解析 + 多根 Library（热替换）+ 决策使用（渐进披露） | eino（decision）、yaml.v3（Library） |
+| `hotplug` | 插拔视图 Plugboard + 泛型原子快照 Holder | 无 |
+| `logredact` | 日志/审计凭据脱敏（URL/token/Bearer 打码） | 无 |
+| `jsonrepair` | LLM 宽容 JSON 修复（栅栏/尾逗号/全角/散文包裹 + 标量归一） | 无 |
 | `severity` | 严重级别归一化 + 指纹 + glob 匹配 | 无 |
 | `safejson` | Markdown/HTML 反注入 | 无 |
 | `audit` | 审计日志 | ekit |
-| `textutil` | rune 安全截断 + 等分块 | 无 |
+| `textutil` | rune 安全截断 + 等分块 + TruncEllipsis | 无 |
 | `workcopy` | Git 工作副本沙箱（singleflight + 引用计数 + TTL 回收） | ekit, x/sync |
 
 ## 快速使用

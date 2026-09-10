@@ -50,6 +50,23 @@ func TestTruncRunesNegative(t *testing.T) {
 	}
 }
 
+func TestTruncEllipsis(t *testing.T) {
+	cases := []struct{ in, want string; n int }{
+		{"hello", "hello", 10},
+		{"hello", "hello", 5},
+		{"hello", "hel…", 3},
+		{"你好世界", "你好…", 2},
+		{"你好世界", "你好世界", 4},
+		{"", "…", 0},
+		{"abc", "…", -1},
+	}
+	for _, c := range cases {
+		if got := TruncEllipsis(c.in, c.n); got != c.want {
+			t.Errorf("TruncEllipsis(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
+		}
+	}
+}
+
 func TestSplitRunes(t *testing.T) {
 	// 等分：3 块 2+2+1，最后一块可不足
 	got := SplitRunes("你好世界啊", 2)

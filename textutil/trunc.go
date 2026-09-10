@@ -36,3 +36,16 @@ func TruncRunes(s string, n int) (string, bool) {
 	r := []rune(s)
 	return string(r[:n]), true
 }
+
+// TruncEllipsis 截断并追加省略号（列表/标题/事件载荷展示面统一语义）。
+// n<=0 返回省略号；无需截断时原样返回。
+func TruncEllipsis(s string, n int) string {
+	if n <= 0 {
+		return "…"
+	}
+	out, truncated := TruncRunes(s, n)
+	if truncated {
+		return out + "…"
+	}
+	return out
+}
