@@ -17,8 +17,9 @@ import (
 
 // mockResponse 一次响应脚本。
 type mockResponse struct {
-	content  string
-	toolCall *mockToolCall
+	content   string
+	reasoning string // reasoning_content（推理型模型的思考过程，可选）
+	toolCall  *mockToolCall
 }
 
 type mockToolCall struct {
@@ -44,24 +45,24 @@ func newMockOpenAI(t *testing.T, responses ...mockResponse) (*mockOpenAI, *opena
 		}
 		resp := m.responses[i]
 
+		msg := map[string]any{"role": "assistant", "content": resp.content}
+		if resp.reasoning != "" {
+			msg["reasoning_content"] = resp.reasoning
+		}
 		choice := map[string]any{
-			"index": 0, "finish_reason": "stop",
-			"message": map[string]any{"role": "assistant", "content": resp.content},
+			"index": 0, "finish_reason": "stop", "message": msg,
 		}
 		if resp.toolCall != nil {
-			choice = map[string]any{
-				"index": 0, "finish_reason": "tool_calls",
-				"message": map[string]any{
-					"role": "assistant", "content": "",
-					"tool_calls": []any{map[string]any{
-						"id":   resp.toolCall.id,
-						"type": "function",
-						"function": map[string]any{
-							"name":      resp.toolCall.name,
-							"arguments": resp.toolCall.arguments,
-						},
-					}},
+			msg["tool_calls"] = []any{map[string]any{
+				"id":   resp.toolCall.id,
+				"type": "function",
+				"function": map[string]any{
+					"name":      resp.toolCall.name,
+					"arguments": resp.toolCall.arguments,
 				},
+			}}
+			choice = map[string]any{
+				"index": 0, "finish_reason": "tool_calls", "message": msg,
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -148,6 +149,54 @@ func TestRunReActLoopWithToolCall(t *testing.T) {
 	}
 	if len(toolEvents) != 1 || toolEvents[0] != "echo" {
 		t.Fatalf("tool_call 事件不符: %v", toolEvents)
+	}
+}
+
+func TestRunEventsReasoningAndToolCallArgs(t *testing.T) {
+	// 回归：推理型模型的 reasoning_content 要以 reasoning 事件先行外发；
+	// tool_call 事件携带原始 JSON 参数串（观测面需要看到调用命令）
+	_, cm := newMockOpenAI(t,
+		mockResponse{
+			reasoning: "先想清楚再动手",
+			toolCall:  &mockToolCall{id: "c1", name: "echo", arguments: `{"text":"hi"}`},
+		},
+		mockResponse{content: "最终结论"},
+	)
+
+	var events []Event
+	out, err := RunWithEvents(context.Background(), Config{
+		Name: "test", Instruction: "inst", Model: cm,
+		Tools: []tool.BaseTool{newEchoTool(t)},
+	}, "调用工具", func(e Event) { events = append(events, e) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "最终结论" {
+		t.Fatalf("out = %q", out)
+	}
+
+	// 期望事件序列：reasoning → tool_call(带 Args) → tool_result → text
+	want := []Event{
+		{Type: EventReasoning, Text: "先想清楚再动手"},
+		{Type: EventToolCall, Tool: "echo", Args: `{"text":"hi"}`},
+		{Type: EventToolResult, Tool: "echo"},
+		{Type: EventText, Text: "最终结论"},
+	}
+	if len(events) != len(want) {
+		t.Fatalf("事件数 = %d，期望 %d：%+v", len(events), len(want), events)
+	}
+	for i, w := range want {
+		got := events[i]
+		// tool_result 文本来自工具回显，只断言类型/工具名
+		if got.Type != w.Type || got.Tool != w.Tool || got.Args != w.Args {
+			t.Fatalf("事件[%d] = %+v，期望 %+v", i, got, w)
+		}
+		if w.Type == EventReasoning && got.Text != w.Text {
+			t.Fatalf("事件[%d].Text = %q，期望 %q", i, got.Text, w.Text)
+		}
+		if w.Type == EventText && got.Text != w.Text {
+			t.Fatalf("事件[%d].Text = %q，期望 %q", i, got.Text, w.Text)
+		}
 	}
 }
 

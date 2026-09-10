@@ -55,13 +55,15 @@ type Config struct {
 
 // Event agent 运行过程事件（OnEvent 回调载荷，观测/进度展示用）。
 type Event struct {
-	Type string // text | tool_call | tool_result
+	Type string // reasoning | text | tool_call | tool_result
 	Text string
 	Tool string // tool_call/tool_result 的工具名
+	Args string // tool_call 的 JSON 参数串
 }
 
 // 事件类型词表。
 const (
+	EventReasoning  = "reasoning"
 	EventText       = "text"
 	EventToolCall   = "tool_call"
 	EventToolResult = "tool_result"
@@ -176,20 +178,26 @@ func run(ctx context.Context, cfg Config, query string, onEvent func(Event)) (st
 			onEvent(Event{Type: EventToolResult, Tool: name, Text: mv.Message.Content})
 			continue
 		}
-		// ReAct 出口判定：assistant 且无 tool_calls 即最终答复——
-		// 空内容也记录（部分推理型模型会有空最终消息），错误文案区分"空答复"与"没答复"
-		if mv.Role == schema.Assistant && mv.Message != nil && len(mv.Message.ToolCalls) == 0 {
-			sawFinal = true
-			finalText = mv.Message.Content
-			if onEvent != nil && finalText != "" {
-				onEvent(Event{Type: EventText, Text: finalText})
+		if mv.Role == schema.Assistant && mv.Message != nil {
+			// 思考过程先于动作/答复（同一 assistant 消息内 reasoning_content 先产出）
+			if onEvent != nil && mv.Message.ReasoningContent != "" {
+				onEvent(Event{Type: EventReasoning, Text: mv.Message.ReasoningContent})
 			}
-			continue
-		}
-		// 中间过程：tool_calls 声明 → 工具调用事件
-		if onEvent != nil && mv.Role == schema.Assistant && mv.Message != nil {
-			for _, tc := range mv.Message.ToolCalls {
-				onEvent(Event{Type: EventToolCall, Tool: tc.Function.Name})
+			// ReAct 出口判定：assistant 且无 tool_calls 即最终答复——
+			// 空内容也记录（部分推理型模型会有空最终消息），错误文案区分"空答复"与"没答复"
+			if len(mv.Message.ToolCalls) == 0 {
+				sawFinal = true
+				finalText = mv.Message.Content
+				if onEvent != nil && finalText != "" {
+					onEvent(Event{Type: EventText, Text: finalText})
+				}
+				continue
+			}
+			// 中间过程：tool_calls 声明 → 工具调用事件（含参数，观测面需要看到调用命令）
+			if onEvent != nil {
+				for _, tc := range mv.Message.ToolCalls {
+					onEvent(Event{Type: EventToolCall, Tool: tc.Function.Name, Args: tc.Function.Arguments})
+				}
 			}
 		}
 	}
