@@ -94,6 +94,18 @@ func TestSearxngSearchEmptyAndErrors(t *testing.T) {
 	}
 }
 
+func TestSearxngNilHTTPFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(searxngJSON(`{"title":"t","url":"https://u.example","content":"c"}`)))
+	}))
+	defer srv.Close()
+	s := &Searxng{BaseURL: srv.URL, Language: "zh-CN"} // 字面量构造，HTTP 为 nil
+	got, err := s.Search(context.Background(), "q", 1)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("nil HTTP 应走缺省 client: %v %v", err, got)
+	}
+}
+
 func TestSearxngAsTool(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("format") != "json" {

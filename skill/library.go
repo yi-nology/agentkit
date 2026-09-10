@@ -296,6 +296,13 @@ func ParseRichFrontmatter(dirName, content string) (LibMeta, string, error) {
 	}
 	inner := content[3:]
 	rest := strings.TrimPrefix(inner, "\n")
+	// 空 frontmatter：`---\n---` 经剥壳后 rest 以 --- 开头（无前置换行）。
+	if strings.HasPrefix(rest, "---") {
+		after := strings.TrimPrefix(rest, "---")
+		if after == "" || after[0] == '\n' || after[0] == '\r' {
+			return meta, strings.TrimSpace(strings.TrimPrefix(after, "\n")), nil
+		}
+	}
 	// 定位独立成行的闭合 ---。
 	closeAt := -1
 	for off := 0; ; {

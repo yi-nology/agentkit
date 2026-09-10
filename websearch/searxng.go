@@ -52,6 +52,10 @@ func (s *Searxng) Search(ctx context.Context, query string, topK int) ([]Result,
 	if topK <= 0 {
 		topK = 5
 	}
+	hc := s.HTTP
+	if hc == nil {
+		hc = &http.Client{Timeout: 10 * time.Second}
+	}
 	q := url.Values{}
 	q.Set("q", query)
 	q.Set("format", "json")
@@ -62,7 +66,7 @@ func (s *Searxng) Search(ctx context.Context, query string, topK int) ([]Result,
 	if err != nil {
 		return nil, fmt.Errorf("searxng: 构造请求失败: %w", err)
 	}
-	resp, err := s.HTTP.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("searxng: 检索失败: %w", err)
 	}

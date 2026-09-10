@@ -30,6 +30,15 @@ func TestWithTable(t *testing.T) {
 	if s.table != "bq_lease" {
 		t.Fatalf("空表名不应覆盖: %q", s.table)
 	}
+	// 非法标识符拒绝（防拼接注入）
+	s.WithTable("lease; DROP TABLE x")
+	if s.table != "bq_lease" {
+		t.Fatalf("非法表名不应生效: %q", s.table)
+	}
+	s.WithTable("ok_table1")
+	if s.table != "ok_table1" {
+		t.Fatalf("合法表名应生效: %q", s.table)
+	}
 }
 
 // TestMigrateSQL 轻量校验 Migrate 语句形态（无 PG 时跳过集成）。

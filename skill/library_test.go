@@ -103,6 +103,19 @@ func TestLibraryProvider(t *testing.T) {
 	}
 }
 
+func TestParseRichFrontmatterEmpty(t *testing.T) {
+	meta, body, err := ParseRichFrontmatter("x", "---\n---\nbody text\n")
+	if err != nil {
+		t.Fatalf("空 frontmatter 不应报错: %v", err)
+	}
+	if body != "body text" {
+		t.Fatalf("body = %q", body)
+	}
+	if meta.Name != "x" || meta.Mode != ModeStatic {
+		t.Fatalf("meta = %+v", meta)
+	}
+}
+
 func TestDeprecationExpired(t *testing.T) {
 	m := LibMeta{
 		Maturity:   MaturityDeprecated,

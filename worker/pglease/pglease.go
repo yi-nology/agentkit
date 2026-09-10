@@ -7,11 +7,15 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"time"
 )
 
 // DefaultTable 缺省租约表名。
 const DefaultTable = "agentkit_lease"
+
+// tableIdentRe 表名安全白名单：合法 SQL 标识符（防拼接注入）。
+var tableIdentRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // PGLeaseStore 实现 worker.LeaseStore。
 type PGLeaseStore struct {
@@ -24,9 +28,10 @@ func NewPGLeaseStore(db *sql.DB) *PGLeaseStore {
 	return &PGLeaseStore{db: db, table: DefaultTable}
 }
 
-// WithTable 指定租约表名（兼容已有库的自定义表名；非法标识返回后会由 SQL 报错）。
+// WithTable 指定租约表名（兼容已有库的自定义表名）。
+// 非空且不匹配标识符白名单时保持原表名（后续 SQL 仍用安全值）。
 func (s *PGLeaseStore) WithTable(name string) *PGLeaseStore {
-	if name != "" {
+	if name != "" && tableIdentRe.MatchString(name) {
 		s.table = name
 	}
 	return s
