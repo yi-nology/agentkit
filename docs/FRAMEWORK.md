@@ -61,9 +61,11 @@ LLM 应用之间共享的 Go 组件，覆盖模型调用、编排样板、工具
 │ L1 模型层  llm(Client/Resilient 降级链/Budget/StageRouter/成本)  │
 ├──────────────────────────────────────────────────────────────┤
 │ L4 工具与上下文  acpx(9家CLI agent)  mcp(工具池)  workcopy(副本) │
-│                 knowledge/rag(双后端检索)  textutil             │
+│                 knowledge/rag(双后端检索)  websearch  textutil   │
 ├──────────────────────────────────────────────────────────────┤
-│ L5 运行时  breaker(熔断)  worker(队列+选主)  progress(总线)      │
+│ L5 运行时  breaker(熔断)  worker+pglease(队列+选主+PG租约)      │
+│            progress(总线)  hotplug(插拔/热替换)                 │
+│            logredact(脱敏)  jsonrepair(宽容JSON)                │
 │            safejson(反注入) severity(归一/指纹) audit(审计)      │
 ├──────────────────────────────────────────────────────────────┤
 │ L6 可观测  obsx(eino callbacks 追踪/真实 usage 回流)             │
@@ -73,25 +75,30 @@ LLM 应用之间共享的 Go 组件，覆盖模型调用、编排样板、工具
 
 | 包 | 职责 | 外部依赖 | 版本引入 |
 |---|---|---|---|
-| `llm` | LLM 客户端：重试/限速/预算/fitInput/JSON + Resilient 降级链 + StageRouter | eino, eino-ext openai, x/time | v0.1.0（v0.2 降级链，v0.8.1 路由） |
+| `llm` | LLM 客户端：重试/限速/预算/fitInput/JSON + Resilient 降级链 + StageRouter + UsageHandler | eino, eino-ext openai, x/time | v0.1.0（v0.2 降级链，v0.8.1 路由，v0.9.0 UsageHandler） |
 | `agentrun` | ReAct 运行样板 + Plan-and-Execute 样板（ADK 封装） | eino adk | v0.6.0（v0.8.0 P&E） |
 | `toolprior` | 工具优先级决策层：提示词/排序/限流三层约束 | eino | v0.5.2 |
-| `skill` | SKILL.md 解析 + 决策使用（渐进披露） | eino（仅 decision 部分） | v0.5.1 |
+| `skill` | SKILL.md 解析 + 多根 Library（热替换）+ 决策使用（渐进披露） | eino（decision）、yaml.v3（Library） | v0.5.1（v0.9.0 Library） |
 | `reflection` | 反思循环：生成→批判→修订收敛 | eino | v0.8.0 |
 | `router` | LLM 意图路由：分类→选路→分发 | eino | v0.8.0 |
 | `blackboard` | 共享黑板 + 专家轮转 | 无 | v0.8.0 |
 | `acpx` | 9 家 CLI 编码 agent 统一调用 + RunProcess 进程托管 | eino | v0.1.0 后（v0.7.1 导出 RunProcess） |
-| `mcp` | MCP server 工具池（lazy 建连/env 白名单/工具白名单） | eino, eino-ext tool/mcp, mcp-go | v0.5.0 |
+| `mcp` | MCP server 工具池（lazy 建连/env 白名单/工具白名单）+ UnwrapMCPText | eino, eino-ext tool/mcp, mcp-go | v0.5.0（v0.9.0 unwrap） |
 | `workcopy` | Git 工作副本沙箱（singleflight + 引用计数 + TTL） | ekit, x/sync | v0.1.0 |
 | `knowledge/rag` | 双后端 RAG：Local TF-IDF + Milvus 向量 | eino, milvus-sdk-go | v0.1.0 |
+| `websearch` | 公开资料检索抽象：Service + SearXNG + AsTool | eino | v0.9.0 |
 | `breaker` | 熔断器（closed→open→half-open，探测超时兜底） | 无 | v0.1.0 |
 | `worker` | DB 即队列 worker pool + LeaderElector 选主 | ekit | v0.1.0（v0.7.3 选主） |
+| `worker/pglease` | LeaseStore 的 PostgreSQL 实现（表名白名单可配） | 无 | v0.9.0 |
 | `progress` | 泛型事件总线（有损广播 + 丢弃计数） | ekit | v0.1.0 |
+| `hotplug` | 插拔视图 Plugboard + 泛型原子快照 Holder | 无 | v0.9.0 |
+| `logredact` | 日志/审计凭据脱敏（URL/token/Bearer） | 无 | v0.9.0 |
+| `jsonrepair` | LLM 宽容 JSON 修复（栅栏/尾逗号/全角/散文 + 标量归一） | 无 | v0.9.0 |
 | `obsx` | eino callbacks 追踪（结构化日志 + 真实 usage 回流） | eino, ekit | v0.4.0 |
 | `safejson` | Markdown/HTML 反注入 | 无 | v0.1.0 |
 | `severity` | 严重级别归一化 + SHA256 指纹 + glob | 无 | v0.1.0 |
 | `audit` | 审计日志 | ekit | v0.1.0 |
-| `textutil` | rune 安全截断/等分块 | 无 | v0.1.0 |
+| `textutil` | rune 安全截断/等分块/TruncEllipsis | 无 | v0.1.0（v0.9.0 Ellipsis） |
 
 ---
 
@@ -208,6 +215,23 @@ sr.Use("qa", fastGen)                 // 精确路由
 
 精确命中优先、最长前缀其次、未命中走缺省链；`UsedTokens` 聚合全部链；
 预算注入由调用方在注册前完成（`BudgetInjector.WithBudget`）。
+
+### UsageHandler —— 完整用量采集（v0.9.0）
+
+比 `Client.OnUsage` / `obsx.OnUsage` 五数字更完整：Cached/Reasoning tokens、
+FinishReason、Duration、Iteration。归因经 `Labels` 泛化，领域键由调用方决定。
+
+```go
+h := llm.NewUsageHandler(func(r llm.UsageRecord) {
+    // r.Model/PromptTokens/CachedTokens/ReasoningTokens/DurationMS/Iteration/Labels
+})
+ctx = llm.WithUsageLabels(ctx, map[string]string{"session_id": "s1", "agent": "healer"})
+ctx = llm.WithCallCounter(ctx) // 本作用域第几次调用（1 起）
+// 挂进 eino callbacks；无 RunInfo/无 TokenUsage 的调用静默跳过（防双计）
+```
+
+只认带 `RunInfo` 的 OnEnd（compose 杂散包装会二次触发）；`Message.ResponseMeta.Usage`
+作 compose 图节点兜底。调用方可在 sink 侧按 Labels 过滤（无归因跳过）。
 
 ### CostTracker —— 成本记账
 
@@ -393,6 +417,21 @@ useSkill, _ := skill.AsSkillTool(provider, nil) // use_skill(name) 工具；别�
 frontmatter name 只是展示别名，模型用别名回填会被 `AliasResolver` 归一化。
 `Format`（eino FString/pyfmt）渲染模板变量——正文含裸 `{}` 需 `{{}}` 转义。
 
+### Library —— 多根技能库（v0.9.0）
+
+FileProvider 假定单根且缓存不变；平台「文件管定义、页面管状态」需要可热替换的
+多根库（`_shared/skills/` + `<包>/skills/`）：
+
+```go
+lib, err := skill.LoadFromFS(fsys) // 重名 fail-fast；_shared 缺省 frozen
+lib.Get(name) / Body / Has / Describe / Names
+lib.Resolve(ctx, skill.Ref{Name: "oom-diag"}) // 实现 Provider（无缓存，读当前实例）
+lib.ListSkills(ctx) / CanonicalName("展示名")  // Lister + AliasResolver
+```
+
+`LibMeta` 扩展 mode/maturity/version/requires_mcp/deprecated（技能生命周期通用概念）。
+领域校验矩阵与 Rewrite 操作留给调用方；库本身只负责扫描与只读访问。
+
 ---
 
 ## 六、L4 工具与上下文层
@@ -479,10 +518,33 @@ tool := svc.AsTool()               // search_knowledge
 chunk 规则：标题/空行分段、代码块保护、块间 100 rune 重叠、4000 rune 硬上限
 （防超长行/未闭合围栏撑爆 VarChar）。过滤字段白名单：file / heading。
 
+### websearch —— 公开资料检索（v0.9.0）
+
+与 knowledge/rag 互补：本包面向外网公开资料（概念/方法论类兜底），rag 面向私有知识库。
+
+```go
+type Service interface {
+    Search(ctx context.Context, query string, topK int) ([]Result, error)
+}
+ws := websearch.NewSearxng("http://searxng.local", 10*time.Second)
+ws.Language = "zh-CN" // 空串=不传 language
+results, err := ws.Search(ctx, "OOM 排查方法", 5)
+tool := ws.AsTool()   // web_search eino 工具
+```
+
+SearXNG 自建实例（`formats: [html, json]`），零 API key。HTTP 非 200 / 响应非 JSON
+（实例未开 json format）一律报错；无命中返回空切片 + nil error。
+
 ### textutil
 
 `TruncRunes(s, n)`（rune 安全截断；n<0 按全部截断处理不 panic）、
-`SplitRunes(s, n)`（等分块，大文本分块送 LLM 的公共原语）。
+`SplitRunes(s, n)`（等分块，大文本分块送 LLM 的公共原语）、
+`TruncEllipsis(s, n)`（截断并追加省略号，展示面统一语义，v0.9.0）。
+
+### mcp.UnwrapMCPText（v0.9.0）
+
+解 MCP 工具返回信封 `{"content":[{"type":"text","text":...}]}` 取内层文本；
+非信封原样返回——snippet 配额留给有效数据而非包装层。
 
 ---
 
@@ -503,6 +565,42 @@ closed → open（连续失败达阈值）→ half-open（冷却后放行一个�
 不会永久卡死）；**open 期 Failure 不续期冷却**（高流量下被拒请求的 Failure 不会把
 熔断器钉死在 open）。
 
+### logredact —— 凭据脱敏（v0.9.0）
+
+与 safejson（反注入）正交：本包打码凭据，防密钥进日志/审计载荷。
+
+```go
+logredact.Redact("nats://ops:s3cret@host:4222") // nats://ops:****@host:4222
+logredact.RedactValue(payload) // 递归脱敏 map/slice 中的字符串
+```
+
+规则：URL 内嵌账号口令、token/secret/password/api_key 键值对、Authorization/Bearer 头。
+
+### hotplug —— 插拔与热替换（v0.9.0）
+
+```go
+pb := hotplug.NewPlugboard(allSlugs, disabled) // nil 指针=全启用
+pb.Enabled("expert/io") / pb.Disabled()
+
+h := hotplug.NewHolder[Snapshot]()
+h.Store(newSnap) // 原子换整体；读无锁
+cur := h.Load()  // 运行中请求继续用旧快照跑完，新请求即时用新快照
+```
+
+### jsonrepair —— LLM 宽容 JSON（v0.9.0）
+
+栅栏剥离 → 散文抽对象 → 语法修复 → 标量归一。领域 schema 留给调用方。
+
+```go
+jsonrepair.StripFence(s) / ExtractObject(s) / Repair(s) // 全角、非法转义、尾逗号、未闭合括号
+schema := &jsonrepair.Schema{
+    StringKeys: map[string]bool{"summary": true},
+    ListKeys:   map[string]bool{"steps": true},
+    Mutate:     func(k string, m map[string]any) { /* 领域键专属归一 */ },
+}
+err := jsonrepair.ParseLenient(raw, &v, schema)
+```
+
 ### worker —— DB 即队列 + 选主
 
 ```go
@@ -521,12 +619,18 @@ defer wp.Stop(60 * time.Second) // 两阶段：取消领取 → grace → 硬取
 
 ```go
 // 存储：实现 worker.LeaseStore（SQL 一条条件 UPSERT：WHERE lease_key=? AND (holder=? OR expires_at<?)）
-e := worker.NewLeaderElector(store, "argus/poller", instanceID,
+// 或直接用内置 PG 实现（v0.9.0）：
+ls := pglease.NewPGLeaseStore(sqlDB).WithTable("bq_lease") // 表名白名单，防拼接注入
+_ = ls.Migrate(ctx)
+e := worker.NewLeaderElector(ls, "argus/poller", instanceID,
     30*time.Second, 10*time.Second,
     worker.WithOnGained(func() {...}), worker.WithOnLost(func() {...}))
 e.Start(ctx)
 if e.IsLeader() { ... } // 失联 ≤ttl 自动换主；Stop 主动让位
 ```
+
+**worker/pglease**（v0.9.0）：`TryAcquire` 原子 UPSERT（空闲/过期/本人持有 → true）、
+`Release` 仅持有者生效、`Migrate` 建表。缺省表名 `agentkit_lease`。
 
 多副本全景（任务面分片 + 控制面选主）：
 
@@ -761,3 +865,6 @@ flowchart TD
 - **v0.8.2**：deps 升级（ekit v0.27.2 / go 1.26.0，grpc·protobuf 传递升级）
 - **v0.8.3**：router 门槛自守（行为变化）+ 全面可靠性修复（2C+6I）+ rag 等价性能优化 + acpx 文件重组
 - **v0.8.4**：agentrun 观测面补全（reasoning 事件 + tool_call 携带 Args）
+- **v0.9.0**：从 bianque 抽取通用组件——新包 logredact / worker/pglease / websearch /
+  hotplug / jsonrepair；扩展 skill.Library（多根热替换）、llm.UsageHandler（完整用量+Labels）、
+  mcp.UnwrapMCPText、textutil.TruncEllipsis
