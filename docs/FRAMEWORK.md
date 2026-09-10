@@ -758,3 +758,6 @@ flowchart TD
 - **v0.7.3**：worker.LeaderElector 选主
 - **v0.8.0**：七架构补全（PlanAndExecute / reflection / router / blackboard / patterns.md）
 - **v0.8.1**：llm.StageRouter 分阶段路由
+- **v0.8.2**：deps 升级（ekit v0.27.2 / go 1.26.0，grpc·protobuf 传递升级）
+- **v0.8.3**：router 门槛自守（行为变化）+ 全面可靠性修复（2C+6I）+ rag 等价性能优化 + acpx 文件重组
+- **v0.8.4**：agentrun 观测面补全（reasoning 事件 + tool_call 携带 Args）

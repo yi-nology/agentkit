@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.8.4 (2026-09-10)
+
+- **agentrun**: `Event` 观测面补全——新增 `EventReasoning` 事件类型（推理型模型
+  assistant 消息的 `reasoning_content` 以 reasoning 事件先行外发，先于同消息的
+  tool_call/text）；`Event` 新增 `Args` 字段，`tool_call` 事件携带原始 JSON 参数串
+  （观测/进度展示可看到调用命令）。新增回归测试锁死事件序列
+  （reasoning → tool_call(带 Args) → tool_result → text）。
+
 ## v0.8.3 (2026-09-08)
 
 - **router**: `Classify` 门槛自守——MinConfidence 置信度下限与分类合法性
