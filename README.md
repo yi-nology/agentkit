@@ -1,10 +1,10 @@
 # agentkit
 
-AI Agent 开发工具箱 —— 从 Argus 代码审查平台提取的通用组件库。
+AI Agent 开发工具箱 —— 从生产项目提炼的通用组件库：代码审查平台 **Argus** + 智能运维多智能体平台 **bianque**。
 当前版本 **v0.9.1** · Go ≥ 1.25 · 25 个包。
 
 > 📖 **完整框架文档**：[docs/FRAMEWORK.md](docs/FRAMEWORK.md) —— 设计原则、六层架构、
-> 19 包逐一详解（API/示例/边界契约）、横向能力专题（可靠性/成本/多副本/安全）、
+> 各包逐一详解（API/示例/边界契约）、横向能力专题（可靠性/成本/多副本/安全）、
 > 生产实践参考、版本纪律与陷阱清单。
 
 ## 七种 Agent 架构：何时用 / 何时不用
@@ -597,7 +597,9 @@ agentkit/obsx         ← eino 调用追踪
   eino / eino-ext / mcp-go / milvus-sdk-go / x/time / x/sync
 ```
 
-## 从 Argus 迁移
+## 从生产项目迁移
+
+### Argus
 
 Argus 内部包改为 import agentkit：
 
@@ -620,3 +622,18 @@ Argus 内部包改为 import agentkit：
 | `argus/internal/plugin.GlobMatch` | `agentkit/severity.GlobMatch` |
 | `argus/internal/plugin.Fingerprint` | `agentkit/severity.Fingerprint` |
 | `argus/internal/reportview.EscapeUntrusted` | `agentkit/safejson.EscapeUntrusted` |
+
+### bianque（v0.9.0）
+
+| bianque 旧路径 | agentkit 新路径 |
+|---|---|
+| `bianque/internal/logredact` | `agentkit/logredact` |
+| `bianque/internal/search` | `agentkit/websearch` |
+| `bianque/internal/cluster`（PGLeaseStore） | `agentkit/worker/pglease` |
+| `bianque/internal/strutil.Truncate` | `agentkit/textutil.TruncEllipsis` |
+| `bianque/internal/agents` Plugboard/SnapshotStore | `agentkit/hotplug` |
+| `bianque/internal/skills` Library/DecisionProvider | `agentkit/skill.Library` |
+| `bianque/internal/llm/obs.go` UsageHandler | `agentkit/llm.NewUsageHandler` |
+| `bianque/internal/engine/protocol` 宽容 JSON / UnwrapMCPText | `agentkit/jsonrepair` / `agentkit/mcp.UnwrapMCPText` |
+
+报告 schema、专家包 schema、审批/会话等领域模型仍留在 bianque。
