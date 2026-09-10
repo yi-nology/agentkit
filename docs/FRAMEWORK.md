@@ -596,7 +596,7 @@ jsonrepair.StripFence(s) / ExtractObject(s) / Repair(s) // 全角、非法转义
 schema := &jsonrepair.Schema{
     StringKeys: map[string]bool{"summary": true},
     ListKeys:   map[string]bool{"steps": true},
-    Mutate:     func(k string, m map[string]any) { /* 领域键专属归一 */ },
+    OnMap:      func(m map[string]any) { /* 每 map 子节点归一后的领域钩子 */ },
 }
 err := jsonrepair.ParseLenient(raw, &v, schema)
 ```
@@ -868,3 +868,4 @@ flowchart TD
 - **v0.9.0**：从 bianque 抽取通用组件——新包 logredact / worker/pglease / websearch /
   hotplug / jsonrepair；扩展 skill.Library（多根热替换）、llm.UsageHandler（完整用量+Labels）、
   mcp.UnwrapMCPText、textutil.TruncEllipsis
+- **v0.9.1**：jsonrepair.Schema.Mutate → OnMap（子节点归一后触发）

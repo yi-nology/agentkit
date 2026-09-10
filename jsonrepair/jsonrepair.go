@@ -141,8 +141,8 @@ type Schema struct {
 	StringKeys map[string]bool
 	// ListKeys 期望为数组的键：标量 → 单元素数组（或空数组）；元素内标量 → 文本。
 	ListKeys map[string]bool
-	// Mutate 每个顶层/嵌套 map 遍历后的领域钩子（可 nil）。
-	Mutate func(key string, m map[string]any)
+	// OnMap 每个 map 在其子节点归一完成后的领域钩子（可 nil）。可增删改键。
+	OnMap func(m map[string]any)
 }
 
 // Normalize 把字符串位的 bool/数字统一转成文本（宽容留给格式，拦截留给白名单）。
@@ -193,19 +193,20 @@ func walkNormalize(m map[string]any, schema *Schema) {
 				}
 			}
 		}
-		if schema.Mutate != nil {
-			schema.Mutate(k, m)
-		}
-		if sub, ok := v.(map[string]any); ok {
+		// 子节点先归一，OnMap 才能看到已规范化的嵌套结构。
+		if sub, ok := m[k].(map[string]any); ok {
 			walkNormalize(sub, schema)
 		}
-		if arr, ok := v.([]any); ok {
+		if arr, ok := m[k].([]any); ok {
 			for _, item := range arr {
 				if sub, ok := item.(map[string]any); ok {
 					walkNormalize(sub, schema)
 				}
 			}
 		}
+	}
+	if schema.OnMap != nil {
+		schema.OnMap(m)
 	}
 }
 
