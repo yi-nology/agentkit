@@ -15,8 +15,8 @@ import (
 
 // 技能生命周期常量（通用概念，非特定平台专属）。
 const (
-	ModeStatic    = "static"    // 全文注入系统提示
-	ModeOnDemand  = "on_demand" // 决策式：清单 + use_skill 按需加载
+	ModeStatic     = "static"    // 全文注入系统提示
+	ModeOnDemand   = "on_demand" // 决策式：清单 + use_skill 按需加载
 	DefaultVersion = "0.0.0"
 
 	MaturityExperimental = "experimental"
@@ -45,18 +45,21 @@ type Deprecated struct {
 // LibMeta 技能完整元数据（渐进披露清单 + 生命周期管理）。
 // JSON 标签即对外 API 契约（名册/血缘面），变更须同步消费方。
 type LibMeta struct {
-	Name          string      `yaml:"name" json:"name"`
-	Title         string      `yaml:"-" json:"-"` // frontmatter name（展示名）；目录名规范
-	Description   string      `yaml:"description" json:"description"`
-	Mode          string      `yaml:"mode" json:"mode"`
-	Version       string      `yaml:"version,omitempty" json:"version,omitempty"`
-	Maturity      string      `yaml:"maturity,omitempty" json:"maturity,omitempty"`
-	RequiresMCP   []MCPDep    `yaml:"requires_mcp,omitempty" json:"requires_mcp,omitempty"`
-	Deprecated    *Deprecated `yaml:"deprecated,omitempty" json:"deprecated,omitempty"`
-	Provides      []string    `yaml:"provides,omitempty" json:"provides,omitempty"` // 能力标签（登记/展示；重复声明由调用方告警）
-	Compatibility string      `yaml:"compatibility,omitempty" json:"compatibility,omitempty"`
-	Source        string      `yaml:"-" json:"source"` // 来源前缀标签
-	Path          string      `yaml:"-" json:"-"`      // SKILL.md 相对路径
+	Name        string   `yaml:"name" json:"name"`
+	Title       string   `yaml:"-" json:"-"` // frontmatter name（展示名）；目录名规范
+	Description string   `yaml:"description" json:"description"`
+	Mode        string   `yaml:"mode" json:"mode"`
+	Version     string   `yaml:"version,omitempty" json:"version,omitempty"`
+	Maturity    string   `yaml:"maturity,omitempty" json:"maturity,omitempty"`
+	RequiresMCP []MCPDep `yaml:"requires_mcp,omitempty" json:"requires_mcp,omitempty"`
+	// RequiresConfig 技能依赖的集成配置类型（bianque 集成平面）：如 [rag, s3]。
+	// 声明级契约——缺失由调用方告警，不拦截加载。
+	RequiresConfig []string    `yaml:"requires_config,omitempty" json:"requires_config,omitempty"`
+	Deprecated     *Deprecated `yaml:"deprecated,omitempty" json:"deprecated,omitempty"`
+	Provides       []string    `yaml:"provides,omitempty" json:"provides,omitempty"` // 能力标签（登记/展示；重复声明由调用方告警）
+	Compatibility  string      `yaml:"compatibility,omitempty" json:"compatibility,omitempty"`
+	Source         string      `yaml:"-" json:"source"` // 来源前缀标签
+	Path           string      `yaml:"-" json:"-"`      // SKILL.md 相对路径
 }
 
 // DeprecationExpired 弃用窗口是否已过（remove_after 当日结束算未过期）。
@@ -73,8 +76,8 @@ func (m LibMeta) DeprecationExpired(now time.Time) bool {
 
 // LibEntry 库内单技能。
 type LibEntry struct {
-	Full string   // 全文（含 frontmatter）
-	Body string   // 剥 frontmatter 正文
+	Full string // 全文（含 frontmatter）
+	Body string // 剥 frontmatter 正文
 	Meta LibMeta
 }
 
@@ -336,15 +339,16 @@ func ParseRichFrontmatter(dirName, content string) (LibMeta, string, error) {
 	body = strings.TrimSpace(after)
 
 	var typed struct {
-		Name          string      `yaml:"name"`
-		Description   string      `yaml:"description"`
-		Mode          string      `yaml:"mode"`
-		Version       string      `yaml:"version"`
-		Maturity      string      `yaml:"maturity"`
-		RequiresMCP   []MCPDep    `yaml:"requires_mcp"`
-		Deprecated    *Deprecated `yaml:"deprecated"`
-		Provides      []string    `yaml:"provides"`
-		Compatibility string      `yaml:"compatibility"`
+		Name           string      `yaml:"name"`
+		Description    string      `yaml:"description"`
+		Mode           string      `yaml:"mode"`
+		Version        string      `yaml:"version"`
+		Maturity       string      `yaml:"maturity"`
+		RequiresMCP    []MCPDep    `yaml:"requires_mcp"`
+		RequiresConfig []string    `yaml:"requires_config"`
+		Deprecated     *Deprecated `yaml:"deprecated"`
+		Provides       []string    `yaml:"provides"`
+		Compatibility  string      `yaml:"compatibility"`
 	}
 	if err := yaml.Unmarshal([]byte(fmRaw), &typed); err != nil {
 		return meta, body, fmt.Errorf("frontmatter YAML 非法: %w", err)
@@ -359,6 +363,7 @@ func ParseRichFrontmatter(dirName, content string) (LibMeta, string, error) {
 	meta.Version = typed.Version
 	meta.Maturity = typed.Maturity
 	meta.RequiresMCP = typed.RequiresMCP
+	meta.RequiresConfig = typed.RequiresConfig
 	meta.Deprecated = typed.Deprecated
 	meta.Provides = typed.Provides
 	meta.Compatibility = typed.Compatibility

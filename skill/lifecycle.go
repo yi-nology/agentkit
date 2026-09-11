@@ -97,25 +97,27 @@ func RewriteBody(content, body string) (string, error) {
 // frontmatter name，缺省 version 0.0.0 不写回——避免文件被无意义膨胀）。
 func marshalFrontmatter(m LibMeta) (string, error) {
 	out := struct {
-		Name          string      `yaml:"name,omitempty"`
-		Description   string      `yaml:"description,omitempty"`
-		Mode          string      `yaml:"mode"`
-		Version       string      `yaml:"version,omitempty"`
-		Maturity      string      `yaml:"maturity,omitempty"`
-		RequiresMCP   []MCPDep    `yaml:"requires_mcp,omitempty"`
-		Deprecated    *Deprecated `yaml:"deprecated,omitempty"`
-		Provides      []string    `yaml:"provides,omitempty"`
-		Compatibility string      `yaml:"compatibility,omitempty"`
+		Name           string      `yaml:"name,omitempty"`
+		Description    string      `yaml:"description,omitempty"`
+		Mode           string      `yaml:"mode"`
+		Version        string      `yaml:"version,omitempty"`
+		Maturity       string      `yaml:"maturity,omitempty"`
+		RequiresMCP    []MCPDep    `yaml:"requires_mcp,omitempty"`
+		RequiresConfig []string    `yaml:"requires_config,omitempty"`
+		Deprecated     *Deprecated `yaml:"deprecated,omitempty"`
+		Provides       []string    `yaml:"provides,omitempty"`
+		Compatibility  string      `yaml:"compatibility,omitempty"`
 	}{
-		Name:          m.Title,
-		Description:   m.Description,
-		Mode:          m.Mode,
-		Version:       m.Version,
-		Maturity:      m.Maturity,
-		RequiresMCP:   m.RequiresMCP,
-		Deprecated:    m.Deprecated,
-		Provides:      m.Provides,
-		Compatibility: m.Compatibility,
+		Name:           m.Title,
+		Description:    m.Description,
+		Mode:           m.Mode,
+		Version:        m.Version,
+		Maturity:       m.Maturity,
+		RequiresMCP:    m.RequiresMCP,
+		RequiresConfig: m.RequiresConfig,
+		Deprecated:     m.Deprecated,
+		Provides:       m.Provides,
+		Compatibility:  m.Compatibility,
 	}
 	if out.Version == DefaultVersion {
 		out.Version = ""
