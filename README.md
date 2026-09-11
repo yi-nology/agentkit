@@ -1,7 +1,7 @@
 # agentkit
 
 AI Agent 开发工具箱 —— 从生产项目提炼的通用组件库：代码审查平台 **Argus** + 智能运维多智能体平台 **bianque**。
-当前版本 **v0.9.2** · Go ≥ 1.25 · 27 个包。
+当前版本 **v0.9.2** · Go ≥ 1.26 · 26 个包。
 
 > 📖 **完整框架文档**：[docs/FRAMEWORK.md](docs/FRAMEWORK.md) —— 设计原则、六层架构、
 > 各包逐一详解（API/示例/边界契约）、横向能力专题（可靠性/成本/多副本/安全）、
@@ -372,6 +372,10 @@ e := worker.NewLeaderElector(store, "argus/poller", instanceID,
 e.Start(ctx)
 if e.IsLeader() { /* 仅 leader 执行 */ }
 defer e.Stop() // 主动让位，缩短换主窗口
+
+// PG 可直接用内置租约实现（v0.9.0，免自写 LeaseStore）：
+// ls := pglease.NewPGLeaseStore(sqlDB).WithTable("my_lease") // 表名白名单，防拼接注入
+// _ = ls.Migrate(ctx)                                       // 缺省表名 agentkit_lease
 ```
 
 ### 泛型事件总线
@@ -474,6 +478,49 @@ import "git.enjoye.top/enjoydream/agentkit/textutil"
 
 trunc, trimmed := textutil.TruncRunes(longText, 800) // rune 截断（多字节不腰斩）
 chunks := textutil.SplitRunes(bigText, 4000)         // 等分块（大文本分批送 LLM）
+ellipsis := textutil.TruncEllipsis(longText, 60)     // 截断 + 省略号（展示面统一语义，v0.9.0）
+```
+
+### v0.9 新增组件速览
+
+```go
+import "git.enjoye.top/enjoydream/agentkit/logredact"
+
+logredact.Redact("nats://ops:s3cret@host:4222") // nats://ops:****@host:4222
+logredact.RedactValue(payload)                  // 递归脱敏 map/slice 中的凭据字符串
+
+import "git.enjoye.top/enjoydream/agentkit/jsonrepair"
+
+var v MyStruct
+err := jsonrepair.ParseLenient(llmOutput, &v, &jsonrepair.Schema{
+    StringKeys: map[string]bool{"summary": true}, // 领域 schema：标量归一目标
+    ListKeys:   map[string]bool{"steps": true},
+    OnMap:      func(m map[string]any) { /* 每个子 map 归一完成后的领域钩子 */ },
+})
+// 栅栏剥离 → 散文抽对象 → 语法修复（全角/尾逗号/未闭合）→ 标量归一
+
+import "git.enjoye.top/enjoydream/agentkit/websearch"
+
+ws := websearch.NewSearxng("http://searxng.local", 10*time.Second) // 实例须开 json format
+ws.Language = "zh-CN"
+results, _ := ws.Search(ctx, "OOM 排查方法", 5) // 与 rag 互补：面向外网公开资料
+tool := ws.AsTool()                              // web_search eino 工具
+
+import "git.enjoye.top/enjoydream/agentkit/hotplug"
+
+pb := hotplug.NewPlugboard(allSlugs, disabled) // nil disabled = 全启用
+h := hotplug.NewHolder[Snapshot]()
+h.Store(newSnap) // 原子换整体；在途请求用旧快照跑完，新请求即时用新快照
+cur := h.Load()
+
+import "git.enjoye.top/enjoydream/agentkit/pack"
+import "git.enjoye.top/enjoydream/agentkit/lineage"
+
+manifests, warns, _ := pack.LoadToolManifests(fsys) // 包清单整文件替换 _shared 基线
+                                                    // warns 非空 = 包间同名冲突（字典序第一生效）
+lin := lineage.Build(experts, skills, manifests)    // expert→skill→MCP 血缘图（used_by 单源）
+impacts := lineage.Diff(prev, lin)                  // reload 影响面（nil 基线=首帧无 diff）
+focus, _ := lin.Focus("skill-x", 2)                 // 焦点邻接子图（depth≤2 无向）
 ```
 
 ## 细节与边界契约（必读）
@@ -559,11 +606,40 @@ chunks := textutil.SplitRunes(bigText, 4000)         // 等分块（大文本分
   （`IndexType` 字段保留但未生效）；COSINE 下 Score 是相似度（越大越好）。
 - Embedder 每批 16 条串行、带维度校验；集成测试需 `MILVUS_TEST_ADDR` 门控。
 
+**websearch**
+- 面向外网公开资料（与 knowledge/rag 私有知识库互补）；SearXNG 实例须配置
+  `formats: [html, json]`，否则响应非 JSON 直接报错。
+- HTTP 非 200 / 响应非 JSON 一律报错；无命中 = 空切片 + nil error；`Language`
+  空串 = 不传 language 参数。
+
+**jsonrepair / logredact / hotplug**
+- jsonrepair：修复顺序 = 栅栏剥离 → 散文抽对象 → 语法修复 → 标量归一；领域
+  schema（StringKeys/ListKeys/OnMap）留给调用方。`OnMap` 在**子节点归一完成后**
+  对每个 map 触发（v0.9.1 更名自 `Mutate` 并改时机——旧 API 已删，领域钩子现在
+  看得到已规范化的嵌套结构）。
+- logredact：只打码三类——URL 内嵌账号口令 / token·secret·password·api_key
+  键值对 / Authorization·Bearer 头；与 safejson（反注入）正交，一个管密钥一个管注入。
+- hotplug：`NewPlugboard(all, disabled)` 传 nil = 全启用；`Holder.Store` 原子换
+  整体、读无锁——在途请求继续用旧快照跑完，新请求即时用新快照。
+
+**pack / lineage**
+- pack：包清单对 `_shared` 基线是**整文件替换**不是 merge——扩展清单须拷出全量
+  再增改；包间同名 server 冲突 = 警告 + 包名字典序第一生效（警告即治理信号，
+  两包真争同一 server 属治理问题）；无清单目录合法。conf 是装配事实源、清单是
+  契约事实源，对账由调用方做。
+- lineage：只管图机制不绑定装配实现——有效技能集（覆盖感知）由装配方经中性输入
+  注入；`Diff` nil 基线不产出 impact（重启首帧把全量资产报成"新增"是噪音）；
+  工具面 diff 取 manifest ∪ 显式授予并集（只 diff manifest 会让授予变更静默），
+  任一侧 Unlimited 授予则枚举不可知、跳过不产出；`Focus` depth≤2 无向遍历。
+
 **worker**
 - 心跳 20s / 过期判定 90s（`StaleRunningAfter`）——任务须短于此或自行续期。
 - `ClaimNextPending` 实现必须原子（多副本正确性的根）；`Log`/`Queue`/`Run` 为 nil
   会在启动或消费期回退/报错。
 - 多副本要求共享 DB 为网络库；`Stop(grace)` 后心跳可能还有 ≤5s 尾巴。
+- pglease：`TryAcquire` 原子 UPSERT（空闲/过期/本人持有 → true），`Release` 仅
+  持有者生效；表名白名单 `WithTable`（防拼接注入），缺省 `agentkit_lease`，
+  使用前需 `Migrate`。
 
 **breaker / progress / audit / textutil**
 - breaker：`Allow==true` 后必须恰好配对一次 Success/Failure；`Breakers.Now` 仅
@@ -578,25 +654,30 @@ chunks := textutil.SplitRunes(bigText, 4000)         // 等分块（大文本分
 你的项目
     │
     ▼
-agentkit/llm          ← LLM 调用（重试/降级/限速/预算/阶段路由/成本）
-agentkit/agentrun     ← ReAct / Plan-and-Execute 样板
-agentkit/reflection   ← 反思循环
-agentkit/router       ← 意图路由
-agentkit/blackboard   ← 多专家黑板协作
-agentkit/toolprior    ← 工具优先级决策
-agentkit/mcp          ← MCP 工具池
-agentkit/acpx         ← CLI 编码 agent
-agentkit/worker       ← 异步任务队列
-agentkit/breaker      ← 熔断保护
-agentkit/knowledge/   ← 知识检索 + 方法论注入
-agentkit/progress     ← 事件总线
-agentkit/obsx         ← eino 调用追踪
+agentkit/llm            ← LLM 调用（重试/降级/限速/预算/阶段路由/成本/用量）
+agentkit/agentrun       ← ReAct / Plan-and-Execute 样板
+agentkit/reflection     ← 反思循环
+agentkit/router         ← 意图路由
+agentkit/blackboard     ← 多专家黑板协作
+agentkit/toolprior      ← 工具优先级决策
+agentkit/skill          ← SKILL.md 渐进披露 + 多根库 + 版本化契约
+agentkit/pack           ← 领域包 MCP 工具面契约清单
+agentkit/lineage        ← 装配血缘图（依赖 skill + pack）
+agentkit/mcp            ← MCP 工具池
+agentkit/acpx           ← CLI 编码 agent
+agentkit/websearch      ← 公开资料检索
+agentkit/knowledge/rag  ← 双后端知识检索
+agentkit/worker         ← 异步任务队列（+ pglease PG 租约 / LeaderElector 选主）
+agentkit/hotplug        ← 插拔/热替换
+agentkit/jsonrepair     ← 宽容 JSON 修复
+agentkit/logredact      ← 凭据脱敏
+agentkit/breaker        ← 熔断保护
+agentkit/progress       ← 事件总线
+agentkit/obsx           ← eino 调用追踪
+agentkit/safejson · severity · audit · textutil · workcopy  ← 安全/审计/文本/副本沙箱
     │
     ▼
-  ekit                ← 基础设施（日志/并发/指标/配置）
-    │
-    ▼
-  eino / eino-ext / mcp-go / milvus-sdk-go / x/time / x/sync
+  eino / eino-ext / mcp-go / milvus-sdk-go / ekit / x/time / x/sync / semver / yaml.v3
 ```
 
 ## 从生产项目迁移
