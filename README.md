@@ -1,7 +1,7 @@
 # agentkit
 
 AI Agent 开发工具箱 —— 从生产项目提炼的通用组件库：代码审查平台 **Argus** + 智能运维多智能体平台 **bianque**。
-当前版本 **v0.9.1** · Go ≥ 1.25 · 25 个包。
+当前版本 **v0.9.2** · Go ≥ 1.25 · 27 个包。
 
 > 📖 **完整框架文档**：[docs/FRAMEWORK.md](docs/FRAMEWORK.md) —— 设计原则、六层架构、
 > 各包逐一详解（API/示例/边界契约）、横向能力专题（可靠性/成本/多副本/安全）、
@@ -80,7 +80,9 @@ git.enjoye.top/enjoydream/agentkit
 | `knowledge/rag` | 双后端 RAG（Local TF-IDF + Milvus 向量） | eino, milvus-sdk-go |
 | `websearch` | 公开资料检索抽象（Service + SearXNG + AsTool） | eino |
 | `progress` | 泛型事件总线 `Bus[T]`（有损广播 + 丢弃计数） | ekit |
-| `skill` | SKILL.md 解析 + 多根 Library（热替换）+ 决策使用（渐进披露） | eino（decision）、yaml.v3（Library） |
+| `skill` | SKILL.md 解析 + 多根 Library（热替换）+ 决策使用（渐进披露）+ 版本化契约（maturity/弃用窗口/区间求解/结构化写回） | eino（decision）、yaml.v3（Library）、semver（区间） |
+| `pack` | 领域包 MCP 工具面契约清单（_shared 基线 / 包覆盖 / 字典序冲突） | yaml.v3 |
+| `lineage` | 装配血缘图（used_by 单源 + reload 影响面 diff + 焦点子图） | skill, pack |
 | `hotplug` | 插拔视图 Plugboard + 泛型原子快照 Holder | 无 |
 | `logredact` | 日志/审计凭据脱敏（URL/token/Bearer 打码） | 无 |
 | `jsonrepair` | LLM 宽容 JSON 修复（栅栏/尾逗号/全角/散文包裹 + 标量归一） | 无 |
@@ -637,3 +639,13 @@ Argus 内部包改为 import agentkit：
 | `bianque/internal/engine/protocol` 宽容 JSON / UnwrapMCPText | `agentkit/jsonrepair` / `agentkit/mcp.UnwrapMCPText` |
 
 报告 schema、专家包 schema、审批/会话等领域模型仍留在 bianque。
+
+### bianque（v0.9.2）
+
+| bianque 旧路径 | agentkit 新路径 |
+|---|---|
+| `bianque/internal/skills`（SkillMeta/写回/校验/弃用窗口） | `agentkit/skill`（LibMeta/Validate/RewriteMode/RewriteBody/DeprecatedExpiredInUse） |
+| `bianque/internal/skills.VersionInRange` | `agentkit/skill.VersionInRange` |
+| `bianque/internal/agents.SkillRef` | `agentkit/skill.Decl` |
+| `bianque/internal/service.ToolManifest` + loadToolManifests | `agentkit/pack.ToolManifest` + `LoadToolManifests` |
+| `bianque/internal/service` Lineage/DiffLineage/Focus/LineageHub | `agentkit/lineage`（Build/Diff/Focus/Hub，中性输入） |

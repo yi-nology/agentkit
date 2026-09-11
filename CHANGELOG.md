@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.9.2 (2026-09-11)
+
+从 bianque 完整版契约工作（技能版本化 + MCP 工具面契约 + 装配血缘）沉淀三块平台通用件。
+
+### Added（新包）
+
+- **pack**: 领域包契约面——`ToolManifest`（`_shared/mcp/<server>.yaml` 基线 +
+  `<包>/mcp/<server>.yaml` 覆盖）+ `LoadToolManifests`（包清单整文件替换基线；
+  包间同名冲突 → 警告 + 包名字典序第一生效；无清单目录合法）。conf 仍是装配
+  事实源，清单是契约事实源，对账由调用方做。
+- **lineage**: 装配血缘图——expert → skill → MCP server 三类节点的声明式依赖 +
+  used_by 反查单源（`Build`，中性输入，不绑定装配实现）；`Diff` 产出 reload 前后
+  结构化影响清单（版本/成熟度跃迁、工具面增减、引用边增减；nil 基线=首帧无 diff）；
+  `Focus` 焦点邻接子图（depth≤2 无向遍历）；`Hub` 并发读中枢（nil 安全）。
+
+### Added（扩展）
+
+- **skill**: 技能版本化契约补全——
+  - `MCPDep` 增加 `Tools`/`MinVersion`；`LibMeta` 增加 `Provides` 能力标签；
+    `Deprecated` 增加 `ReplacedBy`。
+  - `LibMeta.Validate()`：mode/maturity 枚举、SemVer、弃用窗口（deprecated 必填
+    remove_after 日期）、requires_mcp.server 非空。**行为变化**：`LoadFromFS` 现在
+    fail-fast 拒绝非法元数据（原先只扫描不校验）——错误带文件路径定位。
+  - `RewriteMode`/`RewriteBody`：结构化 frontmatter 写回（改 mode 保留嵌套
+    requires_mcp/provides；改正文保留围栏原文）。无 frontmatter/未闭合报错。
+  - `VersionInRange`：SemVer 区间求解（Masterminds/semver 约束语法，空格=AND）。
+  - `Library.DeprecatedExpiredInUse`：「弃用窗口已过且仍被引用」失败清单。
+  - `Decl`：技能结构化声明引用（裸串与 `{name, version, optional}` yaml 双形态），
+    供 agent/pack 装配声明复用。
+
 ## v0.9.1 (2026-09-10)
 
 - **jsonrepair**: `Schema.Mutate` 更名为 `Schema.OnMap`，并在**子节点归一完成后**对每个

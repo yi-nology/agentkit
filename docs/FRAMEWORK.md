@@ -62,6 +62,7 @@
 ├──────────────────────────────────────────────────────────────┤
 │ L4 工具与上下文  acpx(9家CLI agent)  mcp(工具池)  workcopy(副本) │
 │                 knowledge/rag(双后端检索)  websearch  textutil   │
+│                 pack(包契约清单)  lineage(装配血缘图)             │
 ├──────────────────────────────────────────────────────────────┤
 │ L5 运行时  breaker(熔断)  worker+pglease(队列+选主+PG租约)      │
 │            progress(总线)  hotplug(插拔/热替换)                 │
@@ -78,7 +79,9 @@
 | `llm` | LLM 客户端：重试/限速/预算/fitInput/JSON + Resilient 降级链 + StageRouter + UsageHandler | eino, eino-ext openai, x/time | v0.1.0（v0.2 降级链，v0.8.1 路由，v0.9.0 UsageHandler） |
 | `agentrun` | ReAct 运行样板 + Plan-and-Execute 样板（ADK 封装） | eino adk | v0.6.0（v0.8.0 P&E） |
 | `toolprior` | 工具优先级决策层：提示词/排序/限流三层约束 | eino | v0.5.2 |
-| `skill` | SKILL.md 解析 + 多根 Library（热替换）+ 决策使用（渐进披露） | eino（decision）、yaml.v3（Library） | v0.5.1（v0.9.0 Library） |
+| `skill` | SKILL.md 解析 + 多根 Library（热替换）+ 决策使用（渐进披露）+ 版本化契约（maturity/弃用窗口/Validate/写回/区间） | eino（decision）、yaml.v3（Library）、semver（区间） | v0.5.1（v0.9.0 Library，v0.9.2 契约） |
+| `pack` | 领域包 MCP 工具面契约清单（_shared 基线 / 包整文件覆盖 / 字典序冲突） | yaml.v3 | v0.9.2 |
+| `lineage` | 装配血缘图（used_by 单源 + reload 影响面 Diff + 焦点子图 + Hub） | skill, pack | v0.9.2 |
 | `reflection` | 反思循环：生成→批判→修订收敛 | eino | v0.8.0 |
 | `router` | LLM 意图路由：分类→选路→分发 | eino | v0.8.0 |
 | `blackboard` | 共享黑板 + 专家轮转 | 无 | v0.8.0 |
@@ -429,8 +432,26 @@ lib.Resolve(ctx, skill.Ref{Name: "oom-diag"}) // 实现 Provider（无缓存，�
 lib.ListSkills(ctx) / CanonicalName("展示名")  // Lister + AliasResolver
 ```
 
-`LibMeta` 扩展 mode/maturity/version/requires_mcp/deprecated（技能生命周期通用概念）。
-领域校验矩阵与 Rewrite 操作留给调用方；库本身只负责扫描与只读访问。
+`LibMeta` 承载技能版本化契约（v0.9.2）：mode/maturity/version/requires_mcp
+（tools+min_version）/deprecated（replaced_by+remove_after）/provides/compatibility；
+JSON 标签即对外 API 契约。
+
+**加载即校验（v0.9.2 行为变化）**：`LoadFromFS` 对每条技能跑 `LibMeta.Validate()`
+——mode/maturity 枚举、SemVer、弃用窗口（deprecated 必填 remove_after 日期）、
+requires_mcp.server 非空，非法即 fail-fast（错误带文件路径）。原先只扫描不校验。
+
+```go
+ok, err := skill.VersionInRange("1.2.0", ">=1.0.0 <2.0.0") // SemVer 区间求解
+out, err := skill.RewriteMode(src, skill.ModeOnDemand)     // 结构化写回：改 mode 保留嵌套契约字段
+out, err := skill.RewriteBody(src, "新正文")                // 编辑器路径：围栏原文不动
+expired := lib.DeprecatedExpiredInUse(used, time.Now())    // 弃用窗口已过且仍被引用 → reload 失败清单
+
+type Decl struct{ Name, Version string; Optional bool }    // agent.yaml skills 元素：
+                                                            // 裸串与 {name,version,optional} 双形态
+```
+
+写回纪律：`RewriteMode` 解析→改字段→yaml 序列化，嵌套 requires_mcp/provides 不丢；
+无 frontmatter/未闭合拒绝操作（不猜格式）。`RewriteBody` 保留围栏原文仅换正文。
 
 ---
 
@@ -545,6 +566,40 @@ SearXNG 自建实例（`formats: [html, json]`），零 API key。HTTP 非 200 /
 
 解 MCP 工具返回信封 `{"content":[{"type":"text","text":...}]}` 取内层文本；
 非信封原样返回——snippet 配额留给有效数据而非包装层。
+
+### pack —— 领域包契约清单（v0.9.2）
+
+多包布局（`_shared/` 共享基线 + `<包>/`）下的 MCP 工具面契约：conf 是装配事实源，
+清单是契约事实源，两者对账由调用方做（无清单=现状语义，授予反查推导）。
+
+```go
+manifests, warns, err := pack.LoadToolManifests(fsys)
+m := manifests["security-assistant"]
+m.Has("collect_logs")   // 工具名对账
+m.Version               // min_version 对账基准（skill.VersionInRange）
+```
+
+加载规则（确定性、可测试）：包清单**整文件替换** `_shared` 基线（不是 merge，
+扩展清单须拷出全量再增改）；包间同名冲突 → 警告 + 包名字典序第一生效；
+目录不存在=无清单（合法）。警告文案即治理信号——两包真争同一 server 属治理问题，
+暴露给人裁决。
+
+### lineage —— 装配血缘图（v0.9.2）
+
+expert → skill → MCP server 三类节点的声明式依赖图：used_by/granted_by 反查字段的
+单一事实源（多 list API 共享一份计算，消灭双份漂移）。只管图机制，不绑定装配实现
+——有效技能集（覆盖感知）由装配方经中性输入注入：
+
+```go
+lin := lineage.Build(experts, skills, manifests) // used_by/grants/requires_mcp 边 + 确定性排序
+impacts := lineage.Diff(prev, lin)               // reload 影响面：版本/成熟度跃迁、工具面增减、引用边增减
+focus, ok := lin.Focus("skill-x", 2)             // 焦点邻接子图（无向，depth≤2）
+hub.Set(lin, manifests)                          // Hub：reload/Resync 重建，list API 共享读（nil 安全）
+```
+
+Diff 契约：nil 基线（重启首帧）不产出 impact——把全量资产报成「(新增)」是噪音；
+工具面 diff 取 manifest ∪ 显式授予并集（只 diff manifest 会让授予变更静默），
+任一侧 Unlimited 授予则枚举不可知、跳过不产出。
 
 ---
 
@@ -869,3 +924,6 @@ flowchart TD
   hotplug / jsonrepair；扩展 skill.Library（多根热替换）、llm.UsageHandler（完整用量+Labels）、
   mcp.UnwrapMCPText、textutil.TruncEllipsis
 - **v0.9.1**：jsonrepair.Schema.Mutate → OnMap（子节点归一后触发）
+- **v0.9.2**：从 bianque 契约工作沉淀——新包 pack（工具面契约清单）/ lineage（装配血缘）；
+  skill 版本化契约（Validate 加载即校验【行为变化】/ RewriteMode·RewriteBody 写回 /
+  VersionInRange / Decl / DeprecatedExpiredInUse；MCPDep.Tools·MinVersion、Provides、ReplacedBy）

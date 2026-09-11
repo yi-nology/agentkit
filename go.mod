@@ -12,6 +12,7 @@ require (
 )
 
 require (
+	github.com/Masterminds/semver/v3 v3.3.1 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
