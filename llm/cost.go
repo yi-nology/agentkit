@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"strings"
 	"sync"
 )
 
@@ -85,4 +86,29 @@ type ModelSummary struct {
 // TotalTokens 总 token 消耗。
 func (s ModelSummary) TotalTokens() int {
 	return s.TotalPromptTokens + s.TotalCompletionTokens
+}
+
+// Price 单模型定价（USD / 1M tokens）。
+type Price struct {
+	InputPerM  float64
+	OutputPerM float64
+}
+
+// PriceOf 按模型名匹配定价表估算单次调用成本（USD；未配价返回 0，不阻塞记账）。
+// 精确匹配优先，未命中回落最长前缀（模型名带版本/日期后缀时定价键可只写主干）。
+// 宿主只需提供 map[模型名]Price；来自 bianque scheduler/usage.go 生产路径（v0.9.5 沉淀）。
+func PriceOf(pricing map[string]Price, model string, prompt, completion int) float64 {
+	p, ok := pricing[model]
+	if !ok {
+		bestLen := 0
+		for prefix, cand := range pricing {
+			if len(prefix) > bestLen && strings.HasPrefix(model, prefix) {
+				p, bestLen = cand, len(prefix)
+			}
+		}
+		if bestLen == 0 {
+			return 0
+		}
+	}
+	return (float64(prompt)*p.InputPerM + float64(completion)*p.OutputPerM) / 1e6
 }
