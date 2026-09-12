@@ -14,6 +14,10 @@ var rules = []rule{
 	{regexp.MustCompile(`(?i)\b(nats|postgres|postgresql|mysql|mongodb|http|https|redis|amqp)://([^\s:@/]+):([^\s@/]+)@`), "$1://$2:****@"},
 	// 键值对：token=xxx / api_key:xxx / …webhook/send?key=xxx（值截到 & 或空白）
 	{regexp.MustCompile(`(?i)\b(token|secret|password|passwd|api_?key|access_?key|key)[=:]["']?([^\s&'"]+)`), "$1=****"},
+	// 凭证词键值对（容忍 ": " 空格形态——kubeconfig/私钥 YAML 日志常见；词表凭证专用防散文误伤）
+	{regexp.MustCompile(`(?i)\b(private[-_]?key|secret[-_]?key|passphrase|client[-_]?key|kubeconfig)\s*[=:]\s*["']?([^\s&'"]+)`), "$1=****"},
+	// PEM 私钥整段打码（载荷/日志防泄漏的最后兜底）
+	{regexp.MustCompile(`(?i)-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`), "----PRIVATE KEY ****"},
 	// Authorization 头
 	{regexp.MustCompile(`(?i)(authorization|www-authenticate)\s*[:=]\s*\S+`), "$1=****"},
 	{regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9._~+/=-]+`), "Bearer ****"},

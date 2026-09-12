@@ -730,3 +730,13 @@ Argus 内部包改为 import agentkit：
 | `bianque/internal/agents.SkillRef` | `agentkit/skill.Decl` |
 | `bianque/internal/service.ToolManifest` + loadToolManifests | `agentkit/pack.ToolManifest` + `LoadToolManifests` |
 | `bianque/internal/service` Lineage/DiffLineage/Focus/LineageHub | `agentkit/lineage`（Build/Diff/Focus/Hub，中性输入） |
+
+### bianque（v0.9.4）
+
+| bianque 旧路径 | agentkit 新路径 |
+|---|---|
+| `bianque/internal/llm/failover.go`（failoverModel） | `agentkit/llm.NewFailoverModel`（OnFailover 回调替代全局钩子） |
+| `bianque/internal/engine/runner` mutatingToolSegments | `agentrun.MutatingVerbs` + `IsMutatingTool` + `SideEffectTracker`（重试守卫内建于 RunWithRetry） |
+| `bianque/internal/agents/routing.go` 词表匹配内核 | `agentkit/router.KeywordHit` 四件套（否定守门/词边界/排除构式） |
+| `bianque/internal/logredact`（副本分叉） | `agentkit/logredact`（凭证词 `: ` 空格形态 + PEM 整段规则已合入） |
+| `bianque/internal/strutil.Truncate` | `agentkit/textutil.TruncEllipsis`（v0.9.0 挂账清账） |

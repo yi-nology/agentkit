@@ -219,6 +219,20 @@ sr.Use("qa", fastGen)                 // 精确路由
 精确命中优先、最长前缀其次、未命中走缺省链；`UsedTokens` 聚合全部链；
 预算注入由调用方在注册前完成（`BudgetInjector.WithBudget`）。
 
+### FailoverModel —— 主备模型降级装饰器（v0.9.4）
+
+```go
+fm := llm.NewFailoverModel(primaryModel, backupModel, "deepseek-v3", "glm-4.7")
+fm.OnFailover = func(from, to, reason string) { /* metrics */ }
+```
+
+eino `BaseChatModel`/`ToolCallingChatModel` 双形态装饰器：主模型失败且调用方 ctx
+存活时切备模型重放同一次请求（Stream 仅首块前可切；ctx 取消/超时原样上抛）。
+与 `Resilient` 互补——Resilient 覆盖自家 Generator 客户端路径，FailoverModel
+填补 ReAct 主路径（ADK ChatModelAgent 直调裸模型）的降级空白。切换决策对任何
+错误恒真：确定性错误（401/上下文超限）在主备异端点时能救，误切代价仅一次备
+模型调用。`WithTools` 对主备分别派生后重新包装，ADK 绑工具契约成立。
+
 ### UsageHandler —— 完整用量采集（v0.9.0）
 
 比 `Client.OnUsage` / `obsx.OnUsage` 五数字更完整：Cached/Reasoning tokens、
@@ -280,7 +294,11 @@ out, err := agentrun.RunWithEvents(ctx, agentrun.Config{
   **RunWithRetry + WithCallLimit 组合必须用 Factory**，否则限流计数跨尝试累计；
 - MaxIterations 默认 12；迭代耗尽/空答复返回明确错误，无死循环；
 - 失败语义：与 toolprior 软止损配合（超限返回 LIMIT_REACHED 文本而非 error，
-  不会中止整图丢弃进展）。
+  不会中止整图丢弃进展）；
+- 副作用守卫（v0.9.4）：`RunWithRetry`/`RunWithEventsAndRetry` 首轮已调用变更类
+  工具（`IsMutatingTool` 动词段判定，`MutatingVerbs` 可扩展）后不再整体重跑——
+  重跑会重复副作用（脚本执行/服务操作类工具首轮已生效），如实上抛交调用方降级；
+  只读/幂等工具场景置 `Config.RetryAfterMutation=true` 恢复无条件重试。
 
 ```mermaid
 sequenceDiagram
@@ -345,6 +363,20 @@ d, out, _ := r.Do(ctx, userInput) // d.Route/d.Confidence/d.Reason 全可观测
 
 与 skill 的分工：意图可枚举（≤10）用 router（一次分类调用，各类链任意编排）；
 类别多/由文档承载/需看全文再定用 skill 隐式路由。可组合：router 粗分到域，域内 skill 细分。
+
+#### 词表匹配内核（v0.9.4）
+
+LLM 分类之外的确定性层（词表兜底优先于 LLM）——中文关键词三重守门：
+
+```go
+router.KeywordHit("磁盘没有问题", "磁盘")            // false：否定前置守门
+router.KeywordHitBoundary("进程被 killed", "kill")   // false：词边界（不误命中 killed）
+router.KeywordHitExcept("怎么执行这个脚本", "执行",
+    []string{"怎么执行"})                             // false：排除构式（how-to 不触发执行链）
+```
+
+守门只作废该处命中——多处出现任一处通过即命中；疑问构式（有没有/是不是/要不要）
+先剥离再判否定。适用任何中文意图词表路由，不限于 router.New 的 LLM 分类流程。
 
 ### blackboard —— 无中心多专家协作
 

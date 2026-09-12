@@ -32,6 +32,28 @@ func TestRedact(t *testing.T) {
 			want:           "password=**** user=bob",
 			mustNotContain: "hunter2",
 		},
+		{
+			// 凭证词键值对容忍 ": " 空格形态（kubeconfig/私钥 YAML 日志常见）
+			in:             "private-key: MIIEvQIBADANBgkq",
+			want:           "private-key=****",
+			mustNotContain: "MIIEvQ",
+		},
+		{
+			in:             "kubeconfig = /home/u/.kube/config with secret-key: abc123",
+			want:           "secret-key=****",
+			mustNotContain: "abc123",
+		},
+		{
+			// PEM 私钥整段打码
+			in:             "-----BEGIN RSA PRIVATE KEY-----\nMIIEow...\nasdf\n-----END RSA PRIVATE KEY-----",
+			want:           "----PRIVATE KEY ****",
+			mustNotContain: "MIIEow",
+		},
+		{
+			// 散文中的普通键值不受凭证词表误伤
+			in:   "user-keynote: 演讲主题",
+			want: "user-keynote: 演讲主题",
+		},
 	}
 	for _, c := range cases {
 		got := Redact(c.in)

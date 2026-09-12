@@ -51,6 +51,10 @@ type Config struct {
 	ToolsFactory func() []tool.BaseTool
 	// MaxIterations ReAct 循环轮数上限（默认 12）。
 	MaxIterations int
+	// RetryAfterMutation 变更类工具已执行后仍允许整体重试（默认 false=守卫生效：
+	// 首轮调过变更类工具后失败不再重跑——重复副作用风险，如实上抛交调用方降级）。
+	// 只读/幂等工具场景可置 true 恢复无条件重试。
+	RetryAfterMutation bool
 }
 
 // Event agent 运行过程事件（OnEvent 回调载荷，观测/进度展示用）。
@@ -100,21 +104,31 @@ func RunWithEvents(ctx context.Context, cfg Config, query string, onEvent func(E
 // RunWithRetry 失败回喂重试一次：首次失败（或产出空文本）时以 retryQuery 再跑。
 // retryQuery 由调用方构造（可携带首轮错误/输出摘要作为反馈上下文）。
 // 两次均失败返回末次错误。
+// 副作用守卫：首轮已调用变更类工具（见 IsMutatingTool）后不整体重跑，除非
+// Config.RetryAfterMutation=true——重跑会重复副作用（脚本执行/服务操作类工具
+// 在首轮已生效）。
 // 注意：两次尝试共用 cfg.Tools 实例——工具表含 toolprior.WithCallLimit 等
 // 有状态包装时，限流计数会跨尝试累计；需要按尝试重置预算请设置 ToolsFactory。
 func RunWithRetry(ctx context.Context, cfg Config, query, retryQuery string) (string, error) {
-	out, err := run(ctx, cfg, query, nil)
+	out, mutating, err := runWithMeta(ctx, cfg, query, nil)
 	if err == nil {
 		return out, nil
+	}
+	if mutating != "" && !cfg.RetryAfterMutation {
+		return "", mutationSkipErr(mutating, err)
 	}
 	return run(ctx, cfg, retryQuery, nil)
 }
 
 // RunWithEventsAndRetry 带 过程事件回调 的失败回喂重试（重试过程可观测）。
+// 副作用守卫与 RunWithRetry 一致：首轮调过变更类工具后不整体重跑（观测事件照常全量回调）。
 func RunWithEventsAndRetry(ctx context.Context, cfg Config, query, retryQuery string, onEvent func(Event)) (string, error) {
-	out, err := run(ctx, cfg, query, onEvent)
+	out, mutating, err := runWithMeta(ctx, cfg, query, onEvent)
 	if err == nil {
 		return out, nil
+	}
+	if mutating != "" && !cfg.RetryAfterMutation {
+		return "", mutationSkipErr(mutating, err)
 	}
 	return run(ctx, cfg, retryQuery, onEvent)
 }

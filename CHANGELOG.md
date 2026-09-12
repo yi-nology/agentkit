@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.9.4 (2026-09-13)
+
+bianque 生产装配四连沉淀：模型级 failover、副作用感知重试守卫、中文词表匹配内核、脱敏规则增强。
+
+### Added
+
+- **llm**: `FailoverModel` 主备 failover 装饰器——eino `BaseChatModel`/`ToolCallingChatModel`
+  双形态；主模型失败且调用方 ctx 存活时切备模型重放同一次请求（Stream 仅首块前可切）。
+  切换决策对任何错误恒真（确定性错误在主备异端点/异凭证时能救，误切代价仅一次备模型调用）；
+  `OnFailover` 观测回调。与 `Resilient` 互补：Resilient 覆盖自家 Generator 客户端路径，
+  FailoverModel 填补 ReAct 主路径（ADK ChatModelAgent 直调裸模型）的降级空白。
+- **agentrun**: 副作用感知的重试守卫——`RunWithRetry`/`RunWithEventsAndRetry` 首轮已调用
+  变更类（非幂等）工具后**不再整体重跑**（重复副作用风险，如实上抛交调用方降级；
+  `Config.RetryAfterMutation=true` 可解除）。**行为变化**：原先无条件重试，守卫默认生效。
+  配套导出 `MutatingVerbs`（动词段表，可扩展）+ `IsMutatingTool`（下划线分段精确匹配，
+  `use_skill`/`get_running_config` 不误判）+ `SideEffectTracker`（事件回调观测器）。
+- **router**: 中文词表匹配内核——`KeywordHit`（子串 + 否定前置守门：紧前方 15 字节窗口内
+  出现否定短语即该处作废；「有没有/是不是/要不要」疑问构式先剥离再判）、
+  `KeywordHitBoundary`（拉丁词边界：紧邻字符非字母/数字，kill 不误命中 skill/killed）、
+  `KeywordHitExcept`/`KeywordHitBoundaryExcept`（排除构式：命中落在 mask 短语内部该处
+  作废）。三重守门都只作废该处命中——多处出现任一处通过即命中。`OnNegationHit` 观测钩子。
+- **logredact**: 合并 bianque 增强规则——凭证词键值对容忍 `: ` 空格形态
+  （`private-key:`/`secret_key:`/`passphrase`/`kubeconfig`，kubeconfig/私钥 YAML 日志常见）
+  + PEM 私钥整段打码（载荷防泄漏最后兜底）。
+
+### Migrated（bianque 侧）
+
+- `internal/llm/failover.go` → `agentkit/llm.NewFailoverModel`
+- `internal/engine/runner` 变更类工具判定 → `agentrun.IsMutatingTool`
+- `internal/agents/routing.go` 词表匹配内核 → `agentkit/router`（`KeywordHit` 四件套）
+- `internal/logredact` 副本删除（增强已合入 agentkit）
+- `internal/strutil.Truncate` → `textutil.TruncEllipsis`（v0.9.0 迁移表挂账清账）
+
 ## v0.9.2 (2026-09-11)
 
 从 bianque 完整版契约工作（技能版本化 + MCP 工具面契约 + 装配血缘）沉淀三块平台通用件。
