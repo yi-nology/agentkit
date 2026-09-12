@@ -11,12 +11,18 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-type fakeModel struct{ resp string }
+type fakeModel struct {
+	resp       string
+	lastSystem string // 最近一次分类调用的 system 消息（提示词断言用）
+}
 
 func (f *fakeModel) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
 	return nil, fmt.Errorf("桩不支持流式")
 }
-func (f *fakeModel) Generate(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+func (f *fakeModel) Generate(_ context.Context, msgs []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	if len(msgs) > 0 {
+		f.lastSystem = msgs[0].Content
+	}
 	return &schema.Message{Role: schema.Assistant, Content: f.resp}, nil
 }
 
@@ -169,3 +175,54 @@ func TestRouterClassifyClampsConfidence(t *testing.T) {
 		t.Fatalf("越界置信度应钳位到 1.0: %+v %v", d, err)
 	}
 }
+
+// 槽位提取：同一分类调用顺带提取已配置槽位；未配置槽位名一律丢弃（不透传模型幻觉），
+// 空值丢弃、超长值截断；未配置 Slots 时提示词保持纯选路原样。
+func TestRouterClassifySlots(t *testing.T) {
+	r, err := New(&Config{
+		Model:  &fakeModel{resp: `{"route":"bug-fix","confidence":0.9,"reason":"修代码","slots":{"plan":"true","hack":"x","empty":"  ","long":"` + strings.Repeat("长", 80) + `"}}`},
+		Routes: testRoutes(),
+		Slots: []SlotSpec{
+			{Name: "plan", Description: "是否要方案（true/false）"},
+			{Name: "long", Description: "超长值截断用"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := r.Classify(context.Background(), "修复这个空指针")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Slots["plan"] != "true" {
+		t.Fatalf("已配置槽位应保留: %+v", d.Slots)
+	}
+	if _, ok := d.Slots["hack"]; ok {
+		t.Fatalf("未配置槽位应丢弃: %+v", d.Slots)
+	}
+	if _, ok := d.Slots["empty"]; ok {
+		t.Fatalf("空值槽位应丢弃: %+v", d.Slots)
+	}
+	if got := d.Slots["long"]; len(got) != slotValueCap {
+		t.Fatalf("超长槽位值应截断到 %d: %d", slotValueCap, len(got))
+	}
+}
+
+// 未配置 Slots：提示词不含槽位段，模型多给的 slots 一律丢弃（Decision.Slots=nil）。
+func TestRouterClassifyNoSlotsConfigDropsReplySlots(t *testing.T) {
+	m := &fakeModel{resp: `{"route":"explain","confidence":0.9,"reason":"解释","slots":{"plan":"true"}}`}
+	r, err := New(&Config{Model: m, Routes: testRoutes()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := r.Classify(context.Background(), "什么是空指针")
+	if err != nil || d.Slots != nil {
+		t.Fatalf("未配置槽位应丢弃且回复 slots 不透传: %+v %v", d.Slots, err)
+	}
+	if strings.Contains(m.gotSystemPrompt(), "slots") {
+		t.Fatalf("纯选路提示词不应含槽位段: %q", m.gotSystemPrompt())
+	}
+}
+
+// gotSystemPrompt 返回分类调用的 system 消息（提示词断言用）。
+func (f *fakeModel) gotSystemPrompt() string { return f.lastSystem }
