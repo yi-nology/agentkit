@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.9.5 (2026-09-13)
+
+bianque 生产两连沉淀：前缀定价估算 + 通用派发守卫。
+
+### Added
+
+- **llm**: `PriceOf` 按模型名匹配定价表估算单次调用成本（USD）——精确匹配优先，
+  未命中回落最长前缀（模型名带版本/日期后缀时定价键可只写主干），未配价返回 0
+  不阻塞记账。宿主只需提供 `map[模型名]Price`（沉自 bianque scheduler/usage.go priceOf）。
+- **dispatch（新包）**: 通用派发守卫——allow 矩阵 + 深度上限 + 自派发拒绝；
+  拓扑边经 `EdgeSource` 接口由宿主注册表提供，守卫构建期物化矩阵、运行期只读；
+  被拒派发返回结构化 `*DenyError`（not_allowed / depth_exceeded / self_dispatch）——
+  调用方不得转述、不得降级，按失败兜底如实上报
+  （沉自 bianque engine/dispatch/guard.go，注册表耦合改接口）。
+
+### Migrated（bianque 侧）
+
+- `internal/scheduler/usage.go` priceOf → `agentkit/llm.PriceOf`
+- `internal/engine/dispatch/guard.go` → `agentkit/dispatch`（`EdgeSource` 接口注入拓扑）
+
 ## v0.9.4 (2026-09-13)
 
 bianque 生产装配四连沉淀：模型级 failover、副作用感知重试守卫、中文词表匹配内核、脱敏规则增强。
@@ -32,6 +52,20 @@ bianque 生产装配四连沉淀：模型级 failover、副作用感知重试守
 - `internal/agents/routing.go` 词表匹配内核 → `agentkit/router`（`KeywordHit` 四件套）
 - `internal/logredact` 副本删除（增强已合入 agentkit）
 - `internal/strutil.Truncate` → `textutil.TruncEllipsis`（v0.9.0 迁移表挂账清账）
+
+## v0.9.3 (2026-09-12)
+
+意图维度下沉两件：router 意图槽位 + skill 集成配置依赖声明。
+
+### Added
+
+- **router**: 意图槽位——`Config.Slots` 配置槽位定义（nil = 纯选路，提示词与解析
+  原样），分类调用在选路的同时顺带提取附加意图维度（如「是否要方案」），与选路共用
+  一次 LLM 调用（零额外延迟/费用）；`Decision.Slots` 携带提取结果。自守恒：未配置
+  槽位名一律丢弃、空值丢弃、超长值截断——槽位提取失败不影响选路本身。
+- **skill**: SKILL.md frontmatter 新增 `requires_config`——技能级集成配置依赖声明
+  （如 `[rag, s3]`）。声明级契约：缺失由调用方（bianque reload）告警，不拦截加载；
+  解析/写回保留。
 
 ## v0.9.2 (2026-09-11)
 

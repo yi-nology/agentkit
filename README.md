@@ -1,7 +1,7 @@
 # agentkit
 
 AI Agent 开发工具箱 —— 从生产项目提炼的通用组件库：代码审查平台 **Argus** + 智能运维多智能体平台 **bianque**。
-当前版本 **v0.9.2** · Go ≥ 1.26 · 26 个包。
+当前版本 **v0.9.5** · Go ≥ 1.26 · 27 个包。
 
 > 📖 **完整框架文档**：[docs/FRAMEWORK.md](docs/FRAMEWORK.md) —— 设计原则、六层架构、
 > 各包逐一详解（API/示例/边界契约）、横向能力专题（可靠性/成本/多副本/安全）、
@@ -740,3 +740,10 @@ Argus 内部包改为 import agentkit：
 | `bianque/internal/agents/routing.go` 词表匹配内核 | `agentkit/router.KeywordHit` 四件套（否定守门/词边界/排除构式） |
 | `bianque/internal/logredact`（副本分叉） | `agentkit/logredact`（凭证词 `: ` 空格形态 + PEM 整段规则已合入） |
 | `bianque/internal/strutil.Truncate` | `agentkit/textutil.TruncEllipsis`（v0.9.0 挂账清账） |
+
+### bianque（v0.9.5）
+
+| bianque 旧路径 | agentkit 新路径 |
+|---|---|
+| `bianque/internal/scheduler/usage.go` priceOf | `agentkit/llm.PriceOf`（精确 → 最长前缀回落，未配价归零） |
+| `bianque/internal/engine/dispatch/guard.go` | `agentkit/dispatch`（注册表耦合改 `EdgeSource` 接口注入拓扑） |

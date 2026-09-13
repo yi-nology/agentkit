@@ -1,6 +1,6 @@
 # agentkit 框架完整文档
 
-> 版本：v0.9.2 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
+> 版本：v0.9.5 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
 > 配套文档：[架构模式支持矩阵](patterns.md)（七架构何时用/何时不用）· [README](../README.md)（快速上手）
 
 > 文中架构图使用 Mermaid：Forgejo/GitHub 等端原生渲染；不支持渲染的查看端，
@@ -13,7 +13,7 @@
 1. [框架定位与设计原则](#一框架定位与设计原则)
 2. [总体架构与包清单](#二总体架构与包清单)
 3. [L1 模型层 —— llm](#三l1-模型层--llm)
-4. [L2 编排层 —— agentrun / reflection / router / blackboard](#四l2-编排层--agentrun--reflection--router--blackboard)
+4. [L2 编排层 —— agentrun / reflection / router / blackboard / dispatch](#四l2-编排层--agentrun--reflection--router--blackboard--dispatch)
 5. [L3 决策层 —— toolprior / skill](#五l3-决策层--toolprior--skill)
 6. [L4 工具与上下文层 —— acpx / mcp / workcopy / knowledge/rag / textutil](#六l4-工具与上下文层)
 7. [L5 运行时基础设施 —— breaker / worker / progress / safejson / severity / audit](#七l5-运行时基础设施)
@@ -55,6 +55,7 @@
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │ L2 编排层  agentrun(ReAct/P&E)  reflection  router  blackboard │
+│            dispatch(派发守卫: allow矩阵+深度上限+自派发拒绝)     │
 ├──────────────────────────────────────────────────────────────┤
 │ L3 决策层  toolprior(工具优先级/限流)    skill(渐进披露)         │
 ├──────────────────────────────────────────────────────────────┤
@@ -76,15 +77,16 @@
 
 | 包 | 职责 | 外部依赖 | 版本引入 |
 |---|---|---|---|
-| `llm` | LLM 客户端：重试/限速/预算/fitInput/JSON + Resilient 降级链 + StageRouter + UsageHandler | eino, eino-ext openai, x/time | v0.1.0（v0.2 降级链，v0.8.1 路由，v0.9.0 UsageHandler） |
+| `llm` | LLM 客户端：重试/限速/预算/fitInput/JSON + Resilient 降级链 + StageRouter + UsageHandler + PriceOf 定价估算 | eino, eino-ext openai, x/time | v0.1.0（v0.2 降级链，v0.8.1 路由，v0.9.0 UsageHandler，v0.9.5 PriceOf） |
 | `agentrun` | ReAct 运行样板 + Plan-and-Execute 样板（ADK 封装） | eino adk | v0.6.0（v0.8.0 P&E） |
 | `toolprior` | 工具优先级决策层：提示词/排序/限流三层约束 | eino | v0.5.2 |
-| `skill` | SKILL.md 解析 + 多根 Library（热替换）+ 决策使用（渐进披露）+ 版本化契约（maturity/弃用窗口/Validate/写回/区间） | eino（decision）、yaml.v3（Library）、semver（区间） | v0.5.1（v0.9.0 Library，v0.9.2 契约） |
+| `skill` | SKILL.md 解析 + 多根 Library（热替换）+ 决策使用（渐进披露）+ 版本化契约（maturity/弃用窗口/Validate/写回/区间/requires_config） | eino（decision）、yaml.v3（Library）、semver（区间） | v0.5.1（v0.9.0 Library，v0.9.2 契约，v0.9.3 requires_config） |
 | `pack` | 领域包 MCP 工具面契约清单（_shared 基线 / 包整文件覆盖 / 字典序冲突） | yaml.v3 | v0.9.2 |
 | `lineage` | 装配血缘图（used_by 单源 + reload 影响面 Diff + 焦点子图 + Hub） | skill, pack | v0.9.2 |
 | `reflection` | 反思循环：生成→批判→修订收敛 | eino | v0.8.0 |
-| `router` | LLM 意图路由：分类→选路→分发 | eino | v0.8.0 |
+| `router` | LLM 意图路由：分类→选路→分发（意图槽位 + 词表匹配内核） | eino | v0.8.0（v0.9.3 槽位，v0.9.4 词表内核） |
 | `blackboard` | 共享黑板 + 专家轮转 | 无 | v0.8.0 |
+| `dispatch` | 通用派发守卫：allow 矩阵 + 深度上限 + 自派发拒绝（EdgeSource 拓扑注入，DenyError 结构化拒绝） | 无 | v0.9.5 |
 | `acpx` | 9 家 CLI 编码 agent 统一调用 + RunProcess 进程托管 | eino | v0.1.0 后（v0.7.1 导出 RunProcess） |
 | `mcp` | MCP server 工具池（lazy 建连/env 白名单/工具白名单）+ UnwrapMCPText | eino, eino-ext tool/mcp, mcp-go | v0.5.0（v0.9.0 unwrap） |
 | `workcopy` | Git 工作副本沙箱（singleflight + 引用计数 + TTL） | ekit, x/sync | v0.1.0 |
@@ -261,6 +263,19 @@ ct.Summary() // map[model]ModelSummary{TotalTokens, TotalCostUSD, CallCount}
 上限 10_000 条（防长驻进程无界增长）。注意：`llm.Client.OnUsage` 只覆盖 Generate
 路径；ReAct（RawModel 直用）路径的真实 usage 经 `obsx.Options.OnUsage` 回流（见 obsx）。
 
+#### PriceOf —— 定价估算（v0.9.5）
+
+按模型名匹配定价表估算单次调用成本（USD）；精确匹配优先，未命中回落最长前缀
+（模型名带版本/日期后缀时定价键可只写主干），未配价返回 0 不阻塞记账：
+
+```go
+cost := llm.PriceOf(map[string]llm.Price{
+    "glm-4": {InputPerM: 0.6, OutputPerM: 2.2}, // 后缀版本名自动回落到此前缀
+}, "glm-4.6-20260901", promptTokens, completionTokens)
+```
+
+宿主只需提供 `map[模型名]Price`；与 CostTracker 记账、UsageHandler 用量采集互补。
+
 ### 其他 API
 
 - `ExtractJSON(s)`：从模型输出剥围栏/截取首个 JSON 对象或数组；
@@ -268,7 +283,7 @@ ct.Summary() // map[model]ModelSummary{TotalTokens, TotalCostUSD, CallCount}
 
 ---
 
-## 四、L2 编排层 —— agentrun / reflection / router / blackboard
+## 四、L2 编排层 —— agentrun / reflection / router / blackboard / dispatch
 
 ### agentrun —— ReAct 运行样板
 
@@ -364,6 +379,25 @@ d, out, _ := r.Do(ctx, userInput) // d.Route/d.Confidence/d.Reason 全可观测
 与 skill 的分工：意图可枚举（≤10）用 router（一次分类调用，各类链任意编排）；
 类别多/由文档承载/需看全文再定用 skill 隐式路由。可组合：router 粗分到域，域内 skill 细分。
 
+#### 意图槽位（v0.9.3）
+
+分类调用在选路的同时顺带提取附加意图维度（如「是否要方案」）——与选路共用一次
+LLM 调用（零额外延迟/费用）；槽位是选路之外的正交维度，不改变走哪条链，只改变链内行为：
+
+```go
+r, _ := router.New(&router.Config{
+    // ...Routes 同上...
+    Slots: []router.SlotSpec{
+        {Name: "plan", Description: "用户是否要处理方案，true/false"},
+    },
+})
+d, _, _ := r.Classify(ctx, input)
+d.Slots["plan"] // "true"/"false"；模型未给的槽位不出现在结果里
+```
+
+自守恒：未配置槽位名一律丢弃、空值丢弃、超长值截断——槽位提取失败不影响选路本身；
+`Slots: nil` 时提示词与解析保持原样。
+
 #### 词表匹配内核（v0.9.4）
 
 LLM 分类之外的确定性层（词表兜底优先于 LLM）——中文关键词三重守门：
@@ -395,6 +429,24 @@ res, _ := blackboard.Convene(ctx, board, []blackboard.Specialist{
 
 线程安全 Board（单调 Seq + since 游标增量）；每轮各专家依次观察，**一整轮无人贡献
 即共识停止**。与 Supervisor（中心指派）互斥选择；专家彼此独立时用并行 fan-out 更优。
+
+### dispatch —— 通用派发守卫（v0.9.5）
+
+多智能体引擎的派发闸门：allow 矩阵 + 深度上限 + 自派发拒绝。拓扑边由宿主经
+`EdgeSource` 抽象提供（slug 全集 + 各 slug 允许派发的目标），构建期物化矩阵、
+运行期只读：
+
+```go
+g := dispatch.NewGuard(myRegistry, 4)         // EdgeSource + maxDepth
+err := g.Assert("planner", "executor", depth) // 不合法返回 *DenyError
+// DenyError{Caller, Callee, Depth, Reason: not_allowed | depth_exceeded | self_dispatch}
+g.AssertDepth(depth)                          // 仅校验深度（引擎内部环节推进用）
+g.Allowed("planner", "executor")              // 只读查询（事件载荷/诊断面展示可达性）
+```
+
+`DenyError` 是结构化拒绝——调用方不得转述、不得降级，按失败兜底如实上报
+（可原样落审计事件载荷）。沉淀自 bianque engine/dispatch，注册表耦合改为
+`EdgeSource` 接口（宿主注册表的最小投影）。
 
 ---
 
@@ -466,7 +518,8 @@ lib.ListSkills(ctx) / CanonicalName("展示名")  // Lister + AliasResolver
 
 `LibMeta` 承载技能版本化契约（v0.9.2）：mode/maturity/version/requires_mcp
 （tools+min_version）/deprecated（replaced_by+remove_after）/provides/compatibility；
-JSON 标签即对外 API 契约。
+`requires_config`（v0.9.3）声明技能依赖的集成配置类型（如 `[rag, s3]`）——声明级
+契约，缺失由调用方告警、不拦截加载。JSON 标签即对外 API 契约。
 
 **加载即校验（v0.9.2 行为变化）**：`LoadFromFS` 对每条技能跑 `LibMeta.Validate()`
 ——mode/maturity 枚举、SemVer、弃用窗口（deprecated 必填 remove_after 日期）、
@@ -844,6 +897,7 @@ flowchart LR
 ```
 预算：BudgetConfig 由窗口单一基准派生（diff 上限 35%/任务预算 60%/输出 5%）
 记账：llm.Client.OnUsage（直连）+ obsx.OnUsage（ReAct 旁路）双口径 → CostTracker
+定价：llm.PriceOf 前缀定价表估算成本（精确 → 最长前缀回落，未配价归零）
 路由：StageRouter 按阶段分级配模型（大窗口吃长输入/快模型跑判定/强模型保质量）
 ```
 
@@ -959,3 +1013,11 @@ flowchart TD
 - **v0.9.2**：从 bianque 契约工作沉淀——新包 pack（工具面契约清单）/ lineage（装配血缘）；
   skill 版本化契约（Validate 加载即校验【行为变化】/ RewriteMode·RewriteBody 写回 /
   VersionInRange / Decl / DeprecatedExpiredInUse；MCPDep.Tools·MinVersion、Provides、ReplacedBy）
+- **v0.9.3**：router 意图槽位（选路同调用顺带提取，`Decision.Slots`，自守恒）；
+  skill frontmatter 新增 requires_config（集成配置依赖声明级契约）
+- **v0.9.4**：bianque 生产装配四连——llm.FailoverModel 主备降级装饰器；
+  agentrun 副作用感知重试守卫【行为变化：变更类工具后不再整体重跑】；
+  router 中文词表匹配内核（KeywordHit 四件套）；logredact 合并 bianque 增强
+  规则（凭证词 `: ` 空格形态 + PEM 整段打码）
+- **v0.9.5**：llm.PriceOf 前缀定价估算；新包 dispatch（通用派发守卫，
+  EdgeSource 拓扑注入 + DenyError 结构化拒绝）——第 27 包
