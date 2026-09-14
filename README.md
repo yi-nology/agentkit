@@ -92,7 +92,7 @@ git.enjoye.top/enjoydream/agentkit
 | `severity` | 严重级别归一化 + 指纹 + glob 匹配 | 无 |
 | `safejson` | Markdown/HTML 反注入 | 无 |
 | `audit` | 审计日志 | ekit |
-| `textutil` | rune 安全截断 + 等分块 + TruncEllipsis | 无 |
+| `textutil` | rune 安全截断 + 等分块 + TruncEllipsis + 近重复检测（bigram 集合 + Jaccard） | 无 |
 | `workcopy` | Git 工作副本沙箱（singleflight + 引用计数 + TTL 回收） | ekit, x/sync |
 
 ## 快速使用

@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.10.0 (2026-09-14)
+
+heimdallr 通用能力沉淀（近重复检测 / 评测统计 / Langfuse 只读客户端）。
+
+### Added
+
+- **textutil**: 近重复检测原语——`BigramSet` 字符 bigram 集合（小写化、去空白、
+  单字有指纹）、`Jaccard` 集合系数（皆空视为相同）、`Similarity` 文本相似度组合
+  便利、`NearDuplicate` 阈值判定。可解释、小文本下精确、零依赖；百~千候选规模
+  直接比对足够快，不必上向量库（沉自 heimdallr internal/mine 挖掘去重）。
+
 ## v0.9.8 (2026-09-14)
 
 argus 宽容解析入口沉淀。

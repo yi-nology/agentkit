@@ -108,7 +108,7 @@
 | `safejson` | Markdown/HTML 反注入 | 无 | v0.1.0 |
 | `severity` | 严重级别归一化 + SHA256 指纹 + glob | 无 | v0.1.0 |
 | `audit` | 审计日志 | ekit | v0.1.0 |
-| `textutil` | rune 安全截断/等分块/TruncEllipsis | 无 | v0.1.0（v0.9.0 Ellipsis） |
+| `textutil` | rune 安全截断/等分块/TruncEllipsis + 近重复检测（bigram Jaccard） | 无 | v0.1.0（v0.9.0 Ellipsis，v0.10.0 近重复） |
 
 ---
 
@@ -699,6 +699,11 @@ SearXNG 自建实例（`formats: [html, json]`），零 API key。HTTP 非 200 /
 `TruncRunes(s, n)`（rune 安全截断；n<0 按全部截断处理不 panic）、
 `SplitRunes(s, n)`（等分块，大文本分块送 LLM 的公共原语）、
 `TruncEllipsis(s, n)`（截断并追加省略号，展示面统一语义，v0.9.0）。
+
+近重复检测（v0.10.0，沉淀自 heimdallr）：`BigramSet`（字符 bigram 集合，小写化、
+去空白、单字有指纹）+ `Jaccard`（皆空视为相同）→ `Similarity` / `NearDuplicate`。
+选集合 Jaccard 而非 SimHash：小文本（~10 个特征）下 SimHash 噪声过大——尾部加
+一个字就能推离阈值。百~千候选规模直接比对足够快，不必上向量库。
 
 ### mcp.UnwrapMCPText（v0.9.0）
 
