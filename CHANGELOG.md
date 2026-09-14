@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.9.7 (2026-09-14)
+
+bianque 澄清/标准化词表内核沉淀（批次十六 §5 首项落地）。
+
+### Added
+
+- **clarify（新包）**: 口语→规范维度词条（term_map）内核——`Entry`/`Options` 词表模型、
+  `LoadVocab` 外置 yaml（根键 term_map，缺文件=零行为、解析失败 fail-fast）、`Validate`
+  内在校验（word 唯一/维度键规范/vague⟺clarify 完整；域注册与路由词冲突等宿主拓扑
+  校验留宿主装配期）。`OrdinalIndex` 序数指代解析（第一个/第1个/第 2 个/1./选项二/选一，
+  汉字+阿拉伯双形态，整体序数才命中）——宿主已有消歧衔接与标准化反问两处消费者。
+  `ResolveAnswer` 澄清回答消解（序数→选项词包含匹配→逃生兜底前缀命中，ok=false=换话题）。
+  挂起态存取/反问状态机/注入渲染留宿主（沉自 bianque 输入标准化层 + 消歧 clarify）。
+
+### Migrated（bianque 侧）
+
+- `bianque/internal/agents` TermEntry/TermClarify → `agentkit/clarify.Entry/Options`（别名薄层）
+- `bianque/internal/agents` loadTermMap + 词表内在校验 → `agentkit/clarify.LoadVocab/Validate`
+- `bianque/internal/engine/scheduler` ordinalIndex/resolveTermAnswer 消解核心 → `agentkit/clarify.OrdinalIndex/ResolveAnswer`
+
 ## v0.9.6 (2026-09-14)
 
 bianque 操作审计门整包沉淀 + 词表内核后置否定补件。

@@ -73,6 +73,7 @@ git.enjoye.top/enjoydream/agentkit
 | `reflection` | Reflection 架构原语（生成→批判→修订收敛循环） | eino |
 | `router` | Router 架构原语（LLM 意图分类→选路→分发） | eino |
 | `blackboard` | Blackboard 架构原语（共享黑板 + 专家轮转） | 无 |
+| `clarify` | 澄清/标准化词表内核（term_map 模型/加载/校验 + 序数指代解析 + 回答消解） | yaml.v3 |
 | `policy` | 操作审计门（四模式裁决矩阵 + 例外规则 + fail-safe 仲裁 + WithAuditGate 工具装饰器） | eino, yaml.v3 |
 | `obsx` | eino callbacks 追踪（llm.call.* 结构化日志） | eino, ekit |
 | `breaker` | 熔断器（closed→open→half-open，探测超时兜底） | 无 |
@@ -661,6 +662,7 @@ agentkit/reflection     ← 反思循环
 agentkit/router         ← 意图路由
 agentkit/blackboard     ← 多专家黑板协作
 agentkit/policy         ← 操作审计门（四模式裁决）
+agentkit/clarify        ← 澄清/标准化词表内核（回答消解）
 agentkit/toolprior      ← 工具优先级决策
 agentkit/skill          ← SKILL.md 渐进披露 + 多根库 + 版本化契约
 agentkit/pack           ← 领域包 MCP 工具面契约清单
@@ -757,3 +759,11 @@ Argus 内部包改为 import agentkit：
 | `bianque/internal/engine/policy` | `agentkit/policy`（yaml 路径约定改显式入参；bianque 侧薄转发） |
 | `bianque/internal/engine/runner/audit.go` | `agentkit/policy.WithAuditGate` |
 | `bianque/internal/engine/scheduler/normalize.go` postNegated | `agentkit/router.KeywordPostNegated` |
+
+### bianque（v0.9.7）
+
+| bianque 旧路径 | agentkit 新路径 |
+|---|---|
+| `bianque/internal/agents` TermEntry/TermClarify + loadTermMap | `agentkit/clarify.Entry/Options` + `LoadVocab`（别名薄层） |
+| `bianque/internal/agents` 词表内在校验 | `agentkit/clarify.Validate`（域注册/路由词冲突校验留宿主） |
+| `bianque/internal/engine/scheduler` ordinalIndex/resolveTermAnswer | `agentkit/clarify.OrdinalIndex/ResolveAnswer` |

@@ -13,7 +13,7 @@
 1. [框架定位与设计原则](#一框架定位与设计原则)
 2. [总体架构与包清单](#二总体架构与包清单)
 3. [L1 模型层 —— llm](#三l1-模型层--llm)
-4. [L2 编排层 —— agentrun / reflection / router / blackboard / dispatch / policy](#四l2-编排层--agentrun--reflection--router--blackboard--dispatch--policy)
+4. [L2 编排层 —— agentrun / reflection / router / blackboard / dispatch / policy / clarify](#四l2-编排层--agentrun--reflection--router--blackboard--dispatch--policy--clarify)
 5. [L3 决策层 —— toolprior / skill](#五l3-决策层--toolprior--skill)
 6. [L4 工具与上下文层 —— acpx / mcp / workcopy / knowledge/rag / textutil](#六l4-工具与上下文层)
 7. [L5 运行时基础设施 —— breaker / worker / progress / safejson / severity / audit](#七l5-运行时基础设施)
@@ -57,6 +57,7 @@
 │ L2 编排层  agentrun(ReAct/P&E)  reflection  router  blackboard │
 │            dispatch(派发守卫: allow矩阵+深度上限+自派发拒绝)     │
 │            policy(操作审计门: 四模式裁决+例外规则+fail-safe仲裁) │
+│            clarify(澄清词表: term_map模型+回答消解)             │
 ├──────────────────────────────────────────────────────────────┤
 │ L3 决策层  toolprior(工具优先级/限流)    skill(渐进披露)         │
 ├──────────────────────────────────────────────────────────────┤
@@ -89,6 +90,7 @@
 | `blackboard` | 共享黑板 + 专家轮转 | 无 | v0.8.0 |
 | `dispatch` | 通用派发守卫：allow 矩阵 + 深度上限 + 自派发拒绝（EdgeSource 拓扑注入，DenyError 结构化拒绝） | 无 | v0.9.5 |
 | `policy` | 操作审计门：四模式统一操作裁决（例外规则→矩阵→fail-safe 兜底 + Arbiter 灰区仲裁 + WithAuditGate 工具装饰器） | eino, yaml | v0.9.6 |
+| `clarify` | 澄清/标准化词表内核：term_map 模型/加载/内在校验 + OrdinalIndex 序数指代 + ResolveAnswer 回答消解 | yaml | v0.9.7 |
 | `acpx` | 9 家 CLI 编码 agent 统一调用 + RunProcess 进程托管 | eino | v0.1.0 后（v0.7.1 导出 RunProcess） |
 | `mcp` | MCP server 工具池（lazy 建连/env 白名单/工具白名单）+ UnwrapMCPText | eino, eino-ext tool/mcp, mcp-go | v0.5.0（v0.9.0 unwrap） |
 | `workcopy` | Git 工作副本沙箱（singleflight + 引用计数 + TTL） | ekit, x/sync | v0.1.0 |
@@ -285,7 +287,7 @@ cost := llm.PriceOf(map[string]llm.Price{
 
 ---
 
-## 四、L2 编排层 —— agentrun / reflection / router / blackboard / dispatch / policy
+## 四、L2 编排层 —— agentrun / reflection / router / blackboard / dispatch / policy / clarify
 
 ### agentrun —— ReAct 运行样板
 
@@ -413,6 +415,26 @@ router.KeywordHitExcept("怎么执行这个脚本", "执行",
 
 守门只作废该处命中——多处出现任一处通过即命中；疑问构式（有没有/是不是/要不要）
 先剥离再判否定。适用任何中文意图词表路由，不限于 router.New 的 LLM 分类流程。
+
+### clarify —— 澄清/标准化词表内核（v0.9.7）
+
+口语→规范维度词条（term_map）的模型、外置加载、内在校验，以及澄清反问的回答消解。
+归一/澄清只补充语义不改路由；挂起态存取、反问状态机与注入段渲染留宿主：
+
+```go
+entries, err := clarify.LoadVocab(os.DirFS(expertsDir), "_shared/term_map.yaml")
+// 缺文件 (nil,nil)=零行为；解析失败 fail-fast。词表命中由 router.KeywordHit* 内核承担
+err = clarify.Validate(entries) // word 唯一/维度键规范/vague⟺clarify；域注册等拓扑校验留宿主
+
+n, ok := clarify.OrdinalIndex("第 2 个") // 2, true（整体序数才命中，普通句子不误伤）
+picked, isFallback, ok := clarify.ResolveAnswer(
+    []string{"CPU", "内存", "磁盘 IO"}, "不清楚，全面查", "帮我看看磁盘io")
+// "磁盘 IO", false, true（序数→选项词包含→逃生前缀命中；ok=false=用户换话题）
+```
+
+`ResolveAnswer` 的消解序：序数指代（1-based 对 options 序，越界=放弃）→ 选项词包含
+匹配（双侧去空格）→ 逃生选项（答案是其前缀也算）。沉淀自 bianque 输入标准化层 +
+消歧 clarify：序数解析在宿主已有两处消费者。
 
 ### blackboard —— 无中心多专家协作
 
