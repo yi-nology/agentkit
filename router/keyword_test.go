@@ -123,3 +123,24 @@ func TestOnNegationHitHook(t *testing.T) {
 		t.Fatalf("否定作废钩子应恰触发 1 次: %d", hits)
 	}
 }
+
+// TestKeywordPostNegated 后置否定守门：紧贴单字判定，前置守门管不到的谓词否定形态。
+func TestKeywordPostNegated(t *testing.T) {
+	cases := []struct {
+		input, kw string
+		want      bool
+	}{
+		{"负载不高", "负载", true},   // 谓词否定
+		{"磁盘不满", "磁盘", true},   // 谓词否定
+		{"磁盘没有问题", "磁盘", true}, // 紧随复合否定同作废
+		{"负载高", "负载", false},    // 正常陈述
+		{"负载有点高", "负载", false},  // 隔字修饰不作废（判定从严只在紧贴位）
+		{"磁盘", "磁盘", false},     // 命中在句尾无后文
+		{"内存不足", "负载", false},   // 关键词未命中
+	}
+	for _, tc := range cases {
+		if got := KeywordPostNegated(tc.input, tc.kw); got != tc.want {
+			t.Errorf("KeywordPostNegated(%q, %q) = %v, 期望 %v", tc.input, tc.kw, got, tc.want)
+		}
+	}
+}

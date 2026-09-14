@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.9.6 (2026-09-14)
+
+bianque 操作审计门整包沉淀 + 词表内核后置否定补件。
+
+### Added
+
+- **policy（新包）**: 操作审计门——四种会话执行策略模式（confirm/auto/plan/full）下的
+  统一操作裁决。`Gate.Decide` 三层裁决（例外规则首中即胜 → 模式×风险矩阵 → 未知形态
+  兜底 need_human），三值裁决 + `plan_only`/`unknown` 过程值；红线（变异工具拒绝、
+  最高危恒人审）矩阵层硬编码任何模式不可绕过。灰区可挂 `Arbiter` 仲裁插件，失败/非法
+  输出一律 fail-safe 升人审（「只升不降」恒成立）。`LoadOverrides` 外置策略 yaml
+  （路径入参，根键 `operation_policy`）阈值 clamp 只降不升。配套 `WithAuditGate`
+  eino 工具装饰器：每次调用先裁决、回调留痕、deny 沿工具结果通道如实降级
+  （沉自 bianque engine/policy + runner/audit.go，yaml 路径约定改显式入参）。
+- **router**: `KeywordPostNegated` 后置否定守门——关键词命中处紧后方紧跟否定单字
+  （不/没/无/非）即视为否定陈述（「负载不高」「磁盘没有问题」）。与 v0.9.4 否定前置
+  守门对偶：那边复合短语按窗口回看，这边紧贴单字即判，判定从严（沉自 bianque
+  输入标准化层 postNegated）。
+
+### Migrated（bianque 侧）
+
+- `bianque/internal/engine/policy` → `agentkit/policy`（薄转发维持调用点）
+- `bianque/internal/engine/runner/audit.go` → `agentkit/policy.WithAuditGate`
+- `bianque/internal/engine/scheduler/normalize.go` postNegated → `agentkit/router.KeywordPostNegated`
+
 ## v0.9.5 (2026-09-13)
 
 bianque 生产两连沉淀：前缀定价估算 + 通用派发守卫。

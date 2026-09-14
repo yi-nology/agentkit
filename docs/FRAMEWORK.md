@@ -13,7 +13,7 @@
 1. [框架定位与设计原则](#一框架定位与设计原则)
 2. [总体架构与包清单](#二总体架构与包清单)
 3. [L1 模型层 —— llm](#三l1-模型层--llm)
-4. [L2 编排层 —— agentrun / reflection / router / blackboard / dispatch](#四l2-编排层--agentrun--reflection--router--blackboard--dispatch)
+4. [L2 编排层 —— agentrun / reflection / router / blackboard / dispatch / policy](#四l2-编排层--agentrun--reflection--router--blackboard--dispatch--policy)
 5. [L3 决策层 —— toolprior / skill](#五l3-决策层--toolprior--skill)
 6. [L4 工具与上下文层 —— acpx / mcp / workcopy / knowledge/rag / textutil](#六l4-工具与上下文层)
 7. [L5 运行时基础设施 —— breaker / worker / progress / safejson / severity / audit](#七l5-运行时基础设施)
@@ -56,6 +56,7 @@
 ┌──────────────────────────────────────────────────────────────┐
 │ L2 编排层  agentrun(ReAct/P&E)  reflection  router  blackboard │
 │            dispatch(派发守卫: allow矩阵+深度上限+自派发拒绝)     │
+│            policy(操作审计门: 四模式裁决+例外规则+fail-safe仲裁) │
 ├──────────────────────────────────────────────────────────────┤
 │ L3 决策层  toolprior(工具优先级/限流)    skill(渐进披露)         │
 ├──────────────────────────────────────────────────────────────┤
@@ -87,6 +88,7 @@
 | `router` | LLM 意图路由：分类→选路→分发（意图槽位 + 词表匹配内核） | eino | v0.8.0（v0.9.3 槽位，v0.9.4 词表内核） |
 | `blackboard` | 共享黑板 + 专家轮转 | 无 | v0.8.0 |
 | `dispatch` | 通用派发守卫：allow 矩阵 + 深度上限 + 自派发拒绝（EdgeSource 拓扑注入，DenyError 结构化拒绝） | 无 | v0.9.5 |
+| `policy` | 操作审计门：四模式统一操作裁决（例外规则→矩阵→fail-safe 兜底 + Arbiter 灰区仲裁 + WithAuditGate 工具装饰器） | eino, yaml | v0.9.6 |
 | `acpx` | 9 家 CLI 编码 agent 统一调用 + RunProcess 进程托管 | eino | v0.1.0 后（v0.7.1 导出 RunProcess） |
 | `mcp` | MCP server 工具池（lazy 建连/env 白名单/工具白名单）+ UnwrapMCPText | eino, eino-ext tool/mcp, mcp-go | v0.5.0（v0.9.0 unwrap） |
 | `workcopy` | Git 工作副本沙箱（singleflight + 引用计数 + TTL） | ekit, x/sync | v0.1.0 |
@@ -283,7 +285,7 @@ cost := llm.PriceOf(map[string]llm.Price{
 
 ---
 
-## 四、L2 编排层 —— agentrun / reflection / router / blackboard / dispatch
+## 四、L2 编排层 —— agentrun / reflection / router / blackboard / dispatch / policy
 
 ### agentrun —— ReAct 运行样板
 
@@ -447,6 +449,34 @@ g.Allowed("planner", "executor")              // 只读查询（事件载荷/诊
 `DenyError` 是结构化拒绝——调用方不得转述、不得降级，按失败兜底如实上报
 （可原样落审计事件载荷）。沉淀自 bianque engine/dispatch，注册表耦合改为
 `EdgeSource` 接口（宿主注册表的最小投影）。
+
+---
+### policy —— 操作审计门（v0.9.6）
+
+会话执行策略模式下的统一操作裁决门：每个操作必过、三值裁决、全程留痕。模式改变的是
+裁决策略，不是移除审计点；红线（变异工具拒绝、最高危恒人审）在矩阵层硬编码，任何模式
+不可绕过：
+
+```go
+g := policy.NewGate(pol, arbiter)  // Policy 可 nil 用内置基座；Arbiter 可 nil
+dec := g.Decide(ctx, policy.Op{Type: policy.OpToolCall, Mode: policy.ModeConfirm,
+    Tool: "shell_execute", Mutating: true})
+// Decision{Verdict: auto_proceed|need_human|deny|plan_only, Decider, RuleID, Reason}
+```
+
+裁决分层：例外规则（`Policy.Rules`，首个命中即胜）→ 模式×风险矩阵 → 未知形态兜底
+need_human。灰区规则（`verdict: unknown`）交给 `Arbiter` 仲裁插件——失败或非法输出
+一律 fail-safe 升人审，「只升不降」在 fail-safe 方向恒成立。策略表 yaml 外置：
+
+```go
+pol, err := policy.LoadOverrides(os.DirFS(expertsDir), "_shared/operation_policy.yaml")
+// 缺文件回内置基座（auto≤L2/full≤L3）；阈值 clamp 只降不升（调高=扩权，须改基座）
+```
+
+工具调用面配套 `WithAuditGate` 装饰器：每次调用先裁决、`onAudit` 回调留痕、deny 沿
+工具结果通道返回错误（agent 拿到工具错误自行降级，不中断整个环节）；gate 为 nil 原样
+返回（未装配=存量行为）。沉淀自 bianque engine/policy + runner/audit.go，yaml 路径
+约定改为显式入参。
 
 ---
 

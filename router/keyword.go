@@ -140,6 +140,31 @@ func maskedAt(lower string, pos, kwLen int, masks []string) bool {
 	return false
 }
 
+// postNegChars 后置否定单字表：命中词紧后方出现即视为否定陈述。紧贴判定有意不收
+// 复合短语——复合否定形态由前置守门（negPhrases 窗口回看）覆盖，紧贴单字是谓词否定
+// （「负载不高」）的专属形态。
+var postNegChars = []string{"不", "没", "无", "非"}
+
+// KeywordPostNegated 后置否定守门：关键词命中处**紧后方**紧跟否定单字（不/没/无/非）
+// 即视为否定陈述——「负载不高」「磁盘不满」里命中词是被否定的谓词对象；紧随复合否定
+// （「磁盘没有问题」）同命中。与否定前置守门（negatedAt）对偶：那边中文否定习惯前置、
+// 按窗口回看，这边紧贴即判、无需窗口。判定从严：宁可作废误归一，不放过反向表述。
+// 返回 true 表示该处命中应作废。输入应已小写（关键词内部 ToLower 兜底）。
+func KeywordPostNegated(lowerInput, keyword string) bool {
+	kw := strings.ToLower(keyword)
+	i := strings.Index(lowerInput, kw)
+	if i < 0 {
+		return false
+	}
+	rest := lowerInput[i+len(kw):]
+	for _, n := range postNegChars {
+		if strings.HasPrefix(rest, n) {
+			return true
+		}
+	}
+	return false
+}
+
 // negatedAt 判断 lower[pos:] 处的关键词命中是否被紧前方窗口内的否定短语作废。
 // 疑问构式（有没有/是不是/要不要）字面包含否定短语——先剥离再判，否则
 // 「检查有没有后门」「看看是不是有漏洞」会被误判为否定。

@@ -73,6 +73,7 @@ git.enjoye.top/enjoydream/agentkit
 | `reflection` | Reflection 架构原语（生成→批判→修订收敛循环） | eino |
 | `router` | Router 架构原语（LLM 意图分类→选路→分发） | eino |
 | `blackboard` | Blackboard 架构原语（共享黑板 + 专家轮转） | 无 |
+| `policy` | 操作审计门（四模式裁决矩阵 + 例外规则 + fail-safe 仲裁 + WithAuditGate 工具装饰器） | eino, yaml.v3 |
 | `obsx` | eino callbacks 追踪（llm.call.* 结构化日志） | eino, ekit |
 | `breaker` | 熔断器（closed→open→half-open，探测超时兜底） | 无 |
 | `worker` | DB 即队列 worker pool（心跳/panic 隔离/优雅停机）+ LeaderElector 选主 | ekit |
@@ -659,6 +660,7 @@ agentkit/agentrun       ← ReAct / Plan-and-Execute 样板
 agentkit/reflection     ← 反思循环
 agentkit/router         ← 意图路由
 agentkit/blackboard     ← 多专家黑板协作
+agentkit/policy         ← 操作审计门（四模式裁决）
 agentkit/toolprior      ← 工具优先级决策
 agentkit/skill          ← SKILL.md 渐进披露 + 多根库 + 版本化契约
 agentkit/pack           ← 领域包 MCP 工具面契约清单
@@ -747,3 +749,11 @@ Argus 内部包改为 import agentkit：
 |---|---|
 | `bianque/internal/scheduler/usage.go` priceOf | `agentkit/llm.PriceOf`（精确 → 最长前缀回落，未配价归零） |
 | `bianque/internal/engine/dispatch/guard.go` | `agentkit/dispatch`（注册表耦合改 `EdgeSource` 接口注入拓扑） |
+
+### bianque（v0.9.6）
+
+| bianque 旧路径 | agentkit 新路径 |
+|---|---|
+| `bianque/internal/engine/policy` | `agentkit/policy`（yaml 路径约定改显式入参；bianque 侧薄转发） |
+| `bianque/internal/engine/runner/audit.go` | `agentkit/policy.WithAuditGate` |
+| `bianque/internal/engine/scheduler/normalize.go` postNegated | `agentkit/router.KeywordPostNegated` |
