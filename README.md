@@ -76,6 +76,7 @@ git.enjoye.top/enjoydream/agentkit
 | `clarify` | 澄清/标准化词表内核（term_map 模型/加载/校验 + 序数指代解析 + 回答消解） | yaml.v3 |
 | `policy` | 操作审计门（四模式裁决矩阵 + 例外规则 + fail-safe 仲裁 + WithAuditGate 工具装饰器） | eino, yaml.v3 |
 | `obsx` | eino callbacks 追踪（llm.call.* 结构化日志） | eino, ekit |
+| `langfuse` | Langfuse Public API 只读客户端（trace 拉取 + 详情合并 + 官方契约类型） | 无 |
 | `breaker` | 熔断器（closed→open→half-open，探测超时兜底） | 无 |
 | `worker` | DB 即队列 worker pool（心跳/panic 隔离/优雅停机）+ LeaderElector 选主 | ekit |
 | `worker/pglease` | LeaseStore 的 PostgreSQL 实现（原子 UPSERT + Migrate，表名可配） | 无（database/sql） |

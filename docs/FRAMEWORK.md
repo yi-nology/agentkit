@@ -73,6 +73,7 @@
 │            safejson(反注入) severity(指纹) audit(审计) stats(统计) │
 ├──────────────────────────────────────────────────────────────┤
 │ L6 可观测  obsx(eino callbacks 追踪/真实 usage 回流)             │
+│            langfuse(Public API 只读客户端/trace 读回)             │
 └──────────────────────────────────────────────────────────────┘
         底座：eino v0.9.18 · eino-ext · mcp-go · milvus-sdk-go · ekit
 ```
@@ -914,7 +915,7 @@ Wilson 区间回答"至少多好"（小样本下比正态近似诚实，total=0 
 
 ---
 
-## 八、L6 可观测层 —— obsx
+## 八、L6 可观测层 —— obsx / langfuse
 
 对齐 eino callbacks 体系的 LLM 调用追踪——一行启用，ctx 链上所有 eino 组件调用
 （含 ReAct agent 直用 RawModel 的路径）自动产出结构化日志：
@@ -941,6 +942,11 @@ flowchart LR
     H -- "Options.OnUsage" --> CT["CostTracker<br/>（任务级 + 全局）"]
 ```
 
+langfuse（v0.10.0，沉淀自 heimdallr）——Langfuse Public API 只读客户端，把已经
+发生的历史 trace 拉回来（`FetchBatch` 列表分页 + 逐条详情合并 observations；
+`Query` 选择口径可复述）。契约类型对齐官方 OpenAPI；usage/cost 新旧口径兜底
+（`UsageTokens`/`UsageCost`）。与 obsx 互补：obsx 写侧落日志，langfuse 读侧回放。
+错误前缀 `langfuse:`；服务端非 200 显式失败，不静默返回空批次。
 
 ---
 

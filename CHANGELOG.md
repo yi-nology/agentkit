@@ -14,6 +14,18 @@ heimdallr 通用能力沉淀（近重复检测 / 评测统计 / Langfuse 只读�
   （total=0 → (0,0)，结果钳 [0,1]；小样本下比正态近似诚实）、`McNemarExact`
   配对二分类双侧精确检验（无翻转 → 1，p 钳 1）。零依赖，z 由调用方传入
   （沉自 heimdallr internal/report）。
+- **langfuse（新包）**: Langfuse Public API 只读客户端——`Client.FetchBatch`
+  （列表分页 + 逐条详情合并 observations，串行对自托管友好）/ `GetTrace`、
+  `Query` 选择口径（name/session/user/时间窗/tags，选择过程可复述）、官方
+  OpenAPI 契约类型 `Trace`/`Observation`（新口径 usageDetails/costDetails 优先、
+  旧口径 usage 兜底：`UsageTokens`/`UsageCost`）。只读、零 agentkit 内部依赖，
+  与 obsx（写侧落日志）互补（沉自 heimdallr internal/observe）。
+
+### Migrated（heimdallr 侧）
+
+- `heimdallr/internal/mine/dedup.go` bigramSet/jaccard 算法 → `agentkit/textutil`（BigramSet/Jaccard/Similarity/NearDuplicate；领域包装 InstructionBigrams 留宿主）
+- `heimdallr/internal/report` WilsonCI/McNemarExact/comb → `agentkit/stats`（原样，comb 转私有）
+- `heimdallr/internal/observe/client.go + Trace/Observation 契约类型` → `agentkit/langfuse`（错误前缀 observe: → langfuse:；usageTokens/usageCost 导出为 UsageTokens/UsageCost；MapTrace 映射层留宿主）
 
 ## v0.9.8 (2026-09-14)
 
