@@ -69,7 +69,7 @@
 ├──────────────────────────────────────────────────────────────┤
 │ L5 运行时  breaker(熔断)  worker+pglease(队列+选主+PG租约)      │
 │            progress(总线)  hotplug(插拔/热替换)                 │
-│            logredact(脱敏)  jsonrepair(宽容JSON)                │
+│            logredact(脱敏)  jsonrepair(宽容JSON) llmjson(解析) │
 │            safejson(反注入) severity(归一/指纹) audit(审计)      │
 ├──────────────────────────────────────────────────────────────┤
 │ L6 可观测  obsx(eino callbacks 追踪/真实 usage 回流)             │
@@ -103,6 +103,7 @@
 | `hotplug` | 插拔视图 Plugboard + 泛型原子快照 Holder | 无 | v0.9.0 |
 | `logredact` | 日志/审计凭据脱敏（URL/token/Bearer） | 无 | v0.9.0 |
 | `jsonrepair` | LLM 宽容 JSON 修复（栅栏/尾逗号/全角/散文 + 标量归一） | 无 | v0.9.0 |
+| `llmjson` | 模型输出 JSON 统一解析入口：ExtractJSON 快路径 → 语法修复 → 全链宽容，错误携带两路原因 | llm, jsonrepair | v0.9.8 |
 | `obsx` | eino callbacks 追踪（结构化日志 + 真实 usage 回流） | eino, ekit | v0.4.0 |
 | `safejson` | Markdown/HTML 反注入 | 无 | v0.1.0 |
 | `severity` | 严重级别归一化 + SHA256 指纹 + glob | 无 | v0.1.0 |
@@ -791,6 +792,18 @@ schema := &jsonrepair.Schema{
     OnMap:      func(m map[string]any) { /* 每 map 子节点归一后的领域钩子 */ },
 }
 err := jsonrepair.ParseLenient(raw, &v, schema)
+```
+
+### llmjson —— 模型输出 JSON 统一解析入口（v0.9.8）
+
+宿主不拼装：一次调用走完 ExtractJSON 快路径 → 语法修复 → 全链宽容三级尝试，
+半损坏产出（全角结构标点/尾逗号/非法转义/截断未闭合）不再整轮判死。领域
+schema 校验（字段语义/枚举约束）仍归调用方。（沉自 argus/internal/llmjson。）
+
+```go
+var report ReviewReport
+err := llmjson.Unmarshal(modelOutput, &report)
+// 全败时错误同时携带严格与宽容两路原因，可直接回喂 LLM 重试
 ```
 
 ### worker —— DB 即队列 + 选主

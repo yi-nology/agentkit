@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.9.8 (2026-09-14)
+
+argus 宽容解析入口沉淀。
+
+### Added
+
+- **llmjson（新包）**: 模型输出 JSON 统一解析入口——`Unmarshal` 三级尝试：
+  `llm.ExtractJSON` 快路径（剥围栏 + 首尾括号切片，命中则零额外开销）→ 切片经
+  `jsonrepair.Repair` 语法级修复（全角结构标点/非法转义/尾逗号/截断未闭合）→
+  `jsonrepair.ParseLenient` 全链兜底（可救散文包裹与截断）。全败时错误同时携带
+  严格与宽容两路原因，回喂 LLM 重试无需调用方拼装。领域 schema 校验（字段
+  语义/枚举约束）仍归调用方（沉自 argus/internal/llmjson，API 原样）。
+
+### Migrated（argus 侧）
+
+- `argus/internal/llmjson` → `agentkit/llmjson`（argus 改直接消费，内部包删除；
+  消费点：builtin/acpx/remote 三适配器 + requirement R3/R3.5/反思修订）
+
 ## v0.9.7 (2026-09-14)
 
 bianque 澄清/标准化词表内核沉淀（批次十六 §5 首项落地）。

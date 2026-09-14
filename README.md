@@ -88,6 +88,7 @@ git.enjoye.top/enjoydream/agentkit
 | `hotplug` | 插拔视图 Plugboard + 泛型原子快照 Holder | 无 |
 | `logredact` | 日志/审计凭据脱敏（URL/token/Bearer 打码） | 无 |
 | `jsonrepair` | LLM 宽容 JSON 修复（栅栏/尾逗号/全角/散文包裹 + 标量归一） | 无 |
+| `llmjson` | 模型输出 JSON 统一解析入口（ExtractJSON 快路径 → 语法修复 → 全链宽容三级尝试） | llm, jsonrepair |
 | `severity` | 严重级别归一化 + 指纹 + glob 匹配 | 无 |
 | `safejson` | Markdown/HTML 反注入 | 无 |
 | `audit` | 审计日志 | ekit |
@@ -501,6 +502,12 @@ err := jsonrepair.ParseLenient(llmOutput, &v, &jsonrepair.Schema{
 })
 // 栅栏剥离 → 散文抽对象 → 语法修复（全角/尾逗号/未闭合）→ 标量归一
 
+import "git.enjoye.top/enjoydream/agentkit/llmjson"
+
+var report ReviewReport
+err := llmjson.Unmarshal(llmOutput, &report)
+// ExtractJSON 快路径 → 语法修复 → 全链宽容；全败错误携带两路原因，可直接回喂重试
+
 import "git.enjoye.top/enjoydream/agentkit/websearch"
 
 ws := websearch.NewSearxng("http://searxng.local", 10*time.Second) // 实例须开 json format
@@ -674,6 +681,7 @@ agentkit/knowledge/rag  ← 双后端知识检索
 agentkit/worker         ← 异步任务队列（+ pglease PG 租约 / LeaderElector 选主）
 agentkit/hotplug        ← 插拔/热替换
 agentkit/jsonrepair     ← 宽容 JSON 修复
+agentkit/llmjson        ← 模型输出 JSON 统一解析入口
 agentkit/logredact      ← 凭据脱敏
 agentkit/breaker        ← 熔断保护
 agentkit/progress       ← 事件总线
@@ -709,6 +717,12 @@ Argus 内部包改为 import agentkit：
 | `argus/internal/plugin.GlobMatch` | `agentkit/severity.GlobMatch` |
 | `argus/internal/plugin.Fingerprint` | `agentkit/severity.Fingerprint` |
 | `argus/internal/reportview.EscapeUntrusted` | `agentkit/safejson.EscapeUntrusted` |
+
+### argus（v0.9.8）
+
+| argus 旧路径 | agentkit 新路径 |
+|---|---|
+| `argus/internal/llmjson` | `agentkit/llmjson`（直接消费，内部包删除） |
 
 ### bianque（v0.9.0）
 
