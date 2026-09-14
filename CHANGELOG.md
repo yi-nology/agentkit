@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.10.1 (2026-09-15)
+
+### Added
+
+- **breaker**: `NewBreakers` 增加变参 `Option`（既有调用方零改动）与
+  `WithProbeTimeout`——半开探测时限此前硬编码 `DefaultProbeTimeout`（1min），
+  被保护操作带长超时（如 LLM agent 600s）时，探测在途 1min 后即被并发放行第二个
+  探测（慢而健康的操作被并发双跑）。探测时限应 ≥ 最长正常耗时。
+  `Breaker.Allow`/`Success`/`Failure` 语义不变。
+
 ## v0.10.0 (2026-09-14)
 
 heimdallr 通用能力沉淀（近重复检测 / 评测统计 / Langfuse 只读客户端）。

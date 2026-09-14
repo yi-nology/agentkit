@@ -147,3 +147,47 @@ func TestStaleProbeDoesNotStallBreaker(t *testing.T) {
 		t.Fatal("探测失联超时应放行新探测（不得永久卡死）")
 	}
 }
+
+// WithProbeTimeout：探测时限可配置——时限内旧探测视为在途不放行新探测，超时后
+// 放行新探测（失联兜底）。慢而健康的操作（> 默认 1min）依赖调大该值避免并发双探测。
+func TestWithProbeTimeout(t *testing.T) {
+	now := time.Unix(0, 0)
+	bs := NewBreakers(3, time.Minute, WithProbeTimeout(10*time.Minute))
+	bs.Now = func() time.Time { return now }
+
+	// 3 连败开熔断
+	for i := 0; i < 3; i++ {
+		if !bs.Allow("p") {
+			t.Fatal("closed 应放行")
+		}
+		bs.Failure("p")
+	}
+	if bs.Allow("p") {
+		t.Fatal("应处于熔断 open")
+	}
+	// 冷却期过 → 半开放行首个探测
+	now = now.Add(time.Minute)
+	if !bs.Allow("p") {
+		t.Fatal("冷却后应放行探测")
+	}
+	// 探测时限（10min）内：旧探测在途，不放行新探测（缺省 1min 时此处已双探测）
+	now = now.Add(9 * time.Minute)
+	if bs.Allow("p") {
+		t.Fatal("探测时限内不应放行第二个探测")
+	}
+	// 超过探测时限：旧探测视为失联，放行新探测
+	now = now.Add(2 * time.Minute)
+	if !bs.Allow("p") {
+		t.Fatal("探测失联超时应放行新探测")
+	}
+	// 零值 Option 回退缺省
+	bs2 := NewBreakers(3, time.Minute, WithProbeTimeout(0))
+	if bs2.probeTimeout != DefaultProbeTimeout {
+		t.Fatalf("<=0 应回退缺省时限, got %v", bs2.probeTimeout)
+	}
+	// 回归：默认时钟源必须就位（Allow/Success/Failure 依赖；曾有重构丢失 Now
+	// 导致调用方空指针）
+	if bs2.Now == nil {
+		t.Fatal("NewBreakers 必须注入缺省时钟源")
+	}
+}

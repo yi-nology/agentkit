@@ -109,18 +109,40 @@ type Breakers struct {
 	breakers map[string]*Breaker
 	trip     int
 	cooldown time.Duration
+	// probeTimeout 半开探测时限（半开探测的 Breaker 级缺省见 DefaultProbeTimeout）。
+	// 被保护操作的正常耗时会超过缺省时限时必须调大：探测时限内旧探测未返回就会被
+	// 并发放行新探测（慢而健康的操作被并发双跑）。
+	probeTimeout time.Duration
 	// Now 时钟源（测试注入用；仅启动期可写，运行期并发改写有数据竞争）。
 	Now func() time.Time
 }
 
-// NewBreakers 创建熔断板。
-func NewBreakers(trip int, cooldown time.Duration) *Breakers {
-	return &Breakers{
-		breakers: map[string]*Breaker{},
-		trip:     trip,
-		cooldown: cooldown,
-		Now:      time.Now,
+// Option 熔断板可选参数。
+type Option func(*Breakers)
+
+// WithProbeTimeout 覆盖半开探测时限（<=0 回退 DefaultProbeTimeout）。
+// 典型场景：被保护操作带长超时（如 LLM agent 600s），探测时限须 >= 最长正常耗时。
+func WithProbeTimeout(d time.Duration) Option {
+	return func(bs *Breakers) {
+		if d > 0 {
+			bs.probeTimeout = d
+		}
 	}
+}
+
+// NewBreakers 创建熔断板。opts 可选（零值 = 全部采用缺省，既有调用方不受影响）。
+func NewBreakers(trip int, cooldown time.Duration, opts ...Option) *Breakers {
+	bs := &Breakers{
+		breakers:     map[string]*Breaker{},
+		trip:         trip,
+		cooldown:     cooldown,
+		probeTimeout: DefaultProbeTimeout,
+		Now:          time.Now,
+	}
+	for _, o := range opts {
+		o(bs)
+	}
+	return bs
 }
 
 func (bs *Breakers) get(name string) *Breaker {
@@ -129,6 +151,7 @@ func (bs *Breakers) get(name string) *Breaker {
 	b, ok := bs.breakers[name]
 	if !ok {
 		b = New(bs.trip, bs.cooldown)
+		b.probeTimeout = bs.probeTimeout
 		bs.breakers[name] = b
 	}
 	return b
