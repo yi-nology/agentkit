@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.10.2 (2026-09-15)
+
+### Added
+
+- **logredact**: 日志/审计载荷凭据脱敏——`Redact`（高敏感：密码/密钥/连接串/
+  Bearer 模式化打码，删除后永不回填）+ `Masker`（低敏感拓扑标识 K8sGPT
+  anonymize 形态：IPv4/注册精确串 → «Tn» 令牌进 LLM，展示面 Restore 回填真名；
+  回填不回灌二次 LLM 输入，防掩码词表被注入探测）。与 safejson 正交
+  （safejson 防 Markdown/HTML 注入，本包打码凭据）。argus runner 错误落日志
+  路径已消费 `Redact`。
+
 ## v0.10.1 (2026-09-15)
 
 ### Added
