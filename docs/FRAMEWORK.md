@@ -70,7 +70,7 @@
 │ L5 运行时  breaker(熔断)  worker+pglease(队列+选主+PG租约)      │
 │            progress(总线)  hotplug(插拔/热替换)                 │
 │            logredact(脱敏)  jsonrepair(宽容JSON) llmjson(解析) │
-│            safejson(反注入) severity(归一/指纹) audit(审计)      │
+│            safejson(反注入) severity(指纹) audit(审计) stats(统计) │
 ├──────────────────────────────────────────────────────────────┤
 │ L6 可观测  obsx(eino callbacks 追踪/真实 usage 回流)             │
 └──────────────────────────────────────────────────────────────┘
@@ -900,6 +900,17 @@ severity.GlobMatch("web/**", "web/src/a.go")         // .gitignore 语义；? �
 al := audit.New(log, "argus-audit") // nil logger 回退缺省；nil receiver 安全
 al.Log("feedback.suppressed", "repo", "o/r", "fp", "abcd1234")
 ```
+
+### stats —— 评测/对比统计（v0.10.0）
+
+```go
+lo, hi := stats.WilsonCI(8, 10, 1.96) // → 约 [0.49, 0.94]（"至少多好"的诚实口径）
+p := stats.McNemarExact(6, 0)         // 6:0 单向翻转 → p≈0.031，显著
+```
+
+Wilson 区间回答"至少多好"（小样本下比正态近似诚实，total=0 → (0,0)，结果钳
+[0,1]）；McNemar 回答"两版本差异是否显著"（只看方向翻转的配对，平局不计，
+无翻转 → 1）。z 由调用方传入（沉自 heimdallr 报告层）。
 
 ---
 

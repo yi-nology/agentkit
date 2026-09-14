@@ -90,6 +90,7 @@ git.enjoye.top/enjoydream/agentkit
 | `jsonrepair` | LLM 宽容 JSON 修复（栅栏/尾逗号/全角/散文包裹 + 标量归一） | 无 |
 | `llmjson` | 模型输出 JSON 统一解析入口（ExtractJSON 快路径 → 语法修复 → 全链宽容三级尝试） | llm, jsonrepair |
 | `severity` | 严重级别归一化 + 指纹 + glob 匹配 | 无 |
+| `stats` | 评测/对比统计（Wilson 置信区间 + McNemar 精确检验） | 无 |
 | `safejson` | Markdown/HTML 反注入 | 无 |
 | `audit` | 审计日志 | ekit |
 | `textutil` | rune 安全截断 + 等分块 + TruncEllipsis + 近重复检测（bigram 集合 + Jaccard） | 无 |

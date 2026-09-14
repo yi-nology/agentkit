@@ -10,6 +10,10 @@ heimdallr 通用能力沉淀（近重复检测 / 评测统计 / Langfuse 只读�
   单字有指纹）、`Jaccard` 集合系数（皆空视为相同）、`Similarity` 文本相似度组合
   便利、`NearDuplicate` 阈值判定。可解释、小文本下精确、零依赖；百~千候选规模
   直接比对足够快，不必上向量库（沉自 heimdallr internal/mine 挖掘去重）。
+- **stats（新包）**: 评测/对比统计原语——`WilsonCI` 通过率 Wilson 得分置信区间
+  （total=0 → (0,0)，结果钳 [0,1]；小样本下比正态近似诚实）、`McNemarExact`
+  配对二分类双侧精确检验（无翻转 → 1，p 钳 1）。零依赖，z 由调用方传入
+  （沉自 heimdallr internal/report）。
 
 ## v0.9.8 (2026-09-14)
 
