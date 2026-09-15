@@ -2,6 +2,7 @@ package skill
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -147,6 +148,58 @@ func TestAsSkillTool(t *testing.T) {
 	}
 	if !strings.Contains(res, "不在允许清单内") {
 		t.Fatalf("清单外应拒绝: %s", res)
+	}
+}
+
+func TestAsSkillToolSelfIdentifying(t *testing.T) {
+	// P1 结果自证：出参必须回显解析后规范名/原始入参/校验和——
+	// bianque 身份守卫（IdentityGuard）以此校验「声明 A 实得 B」
+	p, _ := setupSkills(t)
+
+	st, err := AsSkillTool(p, []string{"ocr-grading"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	it := st.(tool.InvokableTool)
+
+	// 规范名调用：Name==Requested==规范名，Checksum 非空
+	res, err := it.InvokableRun(context.Background(), `{"name":"ocr-grading"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out useSkillOut
+	if err := json.Unmarshal([]byte(res), &out); err != nil {
+		t.Fatalf("出参应為 JSON: %v\n%s", err, res)
+	}
+	if out.Name != "ocr-grading" || out.Requested != "ocr-grading" {
+		t.Fatalf("自证字段不符: %+v", out)
+	}
+	if len(out.Checksum) != 16 {
+		t.Fatalf("Checksum 应为 sha256[:16] hex: %q", out.Checksum)
+	}
+
+	// 别名调用：Requested 保留原始入参，Name 归一化为规范名
+	res, err = it.InvokableRun(context.Background(), `{"name":"OCR 评分"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out = useSkillOut{}
+	if err := json.Unmarshal([]byte(res), &out); err != nil {
+		t.Fatalf("出参应為 JSON: %v\n%s", err, res)
+	}
+	if out.Name != "ocr-grading" || out.Requested != "OCR 评分" {
+		t.Fatalf("别名归一化自证不符: %+v", out)
+	}
+
+	// 错误路径：不出自证字段（Error 优先）
+	res, err = it.InvokableRun(context.Background(), `{"name":"plain"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out = useSkillOut{}
+	_ = json.Unmarshal([]byte(res), &out)
+	if out.Error == "" || out.Name != "" || out.Checksum != "" {
+		t.Fatalf("错误路径不应携带自证字段: %+v", out)
 	}
 }
 

@@ -18,7 +18,13 @@ type useSkillIn struct {
 }
 
 // useSkillOut use_skill 工具出参。
+// 自证字段（Name/Requested/Version/Checksum）供观测守卫校验「声明加载 A、实际返回 B」——
+// 身份锚点是结果内容自报的规范名+校验和，不依赖事件流相邻顺序。
 type useSkillOut struct {
+	Name        string `json:"name,omitempty"`      // 解析后规范引用名（allowed 校验与守卫比对的基准）
+	Requested   string `json:"requested,omitempty"` // 模型原始入参（别名命中时与 Name 不同）
+	Version     string `json:"version,omitempty"`   // frontmatter version（Provider 未提供时为空）
+	Checksum    string `json:"checksum,omitempty"`  // 内容校验和（sha256 hex，Provider 口径）
 	Content     string `json:"content,omitempty"`
 	Description string `json:"description,omitempty"`
 	Error       string `json:"error,omitempty"`
@@ -58,7 +64,8 @@ func AsSkillTool(p Provider, allowed []string) (tool.BaseTool, error) {
 			if err != nil {
 				return &useSkillOut{Error: err.Error()}, nil
 			}
-			return &useSkillOut{Content: s.Content, Description: s.Description}, nil
+			return &useSkillOut{Name: name, Requested: in.Name, Version: s.Version,
+				Checksum: s.Checksum, Content: s.Content, Description: s.Description}, nil
 		})
 	if err != nil {
 		return nil, err

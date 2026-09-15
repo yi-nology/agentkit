@@ -249,6 +249,7 @@ func (l *Library) Resolve(_ context.Context, ref Ref) (*Skill, error) {
 	sum := sha256.Sum256([]byte(e.Body))
 	return &Skill{
 		Name:        ref.Name,
+		Version:     e.Meta.Version,
 		Description: e.Meta.Description,
 		Content:     e.Body,
 		Checksum:    hex.EncodeToString(sum[:])[:16],
