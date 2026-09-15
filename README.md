@@ -1,7 +1,7 @@
 # agentkit
 
-AI Agent 开发工具箱 —— 从生产项目提炼的通用组件库：代码审查平台 **Argus** + 智能运维多智能体平台 **bianque**。
-当前版本 **v0.9.5** · Go ≥ 1.26 · 27 个包。
+AI Agent 开发工具箱 —— 从生产项目提炼的通用组件库：代码审查平台 **Argus** + 智能运维多智能体平台 **bianque** + LLM 评测/观测平台 **heimdallr**。
+当前版本 **v0.10.3** · Go ≥ 1.26 · 32 个包。
 
 > 📖 **完整框架文档**：[docs/FRAMEWORK.md](docs/FRAMEWORK.md) —— 设计原则、六层架构、
 > 各包逐一详解（API/示例/边界契约）、横向能力专题（可靠性/成本/多副本/安全）、
@@ -75,6 +75,7 @@ git.enjoye.top/enjoydream/agentkit
 | `blackboard` | Blackboard 架构原语（共享黑板 + 专家轮转） | 无 |
 | `clarify` | 澄清/标准化词表内核（term_map 模型/加载/校验 + 序数指代解析 + 回答消解） | yaml.v3 |
 | `policy` | 操作审计门（四模式裁决矩阵 + 例外规则 + fail-safe 仲裁 + WithAuditGate 工具装饰器） | eino, yaml.v3 |
+| `dispatch` | 通用派发守卫（allow 矩阵 + 深度上限 + 自派发拒绝，EdgeSource 拓扑注入） | 无 |
 | `obsx` | eino callbacks 追踪（llm.call.* 结构化日志） | eino, ekit |
 | `langfuse` | Langfuse Public API 只读客户端（trace 拉取 + 详情合并 + 官方契约类型） | 无 |
 | `breaker` | 熔断器（closed→open→half-open，探测超时兜底） | 无 |
@@ -87,7 +88,7 @@ git.enjoye.top/enjoydream/agentkit
 | `pack` | 领域包 MCP 工具面契约清单（_shared 基线 / 包覆盖 / 字典序冲突） | yaml.v3 |
 | `lineage` | 装配血缘图（used_by 单源 + reload 影响面 diff + 焦点子图） | skill, pack |
 | `hotplug` | 插拔视图 Plugboard + 泛型原子快照 Holder | 无 |
-| `logredact` | 日志/审计凭据脱敏（URL/token/Bearer 打码） | 无 |
+| `logredact` | 日志/审计凭据脱敏（URL/token/Bearer 打码 + Redact 高敏感抹除 + Masker/Restore 拓扑标识令牌化） | 无 |
 | `jsonrepair` | LLM 宽容 JSON 修复（栅栏/尾逗号/全角/散文包裹 + 标量归一） | 无 |
 | `llmjson` | 模型输出 JSON 统一解析入口（ExtractJSON 快路径 → 语法修复 → 全链宽容三级尝试） | llm, jsonrepair |
 | `severity` | 严重级别归一化 + 指纹 + glob 匹配 | 无 |
@@ -670,6 +671,7 @@ agentkit/agentrun       ← ReAct / Plan-and-Execute 样板
 agentkit/reflection     ← 反思循环
 agentkit/router         ← 意图路由
 agentkit/blackboard     ← 多专家黑板协作
+agentkit/dispatch       ← 派发守卫（allow 矩阵 + 深度上限）
 agentkit/policy         ← 操作审计门（四模式裁决）
 agentkit/clarify        ← 澄清/标准化词表内核（回答消解）
 agentkit/toolprior      ← 工具优先级决策
@@ -688,6 +690,8 @@ agentkit/logredact      ← 凭据脱敏
 agentkit/breaker        ← 熔断保护
 agentkit/progress       ← 事件总线
 agentkit/obsx           ← eino 调用追踪
+agentkit/langfuse       ← Langfuse trace 读回（只读客户端）
+agentkit/stats          ← 评测/对比统计（Wilson CI + McNemar）
 agentkit/safejson · severity · audit · textutil · workcopy  ← 安全/审计/文本/副本沙箱
     │
     ▼
@@ -783,3 +787,11 @@ Argus 内部包改为 import agentkit：
 | `bianque/internal/agents` TermEntry/TermClarify + loadTermMap | `agentkit/clarify.Entry/Options` + `LoadVocab`（别名薄层） |
 | `bianque/internal/agents` 词表内在校验 | `agentkit/clarify.Validate`（域注册/路由词冲突校验留宿主） |
 | `bianque/internal/engine/scheduler` ordinalIndex/resolveTermAnswer | `agentkit/clarify.OrdinalIndex/ResolveAnswer` |
+
+### heimdallr（v0.10.0）
+
+| heimdallr 旧路径 | agentkit 新路径 |
+|---|---|
+| `heimdallr/internal/mine/dedup.go` bigramSet/jaccard | `agentkit/textutil`（BigramSet/Jaccard/Similarity/NearDuplicate；InstructionBigrams 留宿主） |
+| `heimdallr/internal/report` WilsonCI/McNemarExact | `agentkit/stats`（原样，comb 转私有） |
+| `heimdallr/internal/observe/client.go` + Trace/Observation 契约类型 | `agentkit/langfuse`（错误前缀 langfuse:；UsageTokens/UsageCost 导出；MapTrace 留宿主） |

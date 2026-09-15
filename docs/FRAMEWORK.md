@@ -1,6 +1,6 @@
 # agentkit 框架完整文档
 
-> 版本：v0.9.5 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
+> 版本：v0.10.3 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
 > 配套文档：[架构模式支持矩阵](patterns.md)（七架构何时用/何时不用）· [README](../README.md)（快速上手）
 
 > 文中架构图使用 Mermaid：Forgejo/GitHub 等端原生渲染；不支持渲染的查看端，
@@ -17,7 +17,7 @@
 5. [L3 决策层 —— toolprior / skill](#五l3-决策层--toolprior--skill)
 6. [L4 工具与上下文层 —— acpx / mcp / workcopy / knowledge/rag / textutil](#六l4-工具与上下文层)
 7. [L5 运行时基础设施 —— breaker / worker / progress / safejson / severity / audit](#七l5-运行时基础设施)
-8. [L6 可观测层 —— obsx](#八l6-可观测层--obsx)
+8. [L6 可观测层 —— obsx / langfuse](#八l6-可观测层--obsx--langfuse)
 9. [七架构模式支持](#九七架构模式支持)
 10. [横向能力专题](#十横向能力专题)
 11. [生产实践：Argus 参考实现](#十一生产实践argus-参考实现)
@@ -28,7 +28,7 @@
 ## 一、框架定位与设计原则
 
 **agentkit 是从生产项目提炼的 AI Agent 开发工具箱**：代码审查平台 Argus +
-智能运维多智能体平台 bianque。一组可在 LLM 应用之间共享的 Go 组件，覆盖模型调用、
+智能运维多智能体平台 bianque + LLM 评测/观测平台 heimdallr。一组可在 LLM 应用之间共享的 Go 组件，覆盖模型调用、
 编排样板、工具治理、知识检索、运行时基础设施与可观测。
 
 ### 设计原则
@@ -97,18 +97,20 @@
 | `workcopy` | Git 工作副本沙箱（singleflight + 引用计数 + TTL） | ekit, x/sync | v0.1.0 |
 | `knowledge/rag` | 双后端 RAG：Local TF-IDF + Milvus 向量 | eino, milvus-sdk-go | v0.1.0 |
 | `websearch` | 公开资料检索抽象：Service + SearXNG + AsTool | eino | v0.9.0 |
-| `breaker` | 熔断器（closed→open→half-open，探测超时兜底） | 无 | v0.1.0 |
+| `breaker` | 熔断器（closed→open→half-open，探测超时兜底） | 无 | v0.1.0（v0.10.1 探测时限可配） |
 | `worker` | DB 即队列 worker pool + LeaderElector 选主 | ekit | v0.1.0（v0.7.3 选主） |
 | `worker/pglease` | LeaseStore 的 PostgreSQL 实现（表名白名单可配） | 无 | v0.9.0 |
 | `progress` | 泛型事件总线（有损广播 + 丢弃计数） | ekit | v0.1.0 |
 | `hotplug` | 插拔视图 Plugboard + 泛型原子快照 Holder | 无 | v0.9.0 |
-| `logredact` | 日志/审计凭据脱敏（URL/token/Bearer） | 无 | v0.9.0 |
+| `logredact` | 日志/审计凭据脱敏（URL/token/Bearer）+ Redact 高敏感打码 + Masker/Restore 拓扑标识令牌化 | 无 | v0.9.0（v0.10.2 Redact/Masker） |
 | `jsonrepair` | LLM 宽容 JSON 修复（栅栏/尾逗号/全角/散文 + 标量归一） | 无 | v0.9.0 |
 | `llmjson` | 模型输出 JSON 统一解析入口：ExtractJSON 快路径 → 语法修复 → 全链宽容，错误携带两路原因 | llm, jsonrepair | v0.9.8 |
 | `obsx` | eino callbacks 追踪（结构化日志 + 真实 usage 回流） | eino, ekit | v0.4.0 |
+| `langfuse` | Langfuse Public API 只读客户端（FetchBatch 分页/GetTrace/Query 选择口径 + Trace/Observation 契约，UsageTokens/UsageCost 新旧口径兜底） | 无 | v0.10.0 |
 | `safejson` | Markdown/HTML 反注入 | 无 | v0.1.0 |
 | `severity` | 严重级别归一化 + SHA256 指纹 + glob | 无 | v0.1.0 |
 | `audit` | 审计日志 | ekit | v0.1.0 |
+| `stats` | 评测/对比统计原语（WilsonCI 得分区间 + McNemarExact 配对精确检验） | 无 | v0.10.0 |
 | `textutil` | rune 安全截断/等分块/TruncEllipsis + 近重复检测（bigram Jaccard） | 无 | v0.1.0（v0.9.0 Ellipsis，v0.10.0 近重复） |
 
 ---
@@ -1108,3 +1110,18 @@ flowchart TD
   规则（凭证词 `: ` 空格形态 + PEM 整段打码）
 - **v0.9.5**：llm.PriceOf 前缀定价估算；新包 dispatch（通用派发守卫，
   EdgeSource 拓扑注入 + DenyError 结构化拒绝）——第 27 包
+- **v0.9.6**：bianque 操作审计门沉淀——新包 policy（四模式三层裁决 + Arbiter 灰区仲裁 +
+  WithAuditGate 装饰器）——第 28 包；router KeywordPostNegated 后置否定守门
+- **v0.9.7**：新包 clarify（澄清/标准化词表内核：term_map/LoadVocab/Validate +
+  OrdinalIndex 序数指代 + ResolveAnswer 回答消解）——第 29 包
+- **v0.9.8**：新包 llmjson（模型输出 JSON 统一解析入口：ExtractJSON 快路径 →
+  jsonrepair.Repair 语法修复 → ParseLenient 全链宽容，错误携带两路原因）——第 30 包
+- **v0.10.0**：heimdallr 沉淀——textutil 近重复检测（BigramSet/Jaccard/NearDuplicate）；
+  新包 stats（WilsonCI/McNemarExact 评测统计）——第 31 包；新包 langfuse（Public API
+  只读客户端，FetchBatch/GetTrace/Query + UsageTokens/UsageCost）——第 32 包
+- **v0.10.1**：breaker WithProbeTimeout——半开探测时限可配（NewBreakers 变参 Option，
+  探测时限应 ≥ 被保护操作最长正常耗时）
+- **v0.10.2**：logredact 凭据脱敏升级——Redact（高敏感模式化打码，永不回填）+
+  Masker/Restore（拓扑标识 «Tn» 令牌化进 LLM、展示面回填，回填不回灌二次输入）
+- **v0.10.3**：agentrun Event.CallID 原生透传（tool_call/tool_result 精确配对根基）；
+  skill use_skill 出参自证（name/requested/version/checksum）+ Library.Resolve 回 Version

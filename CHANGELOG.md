@@ -311,6 +311,10 @@ bianque 生产装配四连沉淀：模型级 failover、副作用感知重试守
   新增 `TestTokenize` 锁死分词语义（bigram/单字补齐/非 Han 边界），
   `progress` 补 Publish 基准留档（subs=1 时 27ns/op，无需优化）。
 
+## v0.8.2 (2026-09-07)
+
+- **deps**: ekit v0.20.1 → v0.27.2（Go 1.26.0；grpc 1.83 / protobuf 1.36.11 / gjson 1.18 传递升级）
+
 ## v0.8.1 (2026-09-07)
 
 - **llm**: `StageRouter` — per-stage Generator multiplexing implementing `Generator`
