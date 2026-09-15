@@ -144,7 +144,6 @@ func (t *Table) StrategyPrompt(ctx context.Context) string {
 // limitedTool 调用次数受限的工具包装（原子计数，并发安全）。
 type limitedTool struct {
 	inner tool.InvokableTool
-	base  tool.BaseTool
 	max   int64
 	calls atomic.Int64
 }

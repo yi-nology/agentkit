@@ -23,8 +23,8 @@ func TestTokenize(t *testing.T) {
 		{"𠀀a𠀀", []string{"𠀀", "a", "𠀀"}},
 		{"emoji 😀😃 与汉字中文字符", []string{"emoji", "与汉", "汉字", "字中", "中文", "文字", "字符", "符"}},
 		{"ＡＢＣ全角字母ＸＹＺ", []string{"全角", "角字", "字母", "母"}}, // 全角字母非 ASCII，作边界
-		{"日本語のテキストひらがな", []string{"日本", "本語", "語"}}, // 假名非 Han
-		{"한국어 텍스트", nil},                                      // 谚文非 Han
+		{"日本語のテキストひらがな", []string{"日本", "本語", "語"}},     // 假名非 Han
+		{"한국어 텍스트", nil}, // 谚文非 Han
 	}
 	for _, c := range cases {
 		got := tokenize(c.in)

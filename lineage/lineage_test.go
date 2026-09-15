@@ -91,7 +91,7 @@ func TestFocus(t *testing.T) {
 func TestDiff(t *testing.T) {
 	prev, _ := fixture()
 	next := Build([]Expert{{
-		Slug: "specialists/sec",
+		Slug:   "specialists/sec",
 		Skills: []string{"pod"},
 		Grants: []Grant{{Server: "sec", Allow: []string{"collect"}}},
 	}}, []Skill{
@@ -139,7 +139,7 @@ func TestDiff(t *testing.T) {
 // TestHub Set/Resync/Get/Manifests 语义与 nil 安全。
 func TestHub(t *testing.T) {
 	var nilHub *Hub
-	nilHub.Resync(nil)            // no-op
+	nilHub.Resync(nil) // no-op
 	if nilHub.Get() != nil || nilHub.Manifests() != nil {
 		t.Fatal("nil hub 应安全 no-op")
 	}

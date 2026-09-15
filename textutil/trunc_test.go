@@ -51,7 +51,10 @@ func TestTruncRunesNegative(t *testing.T) {
 }
 
 func TestTruncEllipsis(t *testing.T) {
-	cases := []struct{ in, want string; n int }{
+	cases := []struct {
+		in, want string
+		n        int
+	}{
 		{"hello", "hello", 10},
 		{"hello", "hello", 5},
 		{"hello", "hel…", 3},

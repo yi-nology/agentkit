@@ -20,3 +20,9 @@ go.work.sum
 .vscode/
 *.swp
 *.swo
+
+# 本地工具产物（安全扫描 / 视频 / git worktree）
+.mimosa/
+.mimocode/
+.v2c/
+.worktrees/

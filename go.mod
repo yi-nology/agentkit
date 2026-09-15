@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	git.enjoye.top/enjoydream/ekit v0.27.2
+	github.com/Masterminds/semver/v3 v3.3.1
 	github.com/cloudwego/eino v0.9.18
 	github.com/mark3labs/mcp-go v0.43.0
 	github.com/milvus-io/milvus-sdk-go/v2 v2.4.2
@@ -12,7 +13,6 @@ require (
 )
 
 require (
-	github.com/Masterminds/semver/v3 v3.3.1 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
@@ -21,7 +21,7 @@ require (
 
 require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
-	github.com/buger/jsonparser v1.1.1 // indirect
+	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/bytedance/gopkg v0.1.4 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect
 	github.com/bytedance/sonic/loader v0.5.0 // indirect

@@ -217,6 +217,11 @@ func (p *Pool) evict(name string, cli client.MCPClient) {
 func dial(ctx context.Context, cfg ServerConfig) (client.MCPClient, error) {
 	switch {
 	case len(cfg.Command) > 0:
+		// argv[0] 只允许是可执行名：以 "-" 开头会落入下游参数解析当选项
+		// （argument injection）；Command 来自装配配置，越界即配置错误，fail-fast
+		if cfg.Command[0] == "" || strings.HasPrefix(cfg.Command[0], "-") {
+			return nil, fmt.Errorf("mcp: server %s 非法 command %q", cfg.Name, cfg.Command[0])
+		}
 		// 经 CommandFunc 接管 exec.Cmd：环境只给白名单，绝不继承全量 os.Environ()
 		return client.NewStdioMCPClientWithOptions(cfg.Command[0], cfg.Env, cfg.Command[1:],
 			transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {

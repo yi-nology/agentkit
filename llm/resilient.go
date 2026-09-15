@@ -470,7 +470,7 @@ func isNilModel(m model.BaseChatModel) bool {
 	}
 	v := reflect.ValueOf(m)
 	switch v.Kind() {
-	case reflect.Ptr, reflect.Map, reflect.Slice, reflect.Interface, reflect.Func:
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Interface, reflect.Func:
 		return v.IsNil()
 	}
 	return false

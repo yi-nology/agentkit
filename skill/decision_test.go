@@ -18,8 +18,8 @@ func setupSkills(t *testing.T) (*FileProvider, string) {
 
 	// 目录形式 + frontmatter
 	d := filepath.Join(dir, "ocr-grading")
-	os.MkdirAll(d, 0o755)
-	os.WriteFile(filepath.Join(d, "SKILL.md"), []byte(`---
+	_ = os.MkdirAll(d, 0o755)
+	_ = os.WriteFile(filepath.Join(d, "SKILL.md"), []byte(`---
 name: OCR 评分
 description: OCR 结果的三级评分标准（High/Medium/Low）
 ---
@@ -30,7 +30,7 @@ description: OCR 结果的三级评分标准（High/Medium/Low）
 `), 0o644)
 
 	// 平铺形式 + 无 frontmatter
-	os.WriteFile(filepath.Join(dir, "plain.md"), []byte("# 无元数据\n\n正文内容。"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "plain.md"), []byte("# 无元数据\n\n正文内容。"), 0o644)
 
 	return NewFileProvider(dir), dir
 }

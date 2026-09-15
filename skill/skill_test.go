@@ -12,11 +12,11 @@ func TestFileProviderResolve(t *testing.T) {
 
 	// 创建测试 skill 文件：root/<name>/SKILL.md
 	skillDir := filepath.Join(dir, "ocr-grading")
-	os.MkdirAll(skillDir, 0o755)
-	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# OCR 评分标准\n\nHigh = 安全问题"), 0o644)
+	_ = os.MkdirAll(skillDir, 0o755)
+	_ = os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# OCR 评分标准\n\nHigh = 安全问题"), 0o644)
 
 	// 创建 root/<name>.md 格式
-	os.WriteFile(filepath.Join(dir, "team-style.md"), []byte("# 团队风格"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "team-style.md"), []byte("# 团队风格"), 0o644)
 
 	p := NewFileProvider(dir)
 	ctx := context.Background()
@@ -84,7 +84,7 @@ func TestFileProviderUnsupportedSource(t *testing.T) {
 
 func TestFileProviderVersionedCache(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "my-skill.md"), []byte("v1"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "my-skill.md"), []byte("v1"), 0o644)
 
 	p := NewFileProvider(dir)
 	ctx := context.Background()

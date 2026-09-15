@@ -117,6 +117,11 @@ func execCLI(ctx context.Context, dir string, argv []string, env []string,
 	if len(argv) == 0 {
 		return "", "", -1, fmt.Errorf("acpx: 命令为空")
 	}
+	// argv[0] 只允许是可执行名：以 "-" 开头会被 exec 层之下的参数解析当选项
+	// （argument injection）；Bin 来自装配配置，越界即配置错误，fail-fast
+	if strings.HasPrefix(argv[0], "-") {
+		return "", "", -1, fmt.Errorf("acpx: 非法可执行名 %q", argv[0])
+	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 

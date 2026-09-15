@@ -56,7 +56,7 @@ func TestMilvusIntegration(t *testing.T) {
 	}
 	defer func() {
 		_ = store.client.DropCollection(ctx, collection)
-		store.Close()
+		_ = store.Close()
 	}()
 
 	// 1. Index：写入 3 篇文档（每篇内部按标题分块）

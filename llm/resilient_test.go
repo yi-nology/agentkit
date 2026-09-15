@@ -468,7 +468,6 @@ func TestResilientAttemptTimeoutSwitch(t *testing.T) {
 // blockingChatModel 阻塞直到 release 关闭（模拟慢响应）。
 type blockingChatModel struct {
 	release chan struct{}
-	once    sync.Once
 }
 
 func (b *blockingChatModel) Generate(ctx context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {

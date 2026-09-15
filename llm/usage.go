@@ -22,7 +22,7 @@ type UsageRecord struct {
 	TotalTokens      int
 	DurationMS       int64
 	FinishReason     string
-	Iteration        int64            // 本作用域第几次 LLM 调用（1 起；无计数器为 0）
+	Iteration        int64             // 本作用域第几次 LLM 调用（1 起；无计数器为 0）
 	Labels           map[string]string // 归因标签（session/case/step/agent 等，调用方自定）
 }
 

@@ -12,7 +12,7 @@ import (
 func TestLocalRetrieve(t *testing.T) {
 	dir := t.TempDir()
 	// 创建测试 markdown 文件
-	os.WriteFile(filepath.Join(dir, "coding-style.md"), []byte(`# 编码规范
+	_ = os.WriteFile(filepath.Join(dir, "coding-style.md"), []byte(`# 编码规范
 
 ## Go 代码风格
 
@@ -26,7 +26,7 @@ func TestLocalRetrieve(t *testing.T) {
 每行不超过 120 字符。
 `), 0o644)
 
-	os.WriteFile(filepath.Join(dir, "deploy.md"), []byte(`# 部署规范
+	_ = os.WriteFile(filepath.Join(dir, "deploy.md"), []byte(`# 部署规范
 
 ## Nacos 配置
 
@@ -90,7 +90,7 @@ func TestLocalRetrieveTopK(t *testing.T) {
 	dir := t.TempDir()
 	// 创建多个文件
 	for i := 0; i < 10; i++ {
-		os.WriteFile(filepath.Join(dir, "doc"+string(rune('0'+i))+".md"),
+		_ = os.WriteFile(filepath.Join(dir, "doc"+string(rune('0'+i))+".md"),
 			[]byte("# 文档 "+string(rune('0'+i))+"\n内容关于测试和规范。"), 0o644)
 	}
 
@@ -107,8 +107,8 @@ func TestLocalRetrieveTopK(t *testing.T) {
 
 func TestLocalRetrieveFilter(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "go.md"), []byte("# Go 规范\n使用 errcheck。"), 0o644)
-	os.WriteFile(filepath.Join(dir, "py.md"), []byte("# Python 规范\n使用 pylint。"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "go.md"), []byte("# Go 规范\n使用 errcheck。"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "py.md"), []byte("# Python 规范\n使用 pylint。"), 0o644)
 
 	local, _ := NewLocal(dir)
 
@@ -123,7 +123,7 @@ func TestLocalRetrieveFilter(t *testing.T) {
 
 func TestLocalRetrieverEmptyQuery(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "x.md"), []byte("# X"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "x.md"), []byte("# X"), 0o644)
 	local, _ := NewLocal(dir)
 
 	chunks, _ := local.Retrieve(context.Background(), "", 5, nil)
@@ -134,7 +134,7 @@ func TestLocalRetrieverEmptyQuery(t *testing.T) {
 
 func TestLocalRescan(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "v1.md"), []byte("# 版本1\n初始内容。"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "v1.md"), []byte("# 版本1\n初始内容。"), 0o644)
 
 	local, _ := NewLocal(dir)
 	chunks1, _ := local.Retrieve(context.Background(), "初始内容", 5, nil)
@@ -147,7 +147,7 @@ func TestLocalRescan(t *testing.T) {
 	local.scannedAt = time.Time{} // 清除扫描时间，触发重扫
 	local.mu.Unlock()
 
-	os.WriteFile(filepath.Join(dir, "v2.md"), []byte("# 版本2\n新增内容关于部署。"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "v2.md"), []byte("# 版本2\n新增内容关于部署。"), 0o644)
 	chunks2, _ := local.Retrieve(context.Background(), "部署", 5, nil)
 	found := false
 	for _, c := range chunks2 {
@@ -163,7 +163,7 @@ func TestLocalRescan(t *testing.T) {
 
 func TestLocalAsTool(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "test.md"), []byte("# 测试\n工具化检索。"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "test.md"), []byte("# 测试\n工具化检索。"), 0o644)
 	local, _ := NewLocal(dir)
 
 	tool := local.AsTool()
@@ -181,8 +181,8 @@ func TestLocalAsTool(t *testing.T) {
 
 func TestNewLocalNotDir(t *testing.T) {
 	f, _ := os.CreateTemp("", "test-*.md")
-	f.Close()
-	defer os.Remove(f.Name())
+	_ = f.Close()
+	defer func() { _ = os.Remove(f.Name()) }()
 
 	_, err := NewLocal(f.Name())
 	if err == nil {
@@ -263,7 +263,7 @@ func TestChunkMarkdownOverlap(t *testing.T) {
 
 func TestLocalRescanNewContent(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "initial.md"), []byte("# 初始\n密码管理规范。"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "initial.md"), []byte("# 初始\n密码管理规范。"), 0o644)
 
 	local, _ := NewLocal(dir)
 	chunks1, _ := local.Retrieve(context.Background(), "密码管理", 5, nil)

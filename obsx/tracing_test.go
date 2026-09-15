@@ -73,7 +73,7 @@ func TestTracingHandlerOnEnd(t *testing.T) {
 
 	ctx := InitLLMObservability(context.Background(), rl, Options{})
 	ctx = WithStage(ctx, "R1")
-	ctx = fireModelCallbacks(ctx)
+	fireModelCallbacks(ctx)
 
 	end := rl.find("llm.call.end")
 	if end == nil {
@@ -103,7 +103,7 @@ func TestTracingHandlerOnError(t *testing.T) {
 	ctx = WithStage(ctx, "R3")
 	ctx = callbacks.EnsureRunInfo(ctx, "OpenAI", components.ComponentOfChatModel)
 	ctx = callbacks.OnStart(ctx, &model.CallbackInput{Messages: []*schema.Message{schema.UserMessage("hi")}})
-	ctx = callbacks.OnError(ctx, context.DeadlineExceeded)
+	callbacks.OnError(ctx, context.DeadlineExceeded)
 
 	e := rl.find("llm.call.error")
 	if e == nil {
@@ -124,7 +124,7 @@ func TestTracingHandlerSlowCall(t *testing.T) {
 	ctx = callbacks.EnsureRunInfo(ctx, "OpenAI", components.ComponentOfChatModel)
 	ctx = callbacks.OnStart(ctx, &model.CallbackInput{})
 	time.Sleep(5 * time.Millisecond)
-	ctx = callbacks.OnEnd(ctx, &model.CallbackOutput{})
+	callbacks.OnEnd(ctx, &model.CallbackOutput{})
 
 	if rl.find("llm.call.slow") == nil {
 		t.Fatal("慢调用应落 warn")

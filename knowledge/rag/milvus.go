@@ -72,7 +72,7 @@ func NewMilvusStore(ctx context.Context, cfg MilvusConfig, embedder Embedder) (*
 
 	// 自动建表
 	if err := s.ensureCollection(ctx); err != nil {
-		c.Close()
+		_ = c.Close()
 		return nil, err
 	}
 

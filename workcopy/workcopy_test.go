@@ -31,7 +31,7 @@ func makeFixtureRepo(t *testing.T) string {
 	}
 
 	run("init", "-b", "main", dir)
-	os.WriteFile(filepath.Join(dir, "README.md"), []byte("# fixture\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "README.md"), []byte("# fixture\n"), 0o644)
 	run("add", ".")
 	run("commit", "-m", "init")
 	// 模拟 PR head ref（gitea/github 习惯 refs/pull/<n>/head）
@@ -102,6 +102,24 @@ func TestEnsureNilCredentialFunc(t *testing.T) {
 	}
 }
 
+// TestEnsureRejectsOptionBranch 锁死引用名守卫：以 "-" 开头的 DefaultBranch
+// 会被 git 当选项解析（argument injection），必须在建目录之前拒绝。
+func TestEnsureRejectsOptionBranch(t *testing.T) {
+	p := newTestPool(t, "")
+	p.CredentialOf = func(string) (string, string, bool) { return "https://git.example.com", "x", true }
+
+	_, err := p.Ensure(context.Background(), WorktreeKey{
+		Platform: "gitea", Owner: "o", Repo: "r", Number: "1", HeadSHA: "x",
+		DefaultBranch: "--upload-pack=evil",
+	})
+	if err == nil || !strings.Contains(err.Error(), "非法引用名") {
+		t.Fatalf("以 - 开头的分支应被拒绝: %v", err)
+	}
+	if es, _ := os.ReadDir(p.Root); len(es) != 0 {
+		t.Fatalf("拒绝路径不应产生沙箱目录: %v", es)
+	}
+}
+
 func TestEnsureMissingHeadSHA(t *testing.T) {
 	fixture := makeFixtureRepo(t)
 	p := newTestPool(t, fixture)
@@ -153,13 +171,13 @@ func TestSweepRemovesOrphans(t *testing.T) {
 	p := newTestPool(t, "")
 	// 模拟孤儿目录：旧 mtime
 	orphan := filepath.Join(p.Root, "wc-orphan")
-	os.MkdirAll(orphan, 0o755)
+	_ = os.MkdirAll(orphan, 0o755)
 	old := time.Now().Add(-2 * time.Hour)
-	os.Chtimes(orphan, old, old)
+	_ = os.Chtimes(orphan, old, old)
 
 	// 活跃目录（新 mtime）不应被清
 	live := filepath.Join(p.Root, "wc-live")
-	os.MkdirAll(live, 0o755)
+	_ = os.MkdirAll(live, 0o755)
 
 	p.Sweep(time.Hour)
 

@@ -6,7 +6,18 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// TestExecCLIRejectsOptionBinary 锁死 exec 层守卫：argv[0] 以 "-" 开头即
+// argument injection 面，必须 fail-fast（Bin 来自装配配置，越界即配置错误）。
+func TestExecCLIRejectsOptionBinary(t *testing.T) {
+	_, _, _, err := execCLI(context.Background(), "", []string{"-evil", "x"}, nil,
+		time.Second, func(string) {}, 0)
+	if err == nil || !strings.Contains(err.Error(), "非法可执行名") {
+		t.Fatalf("argv[0] 以 - 开头应被拒绝: %v", err)
+	}
+}
 
 // TestChildEnvLiteralPassthrough 锁死 Env 契约：含 "=" 的条目按 KEY=VALUE 字面
 // 注入（父进程无同名变量时也不丢失）；纯名条目按名透传父进程值。

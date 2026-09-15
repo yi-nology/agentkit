@@ -6,7 +6,6 @@ import "strings"
 // 最小子集：--- 围栏内的 name/description 行）。零依赖：不引 yaml 解析器，
 // 不认识的键忽略——skill 正文才是消费主体，元数据只服务发现与决策。
 func parseFrontmatter(content string) (name, desc, body string) {
-	body = content
 	trimmed := strings.TrimLeft(content, " \t\r\n")
 	if !strings.HasPrefix(trimmed, "---") {
 		return "", "", content

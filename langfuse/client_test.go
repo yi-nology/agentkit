@@ -23,7 +23,7 @@ func TestClientFetchBatch(t *testing.T) {
 		pageCalls++
 		page := r.URL.Query().Get("page")
 		pageNo := 1
-		fmt.Sscanf(page, "%d", &pageNo)
+		_, _ = fmt.Sscanf(page, "%d", &pageNo)
 		resp := map[string]any{
 			"meta": map[string]any{"page": pageNo, "limit": 2, "totalItems": 3, "totalPages": 2},
 		}

@@ -87,7 +87,8 @@ func (p *Pool) Ensure(ctx context.Context, key WorktreeKey) (string, error) {
 	// 共享者退出时若条目已消失（同 flight 先到者已 Release 删除），重走一次建仓，
 	// 杜绝拿到已删除目录
 	for round := 0; ; round++ {
-		result, err, _ := p.group.Do(k, func() (any, error) {
+		// 返回值不消费：建仓与登记同在 flight 内，Do 返回后统一从 entries 取
+		_, err, _ := p.group.Do(k, func() (any, error) {
 			dir, err := p.prepare(ctx, key, baseURL, token)
 			if err != nil {
 				return nil, err
@@ -104,14 +105,13 @@ func (p *Pool) Ensure(ctx context.Context, key WorktreeKey) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		dir := result.(string)
 
 		p.mu.Lock()
 		e, ok := p.entries[k]
 		if ok {
 			e.refCount++
 			e.lastUsed = time.Now()
-			dir = e.dir
+			dir := e.dir
 			p.mu.Unlock()
 			return dir, nil
 		}
@@ -164,14 +164,13 @@ func cloneURL(baseURL, owner, repo, token string) string {
 	return fmt.Sprintf("%soauth2:%s@%s/%s/%s.git", scheme, token, u, owner, repo)
 }
 
-func stripScheme(u string) string {
-	if i := strings.Index(u, "://"); i >= 0 {
-		return u[i+3:]
-	}
-	return u
-}
-
 func (p *Pool) prepare(ctx context.Context, key WorktreeKey, baseURL, token string) (string, error) {
+	// branch 来自外部输入（DefaultBranch）：以 "-" 开头会被 git 当选项解析
+	// （`--branch --upload-pack=…` 即 argument injection），含空白/控制字符则
+	// 本身不是合法引用名——在建任何目录之前 fail-fast
+	if b := key.DefaultBranch; strings.HasPrefix(b, "-") || strings.ContainsAny(b, " \t\r\n\x7f") {
+		return "", fmt.Errorf("workcopy: 非法引用名 %q", b)
+	}
 	if err := os.MkdirAll(p.Root, 0o755); err != nil {
 		return "", fmt.Errorf("workcopy: 根目录创建失败: %w", err)
 	}
@@ -187,7 +186,8 @@ func (p *Pool) prepare(ctx context.Context, key WorktreeKey, baseURL, token stri
 	insecureTLS := p.InsecureTLSOf != nil && p.InsecureTLSOf(key.Platform)
 
 	steps := [][]string{
-		{"git", "clone", "--depth", "1", "--branch", branch, url, dir},
+		// clone 支持 `--` 终止选项解析：url/dir 此后恒为位置参数
+		{"git", "clone", "--depth", "1", "--branch", branch, "--", url, dir},
 		{"git", "-C", dir, "fetch", "--depth", "1", "origin", prRefspec(key.Platform, key.Number)},
 		{"git", "-C", dir, "checkout", "--force", "FETCH_HEAD"},
 	}
