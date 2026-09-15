@@ -39,10 +39,15 @@ done
 
 TREE="$(git -C "${WORKTREE}" add -A && git -C "${WORKTREE}" write-tree)"
 COMMIT="$(git commit-tree "${TREE}" -m "mirror ${TAG}: from ${MODULE}, rewritten as ${GITHUB_MODULE}")"
-git -C "${WORKTREE}" tag -f -a "${TAG}" -m "${GITHUB_MODULE}@${TAG} (mirror of enjoye ${TAG})" "${COMMIT}" >/dev/null
+# 用 mktag 造附注 tag 对象,不落任何本地引用:worktree 与主仓库共享 refs,
+# git tag -f 会把 canonical 仓库的同名 tag 覆盖成镜像 tag(2026-09 踩坑,
+# 曾污染本地 v0.9.5~v0.10.3 六个 tag)。直接推对象 sha 到镜像远端。
+TAGOBJ="$(printf 'object %s\ntype commit\ntag %s\ntagger %s\n\n%s\n' \
+  "${COMMIT}" "${TAG}" "$(git var GIT_COMMITTER_IDENT)" \
+  "${GITHUB_MODULE}@${TAG} (mirror of enjoye ${TAG})" | git mktag)"
 
-# force 仅用于 GitHub 侧重跑同一 tag 的幂等发布；同 tag 内容(tree)确定性一致
-git push "${GITHUB_REMOTE}" --force "refs/tags/${TAG}:refs/tags/${TAG}"
+# force 仅用于 GitHub 侧重跑同一 tag 的幂等发布;同 tag 内容(tree)确定性一致
+git push "${GITHUB_REMOTE}" --force "${TAGOBJ}:refs/tags/${TAG}"
 git push "${GITHUB_REMOTE}" --force "${COMMIT}:refs/heads/main"
 
 echo "已发布 ${GITHUB_MODULE}@${TAG}"
