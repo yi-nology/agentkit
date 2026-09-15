@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.10.3 (2026-09-15)
+
+bianque 工具身份一致性守卫根基（spec 2026-09-15-tool-identity-otel-guard-design P0/P1）。
+
+### Added
+
+- **agentrun**: `Event` 增加 `CallID`——tool_call 事件携带 assistant 声明的原生
+  `ToolCalls[].ID`，tool_result 事件携带 tool 消息的 `ToolCallID`。消费侧
+  （bianque toolPairer）据此做声明↔结果精确配对，取代按名 FIFO 猜配对——
+  eino ToolsNode 默认并行执行同名工具，乱序返回下 FIFO 会张冠李戴（观测面
+  「说 A 实得 B」假告警之源）。既有调用方零改动（新字段空值 = 旧事件流）。
+
+- **skill**: `use_skill` 出参自证——`useSkillOut` 新增 `name`（解析后规范引用名）、
+  `requested`（模型原始入参，别名命中时与 name 不同）、`version`（frontmatter
+  version）、`checksum`（内容校验和，sha256 前 8 字节 16 hex，Provider 口径）。
+  观测守卫以结果自报身份+校验和为锚点检测「声明加载 A、实际返回 B 正文」，
+  不依赖事件流相邻顺序。`Library.Resolve` 补回 `Version`（此前恒空）。
+
 ## v0.10.2 (2026-09-15)
 
 ### Added
