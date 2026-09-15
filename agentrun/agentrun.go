@@ -59,10 +59,11 @@ type Config struct {
 
 // Event agent 运行过程事件（OnEvent 回调载荷，观测/进度展示用）。
 type Event struct {
-	Type string // reasoning | text | tool_call | tool_result
-	Text string
-	Tool string // tool_call/tool_result 的工具名
-	Args string // tool_call 的 JSON 参数串
+	Type   string // reasoning | text | tool_call | tool_result
+	Text   string
+	Tool   string // tool_call/tool_result 的工具名
+	Args   string // tool_call 的 JSON 参数串
+	CallID string // tool_call/tool_result 的原生调用 ID（声明 tc.ID / 结果 ToolCallID）——观测面精确配对依据
 }
 
 // 事件类型词表。
@@ -189,7 +190,7 @@ func run(ctx context.Context, cfg Config, query string, onEvent func(Event)) (st
 		// 工具结果消息：回填 tool_result 事件（观测/进度展示需要工具返回）
 		if onEvent != nil && mv.Role == schema.Tool && mv.Message != nil {
 			name := toolCalled[mv.Message.ToolCallID]
-			onEvent(Event{Type: EventToolResult, Tool: name, Text: mv.Message.Content})
+			onEvent(Event{Type: EventToolResult, CallID: mv.Message.ToolCallID, Tool: name, Text: mv.Message.Content})
 			continue
 		}
 		if mv.Role == schema.Assistant && mv.Message != nil {
@@ -207,10 +208,10 @@ func run(ctx context.Context, cfg Config, query string, onEvent func(Event)) (st
 				}
 				continue
 			}
-			// 中间过程：tool_calls 声明 → 工具调用事件（含参数，观测面需要看到调用命令）
+			// 中间过程：tool_calls 声明 → 工具调用事件（含参数与原生 ID，观测面需要看到调用命令并精确配对）
 			if onEvent != nil {
 				for _, tc := range mv.Message.ToolCalls {
-					onEvent(Event{Type: EventToolCall, Tool: tc.Function.Name, Args: tc.Function.Arguments})
+					onEvent(Event{Type: EventToolCall, CallID: tc.ID, Tool: tc.Function.Name, Args: tc.Function.Arguments})
 				}
 			}
 		}

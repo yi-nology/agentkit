@@ -302,3 +302,28 @@ func TestToolsFactoryPreferredOverTools(t *testing.T) {
 		t.Fatal("ToolsFactory 设置时应优先使用工厂")
 	}
 }
+
+func TestRunEventsCarryNativeCallID(t *testing.T) {
+	// P0 身份透传：tool_call/tool_result 事件必须携带原生调用 ID——
+	// bianque 观测面靠它做声明↔结果精确配对（取代按名 FIFO 猜配对）。
+	_, cm := newMockOpenAI(t,
+		mockResponse{toolCall: &mockToolCall{id: "call_abc", name: "echo", arguments: `{"text":"hi"}`}},
+		mockResponse{content: "最终结论"},
+	)
+
+	var callIDs []string
+	_, err := RunWithEvents(context.Background(), Config{
+		Name: "test", Instruction: "inst", Model: cm,
+		Tools: []tool.BaseTool{newEchoTool(t)},
+	}, "调用工具", func(e Event) {
+		if e.Type == EventToolCall || e.Type == EventToolResult {
+			callIDs = append(callIDs, e.Type+":"+e.CallID)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(callIDs) != 2 || callIDs[0] != "tool_call:call_abc" || callIDs[1] != "tool_result:call_abc" {
+		t.Fatalf("原生 CallID 透传不符: %v", callIDs)
+	}
+}
