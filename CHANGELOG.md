@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.10.5 (2026-09-18)
+
+### Added
+
+- **fence**（新包）：提示词数据区围栏原语 `Data(title, content) (string, int)`——
+  把不可信内容包进显式数据区，并中和内容中出现的围栏标记序列（防伪造
+  "数据区结束"把注入文本抬出数据区）；返回中和次数作注入特征信号，
+  留痕/打点策略归调用方（包零副作用）。
+- **conversation**（新包）：多轮会话历史通用原语——`Turn` 类型、滚动窗口
+  切分 `Split(history, keep) (recent, evicted)`、历史渲染 `Render`（单轮截断
+  200/400 rune）、摘要+verbatim 拼装 `Combine`。摘要生成策略归调用方
+  （LLM 压缩在消费方实现，包内全确定性）。
+- **sampling**（新包）：测试时计算放大（best-of-N）的确定性聚簇原语
+  `Aggregate[T](items, signature, eq) []Group[T]`——多通道签名快速定位 +
+  eq 对比簇代表判归属（与首见者等价才并入，链式漂移不成簇）；「多份采样
+  相互复现」作为可信度信号，不经任何模型。泛型实现，go 1.26。
+- **textutil**：`SanitizeFileStem`（外部标识拼文件名前的路径分隔/引用语法
+  字符消毒，防写入失败与目录穿越）、`NumberLines`（4 位宽行号前缀——给
+  agent 的文件原文加行号，无行号会逼模型编造 file:line 证据）。
+
+### Changed
+
+- **severity**：`Normalize` 词表折叠外部审查专家常用别名——P0/fatal/urgent→
+  high、P1/major→medium、P2/P3/trivial/nit(s)→low。此前消费方各自维护
+  别名克隆（argus v3.8.0 修复的"外部专家 P0 整批落 low"问题在此收敛为
+  一处）；原词表行为不变，越界词仍归 low 且第二返回值 false。
+
+消费动机：argus v3.13.0 路线收尾把这些在 argus 侧验证过的通用能力
+（输入卫生/会话窗口/采样投票/词表归一）下沉 agentkit，供多产品复用。
+
 ## v0.10.4 (2026-09-18)
 
 ### Added

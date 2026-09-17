@@ -135,3 +135,28 @@ func TestGlobMatchGitignoreSemantics(t *testing.T) {
 		t.Fatal("两个 ? 不应被单个 rune 满足")
 	}
 }
+
+// 别名词表（v0.10.5）：外部审查专家常用 P0/nit 等通用研发词表。
+func TestNormalizeAliases(t *testing.T) {
+	high := map[string]string{"P0": High, "fatal": High, "URGENT": High}
+	for in, want := range high {
+		if got, ok := Normalize(in); got != want || !ok {
+			t.Fatalf("Normalize(%q)=%q,%v，want %q,true", in, got, ok, want)
+		}
+	}
+	if got, ok := Normalize("p1"); got != Medium || !ok {
+		t.Fatalf("p1 应 medium: %q %v", got, ok)
+	}
+	for _, in := range []string{"p2", "nit", "nits", "trivial"} {
+		if got, ok := Normalize(in); got != Low || !ok {
+			t.Fatalf("%q 应 low（合法词）: %q %v", in, got, ok)
+		}
+	}
+	// 原词表行为不变
+	if got, ok := Normalize("critical"); got != High || !ok {
+		t.Fatalf("critical 应 high: %q %v", got, ok)
+	}
+	if _, ok := Normalize("gibberish"); ok {
+		t.Fatal("越界词仍应 false")
+	}
+}
