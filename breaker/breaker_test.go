@@ -99,6 +99,41 @@ func TestBreakers(t *testing.T) {
 	}
 }
 
+// Abandon：取消/终止语义——放弃在途半开探测不计失败，立即恢复可探测；
+// closed 态无副作用（v0.10.4，配对契约的第三个出口）。
+func TestBreakerAbandon(t *testing.T) {
+	now := time.Now()
+	b := New(3, time.Minute)
+	for i := 0; i < 3; i++ {
+		b.Failure(now)
+	}
+	if !b.Opened(now.Add(time.Second)) {
+		t.Fatal("连续 3 败应熔断")
+	}
+	// 冷却期过 → 半开放行探测（在途）
+	if !b.Allow(now.Add(2 * time.Minute)) {
+		t.Fatal("冷却后应放行探测")
+	}
+	if b.Allow(now.Add(2*time.Minute + time.Second)) {
+		t.Fatal("探测在途不应放行第二个探测")
+	}
+	// 调用方取消：Abandon 后立即放行新探测（无需等 probeTimeout 失联超时）
+	b.Abandon()
+	if !b.Allow(now.Add(2*time.Minute + 2*time.Second)) {
+		t.Fatal("Abandon 后应立即放行新探测")
+	}
+	// Abandon 不计失败：连续失败数不因放弃而变化（仍为熔断前的 3）
+	// ——熔断态由 openUntil 驱动，Abandon 只清 probing 位。
+	b2 := New(3, time.Minute)
+	b2.Allow(now)
+	b2.Abandon()
+	b2.Allow(now.Add(time.Second)) // closed 态探测
+	b2.Abandon()
+	if b2.Opened(now.Add(2 * time.Second)) {
+		t.Fatal("closed 态 Abandon 不得触发熔断")
+	}
+}
+
 func TestBreakerDefaults(t *testing.T) {
 	b := New(0, 0)
 	if b.trip != DefaultTripThreshold {

@@ -41,8 +41,8 @@ func New(trip int, cooldown time.Duration) *Breaker {
 }
 
 // Allow 返回是否放行；半开时仅放行一个探测请求。
-// 调用契约：返回 true 后必须恰好配对一次 Success 或 Failure（探测失联超过
-// DefaultProbeTimeout 后本方法会放行新探测，不再无限等待旧探测）。
+// 调用契约：返回 true 后必须恰好配对一次 Success、Failure 或 Abandon（探测
+// 失联超过 DefaultProbeTimeout 后本方法会放行新探测，不再无限等待旧探测）。
 func (b *Breaker) Allow(now time.Time) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -67,6 +67,17 @@ func (b *Breaker) Success() {
 	defer b.mu.Unlock()
 	b.consecutive = 0
 	b.openUntil = time.Time{}
+	b.probing = false
+	b.probeDeadline = time.Time{}
+}
+
+// Abandon 放弃在途的半开探测：Allow==true 但调用方在取得结果前终止（任务级
+// 取消/优雅停机）——结果未知，既非成功也非失败，不计入统计。半开态回到
+// "可立即放行新探测"（不必等 probeTimeout 失联超时）；closed 态无副作用。
+// 与 Success/Failure 共同构成 Allow 的配对契约（v0.10.4）。
+func (b *Breaker) Abandon() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.probing = false
 	b.probeDeadline = time.Time{}
 }
@@ -165,6 +176,9 @@ func (bs *Breakers) Success(name string) { bs.get(name).Success() }
 
 // Failure 按 key 记录失败。
 func (bs *Breakers) Failure(name string) { bs.get(name).Failure(bs.Now()) }
+
+// Abandon 按 key 放弃在途半开探测（取消/终止语义，不计失败）。
+func (bs *Breakers) Abandon(name string) { bs.get(name).Abandon() }
 
 // Opened 按 key 判定是否熔断中。
 func (bs *Breakers) Opened(name string) bool { return bs.get(name).Opened(bs.Now()) }

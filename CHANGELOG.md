@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.10.4 (2026-09-18)
+
+### Added
+
+- **breaker**: `Breaker.Abandon()` / `Breakers.Abandon(name)`——放弃在途半开
+  探测的取消/终止语义（Allow==true 后调用方在取得结果前终止：任务级取消、
+  优雅停机）。结果未知，既非成功也非失败，不计入统计；半开态立即恢复可
+  放行新探测（此前只能等 probeTimeout 失联超时），closed 态无副作用。
+  Allow 的配对契约扩为「Success / Failure / Abandon 三者恰好其一」；既有
+  调用方零改动。消费动机：argus Dispatcher/consensus 的任务取消路径此前
+  消费 Allow 后不配对，半开探测位滞留最长约 10 分钟（probeTimeout=最大
+  插件超时+30s），期间健康插件被"熔断中"误跳过。
+
 ## v0.10.3 (2026-09-15)
 
 bianque 工具身份一致性守卫根基（spec 2026-09-15-tool-identity-otel-guard-design P0/P1）。
