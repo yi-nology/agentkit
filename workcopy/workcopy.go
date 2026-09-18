@@ -1,7 +1,8 @@
 // Package workcopy Git 工作副本沙箱服务。
 // 浅克隆 base 默认分支 + fetch PR head + checkout，供 cli 插件在真实工作树上执行。
 // 凭证嵌在 clone URL 中，绝不落盘。singleflight 防并发重复 clone。
-// 引用计数 + TTL 扫描回收泄漏目录。
+// 引用归零后目录**保留**（供同 PR 下次审查增量复用，省 base 分支重克隆），
+// TTL 由 Sweep 兜底回收。
 package workcopy
 
 import (
@@ -48,6 +49,7 @@ type Pool struct {
 }
 
 type wcEntry struct {
+	key      WorktreeKey // 当前 checkout 的 key（同 PR 换 head 后随 refresh 前移）
 	dir      string
 	refCount int
 	lastUsed time.Time
@@ -81,11 +83,54 @@ func (p *Pool) Ensure(ctx context.Context, key WorktreeKey) (string, error) {
 		p.mu.Unlock()
 		return dir, nil
 	}
+	// 同 PR 换 head（新推送）：领用引用归零的保留目录做增量刷新——只 fetch 新的
+	// PR refspec，base 分支浅对象已在库，省掉整次浅克隆。领用（rc++）阻断 Sweep
+	// 与并发二次领用；刷新失败回落全新克隆。
+	var claim *wcEntry
+	for _, e := range p.entries {
+		if e.refCount <= 0 &&
+			e.key.Platform == key.Platform && e.key.Owner == key.Owner &&
+			e.key.Repo == key.Repo && e.key.Number == key.Number &&
+			e.key.HeadSHA != key.HeadSHA {
+			e.refCount++
+			claim = e
+			break
+		}
+	}
 	p.mu.Unlock()
 
+	if claim != nil {
+		if err := p.refresh(ctx, claim.dir, key, token); err == nil {
+			p.mu.Lock()
+			if e, ok := p.entries[k]; ok {
+				// 竞争窗口内同 key 已被常规建仓登记：既有条目胜出。claim 条目仍挂在
+				// 旧 key 下且工作树已被推进到新 head——留着会让旧 key 命中错误内容，
+				// 必须整条作废
+				e.refCount++
+				e.lastUsed = time.Now()
+				dir := e.dir
+				delete(p.entries, claim.key.String())
+				p.mu.Unlock()
+				_ = os.RemoveAll(claim.dir)
+				return dir, nil
+			}
+			delete(p.entries, claim.key.String())
+			claim.key = key
+			claim.lastUsed = time.Now()
+			p.entries[k] = claim
+			dir := claim.dir
+			p.mu.Unlock()
+			return dir, nil
+		}
+		// 刷新失败（force push 抹掉旧引用等）→ 释放领用，回落全新克隆
+		p.mu.Lock()
+		claim.refCount--
+		p.mu.Unlock()
+	}
+
 	// 建仓与登记同在 singleflight 内完成（条目 rc=0，引用由 Do 返回后统一加）：
-	// 共享者退出时若条目已消失（同 flight 先到者已 Release 删除），重走一次建仓，
-	// 杜绝拿到已删除目录
+	// 共享者退出时若条目已消失（同 flight 先到者的条目被 Sweep 回收或 refresh 重挂
+	// key），重走一次建仓，杜绝拿到已删除目录
 	for round := 0; ; round++ {
 		// 返回值不消费：建仓与登记同在 flight 内，Do 返回后统一从 entries 取
 		_, err, _ := p.group.Do(k, func() (any, error) {
@@ -99,7 +144,7 @@ func (p *Pool) Ensure(ctx context.Context, key WorktreeKey) (string, error) {
 				_ = os.RemoveAll(dir)
 				return e.dir, nil
 			}
-			p.entries[k] = &wcEntry{dir: dir, lastUsed: time.Now()}
+			p.entries[k] = &wcEntry{key: key, dir: dir, lastUsed: time.Now()}
 			return dir, nil
 		})
 		if err != nil {
@@ -122,7 +167,8 @@ func (p *Pool) Ensure(ctx context.Context, key WorktreeKey) (string, error) {
 	}
 }
 
-// Release 任务结束后释放（引用归零即删沙箱目录）。
+// Release 任务结束后释放。引用归零**不再立即删目录**：保留供同 PR 下次审查
+// 增量复用（换 head 只 fetch 新 refspec），TTL 由 Sweep 兜底回收。
 func (p *Pool) Release(key WorktreeKey) {
 	k := key.String()
 	p.mu.Lock()
@@ -133,8 +179,7 @@ func (p *Pool) Release(key WorktreeKey) {
 	}
 	e.refCount--
 	if e.refCount <= 0 {
-		_ = os.RemoveAll(e.dir)
-		delete(p.entries, k)
+		e.lastUsed = time.Now()
 	}
 }
 
@@ -202,6 +247,27 @@ func (p *Pool) prepare(ctx context.Context, key WorktreeKey, baseURL, token stri
 	}
 	p.Log.Info("agentkit.workcopy.ready", "dir", dir, "pr", key.Owner+"/"+key.Repo+"#"+key.Number)
 	return dir, nil
+}
+
+// refresh 将保留目录增量推进到新 PR head：只 fetch 新的 PR refspec（base 分支
+// 浅对象已在库——这是"第二次审查少拉取"的收益来源），checkout --force 与
+// prepare 末步同款。origin/<默认分支> 不随刷新前移，base 端新鲜度以首次克隆
+// 为界（由保留 TTL 限定窗口）；默认分支大跨度强推场景由调用方全新克隆兜底
+//（refresh 失败即回落 prepare）。
+func (p *Pool) refresh(ctx context.Context, dir string, key WorktreeKey, token string) error {
+	insecureTLS := p.InsecureTLSOf != nil && p.InsecureTLSOf(key.Platform)
+	steps := [][]string{
+		{"git", "-C", dir, "fetch", "--depth", "1", "origin", prRefspec(key.Platform, key.Number)},
+		{"git", "-C", dir, "checkout", "--force", "FETCH_HEAD"},
+	}
+	for _, args := range steps {
+		if err := runGit(ctx, args, insecureTLS); err != nil {
+			return fmt.Errorf("workcopy: %s#%s 增量刷新失败: %s",
+				key.Owner, key.Repo, scrub(err.Error(), token))
+		}
+	}
+	p.Log.Info("agentkit.workcopy.refreshed", "dir", filepath.Base(dir), "pr", key.Owner+"/"+key.Repo+"#"+key.Number)
+	return nil
 }
 
 func scrub(msg string, secrets ...string) string {

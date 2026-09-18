@@ -17,26 +17,37 @@ import (
 func makeFixtureRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	run := func(args ...string) {
-		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=t@t",
-			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=t@t",
-		)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-
-	run("init", "-b", "main", dir)
+	gitRun(t, dir, "init", "-b", "main", dir)
 	_ = os.WriteFile(filepath.Join(dir, "README.md"), []byte("# fixture\n"), 0o644)
-	run("add", ".")
-	run("commit", "-m", "init")
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "init")
 	// 模拟 PR head ref（gitea/github 习惯 refs/pull/<n>/head）
-	run("update-ref", "refs/pull/1/head", "main")
+	gitRun(t, dir, "update-ref", "refs/pull/1/head", "main")
 	return dir
+}
+
+func gitRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=t@t",
+		"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=t@t",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func newTestPool(t *testing.T, fixture string) *Pool {
@@ -77,10 +88,94 @@ func TestEnsureAndRelease(t *testing.T) {
 		t.Fatal("引用计数未归零不应删除")
 	}
 
-	// 再 Release：归零删除
+	// 再 Release：引用归零——目录保留（供同 PR 复用），TTL 交 Sweep 回收
 	p.Release(key)
-	if _, err := os.Stat(dir); !os.IsNotExist(err) {
-		t.Fatal("引用归零后应删除沙箱目录")
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatal("引用归零后目录应保留（复用语义）")
+	}
+
+	// 保留条目被同 key Ensure 直接复用：零克隆、同一目录
+	dir3, err := p.Ensure(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir3 != dir {
+		t.Fatal("保留条目应被同 key Ensure 直接复用")
+	}
+	p.Release(key)
+}
+
+// 同 PR 换 head（新推送）：保留目录被增量刷新——复用同一沙箱、只 fetch 新的
+// PR refspec，工作树推进到新 head；旧 key 条目重挂到新 key，不新建目录。
+func TestEnsureRefreshesSamePRNewHead(t *testing.T) {
+	fixture := makeFixtureRepo(t)
+	p := newTestPool(t, fixture)
+	p.CredentialOf = func(string) (string, string, bool) { return "file://" + fixture, "x", true }
+	ctx := context.Background()
+
+	v1 := WorktreeKey{Platform: "gitea", Owner: "o", Repo: "r", Number: "1",
+		HeadSHA: "v1", DefaultBranch: "main"}
+	dir, err := p.Ensure(ctx, v1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Release(v1)
+
+	// 新推送：第二个提交 + PR ref 前移
+	_ = os.WriteFile(filepath.Join(fixture, "README.md"), []byte("# fixture v2\n"), 0o644)
+	gitRun(t, fixture, "add", ".")
+	gitRun(t, fixture, "commit", "-m", "v2")
+	gitRun(t, fixture, "update-ref", "refs/pull/1/head", "main")
+	newSHA := gitOut(t, fixture, "rev-parse", "main")
+
+	v2 := WorktreeKey{Platform: "gitea", Owner: "o", Repo: "r", Number: "1",
+		HeadSHA: newSHA, DefaultBranch: "main"}
+	dir2, err := p.Ensure(ctx, v2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir2 != dir {
+		t.Fatalf("同 PR 换 head 应复用同一目录: %s vs %s", dir2, dir)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	if err != nil || string(b) != "# fixture v2\n" {
+		t.Fatalf("工作树应已刷新到 v2: %q (%v)", b, err)
+	}
+	if got := gitOut(t, dir, "rev-parse", "HEAD"); got != newSHA {
+		t.Fatalf("HEAD 应在新提交: got %s want %s", got, newSHA)
+	}
+	// 旧 key 条目已重挂：沙箱目录不增长
+	if es, _ := os.ReadDir(p.Root); len(es) != 1 {
+		t.Fatalf("应只有 1 个沙箱目录，got %d", len(es))
+	}
+	p.Release(v2)
+}
+
+// 非 code-review 的无关 PR 不复用：不同 Number 必须是新沙箱。
+func TestEnsureNoCrossPRReuse(t *testing.T) {
+	fixture := makeFixtureRepo(t)
+	p := newTestPool(t, fixture)
+	p.CredentialOf = func(string) (string, string, bool) { return "file://" + fixture, "x", true }
+	ctx := context.Background()
+
+	k1 := WorktreeKey{Platform: "gitea", Owner: "o", Repo: "r", Number: "1",
+		HeadSHA: "v1", DefaultBranch: "main"}
+	dir1, err := p.Ensure(ctx, k1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Release(k1)
+
+	// fixture 只有 refs/pull/1/head：PR2 建一个独立 ref
+	k2 := WorktreeKey{Platform: "gitea", Owner: "o", Repo: "r", Number: "2",
+		HeadSHA: "v1", DefaultBranch: "main"}
+	gitRun(t, fixture, "update-ref", "refs/pull/2/head", "main")
+	dir2, err := p.Ensure(ctx, k2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir2 == dir1 {
+		t.Fatal("不同 PR 不得复用同一沙箱目录")
 	}
 }
 
