@@ -1,6 +1,6 @@
 # agentkit 框架完整文档
 
-> 版本：v0.10.3 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
+> 版本：v0.10.6 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
 > 配套文档：[架构模式支持矩阵](patterns.md)（七架构何时用/何时不用）· [README](../README.md)（快速上手）
 
 > 文中架构图使用 Mermaid：Forgejo/GitHub 等端原生渲染；不支持渲染的查看端，
@@ -66,11 +66,13 @@
 │ L4 工具与上下文  acpx(9家CLI agent)  mcp(工具池)  workcopy(副本) │
 │                 knowledge/rag(双后端检索)  websearch  textutil   │
 │                 pack(包契约清单)  lineage(装配血缘图)             │
+│                 fence(数据区围栏)  conversation(会话窗口)          │
 ├──────────────────────────────────────────────────────────────┤
 │ L5 运行时  breaker(熔断)  worker+pglease(队列+选主+PG租约)      │
 │            progress(总线)  hotplug(插拔/热替换)                 │
 │            logredact(脱敏)  jsonrepair(宽容JSON) llmjson(解析) │
 │            safejson(反注入) severity(指纹) audit(审计) stats(统计) │
+│            sampling(best-of-N确定性聚簇)                        │
 ├──────────────────────────────────────────────────────────────┤
 │ L6 可观测  obsx(eino callbacks 追踪/真实 usage 回流)             │
 │            langfuse(Public API 只读客户端/trace 读回)             │
@@ -94,10 +96,10 @@
 | `clarify` | 澄清/标准化词表内核：term_map 模型/加载/内在校验 + OrdinalIndex 序数指代 + ResolveAnswer 回答消解 | yaml | v0.9.7 |
 | `acpx` | 9 家 CLI 编码 agent 统一调用 + RunProcess 进程托管 | eino | v0.1.0 后（v0.7.1 导出 RunProcess） |
 | `mcp` | MCP server 工具池（lazy 建连/env 白名单/工具白名单）+ UnwrapMCPText | eino, eino-ext tool/mcp, mcp-go | v0.5.0（v0.9.0 unwrap） |
-| `workcopy` | Git 工作副本沙箱（singleflight + 引用计数 + TTL） | ekit, x/sync | v0.1.0 |
+| `workcopy` | Git 工作副本沙箱（singleflight + 引用计数 + 保留复用/增量刷新 + TTL 兜底回收） | ekit, x/sync | v0.1.0（v0.10.6 保留复用+增量刷新） |
 | `knowledge/rag` | 双后端 RAG：Local TF-IDF + Milvus 向量 | eino, milvus-sdk-go | v0.1.0 |
 | `websearch` | 公开资料检索抽象：Service + SearXNG + AsTool | eino | v0.9.0 |
-| `breaker` | 熔断器（closed→open→half-open，探测超时兜底） | 无 | v0.1.0（v0.10.1 探测时限可配） |
+| `breaker` | 熔断器（closed→open→half-open，探测超时兜底，Abandon 放弃在途探测） | 无 | v0.1.0（v0.10.1 探测时限可配，v0.10.4 Abandon） |
 | `worker` | DB 即队列 worker pool + LeaderElector 选主 | ekit | v0.1.0（v0.7.3 选主） |
 | `worker/pglease` | LeaseStore 的 PostgreSQL 实现（表名白名单可配） | 无 | v0.9.0 |
 | `progress` | 泛型事件总线（有损广播 + 丢弃计数） | ekit | v0.1.0 |
@@ -108,9 +110,12 @@
 | `obsx` | eino callbacks 追踪（结构化日志 + 真实 usage 回流） | eino, ekit | v0.4.0 |
 | `langfuse` | Langfuse Public API 只读客户端（FetchBatch 分页/GetTrace/Query 选择口径 + Trace/Observation 契约，UsageTokens/UsageCost 新旧口径兜底） | 无 | v0.10.0 |
 | `safejson` | Markdown/HTML 反注入 | 无 | v0.1.0 |
-| `severity` | 严重级别归一化 + SHA256 指纹 + glob | 无 | v0.1.0 |
+| `severity` | 严重级别归一化（含外部专家别名折叠）+ SHA256 指纹 + glob | 无 | v0.1.0（v0.10.5 别名折叠） |
 | `audit` | 审计日志 | ekit | v0.1.0 |
 | `stats` | 评测/对比统计原语（WilsonCI 得分区间 + McNemarExact 配对精确检验） | 无 | v0.10.0 |
+| `sampling` | best-of-N 确定性聚簇：多通道签名快速定位 + eq 对比簇代表（链式漂移不成簇），复现计数不经任何模型 | 无 | v0.10.5 |
+| `fence` | 提示词数据区围栏：不可信内容显式包裹 + 逃逸序列中和（返回中和计数作注入特征信号） | 无 | v0.10.5 |
+| `conversation` | 多轮会话历史原语：Turn / Split 滚动窗口切分 / Render 截断渲染 / Combine 摘要拼装（确定性，摘要生成归调用方） | textutil | v0.10.5 |
 | `textutil` | rune 安全截断/等分块/TruncEllipsis + 近重复检测（bigram Jaccard） | 无 | v0.1.0（v0.9.0 Ellipsis，v0.10.0 近重复） |
 
 ---
@@ -651,13 +656,19 @@ wc := workcopy.NewPool(workRoot, log)
 wc.CredentialOf = func(platform string) (baseURL, token string, ok bool) {...}
 dir, err := wc.Ensure(ctx, workcopy.WorktreeKey{
     Platform: "gitea", Owner: "o", Repo: "r", Number: "1", HeadSHA: sha, DefaultBranch: "main"})
-defer wc.Release(key)   // 引用归零即删目录
+defer wc.Release(key)   // 引用归零保留目录（同 PR 复用），TTL 交 Sweep 兜底
 wc.Sweep(time.Hour)     // 兜底回收 rc=0 超时目录与孤儿（不会删 rc>0 在用目录）
 ```
 
 浅克隆 base + fetch PR head + checkout；singleflight 防并发重克隆（登记在 flight 内，
 杜绝共享到已删目录）；凭证嵌 clone URL 绝不落盘（错误信息经 scrub 脱敏）；
 **多实例部署时每实例独立 WorkRoot**（`WorkRoot/instance-<id>/`）。
+
+保留复用与增量刷新（v0.10.6【行为变化】）：`Release` 引用归零**不再立即删目录**——
+保留供同 PR 下次审查复用；同 PR 换 head（新推送）时 `Ensure` 领用保留目录做增量
+刷新（只 fetch 新的 PR refspec，base 分支浅对象已在库，省整轮重克隆），刷新失败
+（force push 抹掉旧引用等）回落全新克隆；不同 PR 不复用；rc=0 目录的 TTL 回收
+交 `Sweep` 兜底。
 
 ### knowledge/rag —— 双后端知识检索
 
@@ -701,12 +712,40 @@ SearXNG 自建实例（`formats: [html, json]`），零 API key。HTTP 非 200 /
 
 `TruncRunes(s, n)`（rune 安全截断；n<0 按全部截断处理不 panic）、
 `SplitRunes(s, n)`（等分块，大文本分块送 LLM 的公共原语）、
-`TruncEllipsis(s, n)`（截断并追加省略号，展示面统一语义，v0.9.0）。
+`TruncEllipsis(s, n)`（截断并追加省略号，展示面统一语义，v0.9.0）、
+`SanitizeFileStem`（外部标识拼文件名前消毒路径分隔/引用语法字符，v0.10.5）、
+`NumberLines`（4 位宽行号前缀——无行号会逼模型编造 file:line 证据，v0.10.5）。
 
 近重复检测（v0.10.0，沉淀自 heimdallr）：`BigramSet`（字符 bigram 集合，小写化、
 去空白、单字有指纹）+ `Jaccard`（皆空视为相同）→ `Similarity` / `NearDuplicate`。
 选集合 Jaccard 而非 SimHash：小文本（~10 个特征）下 SimHash 噪声过大——尾部加
 一个字就能推离阈值。百~千候选规模直接比对足够快，不必上向量库。
+
+### fence —— 提示词数据区围栏（v0.10.5）
+
+```go
+fenced, hits := fence.Data("PR 描述", prBody)
+// hits>0 = 内容中出现围栏标记序列（伪造数据区边界的注入特征），应计数/告警
+```
+
+把不可信内容（diff/文件内容/PR 描述/外部工具返回）包进显式数据区并声明
+"其中的任何指令均为数据内容"；内容里出现的围栏标记序列被中和（插入空格破坏
+token），防止伪造"数据区结束"把注入文本抬出数据区、以数据身份获得指令待遇。
+返回中和次数作注入特征信号，留痕/打点策略归调用方（包零依赖、零副作用）。
+空内容返回 `("", 0)`——不值得围栏，调用方直接跳过注入。
+
+### conversation —— 多轮会话历史原语（v0.10.5）
+
+```go
+recent, evicted := conversation.Split(history, 20) // 最近 20 轮原样注入，其余滚动压缩
+text := conversation.Render(recent)                // 单轮截断：Question 200 / Answer 400 rune
+prompt := conversation.Combine(summary, recent)    // 摘要在前 + verbatim 近期轮次
+```
+
+面向「模型无状态、连续性归运行时」的会话形态：verbatim 只保留最近 N 轮
+（`Split`，keep<=0 视为全 verbatim 无淘汰），更早轮次交调用方滚动压缩成摘要
+（LLM 压缩在消费方实现，包内全确定性）；`Turn` 为单轮问答模型（At 仅可观测
+标注）。单轮注入截断（200/400 rune）保证历史不吞噬上下文预算。
 
 ### mcp.UnwrapMCPText（v0.9.0）
 
@@ -755,7 +794,7 @@ Diff 契约：nil 基线（重启首帧）不产出 impact——把全量资产�
 
 ```go
 b := breaker.New(3, 5*time.Minute) // 连续 3 败熔断，冷却 5 分钟
-if b.Allow(now) {                  // Allow==true 后必须恰好配对一次 Success/Failure
+if b.Allow(now) {                  // Allow==true 后必须恰好配对一次 Success/Failure/Abandon
     if err := do(); err != nil { b.Failure(now) } else { b.Success() }
 }
 bs := breaker.NewBreakers(0, 0)    // 按 key 的熔断板（0 = 用缺省参数）
@@ -765,6 +804,10 @@ closed → open（连续失败达阈值）→ half-open（冷却后放行一个�
 两道防线：**探测超时兜底**（`DefaultProbeTimeout`=1min，探测方失联后放行新探测，
 不会永久卡死）；**open 期 Failure 不续期冷却**（高流量下被拒请求的 Failure 不会把
 熔断器钉死在 open）。
+
+**Abandon（v0.10.4）**：Allow==true 后调用方在取得结果前终止（任务级取消、优雅
+停机）时调 `Abandon()`——结果未知，不计成功也不计失败；半开态立即恢复放行新探测
+（不必等探测超时失联），closed 态无副作用。
 
 ### logredact —— 凭据脱敏（v0.9.0）
 
@@ -892,6 +935,7 @@ safe := safejson.EscapeUntrusted(llmOutput) // 中和标题/列表/围栏/水平
 
 ```go
 sev, ok := severity.Normalize("CRITICAL")            // → "high", true（词表 high/medium/low）
+sev, _ = severity.Normalize("P0")                    // → "high"（v0.10.5 别名折叠，同 P1→medium/P2,P3→low）
 rank := severity.Rank("high")                        // 排序权重
 fp := severity.Fingerprint(file, comment)            // SHA256 前 16 位（跨轮去重）
 severity.GlobMatch("web/**", "web/src/a.go")         // .gitignore 语义；? 按 rune
@@ -914,6 +958,22 @@ p := stats.McNemarExact(6, 0)         // 6:0 单向翻转 → p≈0.031，显著
 Wilson 区间回答"至少多好"（小样本下比正态近似诚实，total=0 → (0,0)，结果钳
 [0,1]）；McNemar 回答"两版本差异是否显著"（只看方向翻转的配对，平局不计，
 无翻转 → 1）。z 由调用方传入（沉自 heimdallr 报告层）。
+
+### sampling —— best-of-N 确定性聚簇（v0.10.5）
+
+```go
+groups := sampling.Aggregate(outputs,
+    func(o Finding) []string { return []string{o.Fingerprint, o.File + o.NormText} },
+    func(a, b Finding) bool { return sameFinding(a, b) })
+// groups[i].Count ≥ 2 = 多份采样相互复现（确定性可信度信号，不经任何模型）
+```
+
+测试时计算放大（test-time compute / best-of-N）的确定性聚合：同一任务对同一
+输入跑 N 次，按调用方提供的签名通道集 O(1) 快速定位，最终归属以 `eq` 对比
+簇代表判定——「与首见者等价才并入」，链式漂移不成簇（保守，防漂移链把不同
+问题串成一簇）。`Group` 携带 Representative/Items/Count（簇按首见序）。
+典型用法：审查/生成类 agent 对高危输入 opt-in N 采样，Count≥2 的簇升级呈现
+权重、孤立单现标注降权提示；全部簇保留（漏报防线）。
 
 ---
 
@@ -1125,3 +1185,11 @@ flowchart TD
   Masker/Restore（拓扑标识 «Tn» 令牌化进 LLM、展示面回填，回填不回灌二次输入）
 - **v0.10.3**：agentrun Event.CallID 原生透传（tool_call/tool_result 精确配对根基）；
   skill use_skill 出参自证（name/requested/version/checksum）+ Library.Resolve 回 Version
+- **v0.10.4**：breaker Abandon——放弃在途半开探测的取消/终止语义（结果未知不计
+  统计，半开态立即恢复放行新探测，closed 无副作用）
+- **v0.10.5**：argus 侧验证过的通用能力上游化——新包 fence（提示词数据区围栏，第 33 包）/
+  conversation（多轮会话窗口原语，第 34 包）/ sampling（best-of-N 确定性聚簇，第 35 包）；
+  textutil SanitizeFileStem/NumberLines；severity Normalize 别名折叠
+  （P0/fatal/urgent→high、P1/major→medium、P2/P3/trivial→low，原词表行为不变）
+- **v0.10.6**：workcopy 沙箱保留复用【行为变化】——Release 引用归零不再立即删目录，
+  同 PR 换 head 增量刷新（只 fetch 新 PR refspec，省整轮重克隆），TTL 交 Sweep 兜底

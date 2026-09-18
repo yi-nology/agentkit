@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.10.6 (2026-09-18)
+
+### Changed
+
+- **workcopy**【行为变化】：`Release` 引用归零不再立即删除沙箱目录——保留供
+  同 PR 下次审查增量复用（换 head 只 fetch 新 PR refspec，base 分支浅对象已在
+  库，省整轮重克隆），TTL 回收交 `Sweep` 兜底。同 PR 换 head（新推送）时
+  `Ensure` 领用保留目录做增量刷新（`fetch --depth 1` + `checkout --force`），
+  刷新失败（force push 抹掉旧引用等）回落全新克隆；刷新期间同 key 被常规建仓
+  登记则既有条目胜出、领用条目整条作废；不同 PR（Number 不同）不复用。
+  CLI 审查场景同 PR 多次触发是常态，此前每次 Release 即删导致重复克隆。
+
 ## v0.10.5 (2026-09-18)
 
 ### Added
