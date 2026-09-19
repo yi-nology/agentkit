@@ -1,7 +1,7 @@
 # agentkit
 
 AI Agent 开发工具箱 —— 从生产项目提炼的通用组件库：代码审查平台 **Argus** + 智能运维多智能体平台 **bianque** + LLM 评测/观测平台 **heimdallr**。
-当前版本 **v0.10.11** · Go ≥ 1.26 · 33 个包。
+当前版本 **v0.10.12** · Go ≥ 1.26 · 34 个包。
 
 > 📖 **完整框架文档**：[docs/FRAMEWORK.md](docs/FRAMEWORK.md) —— 设计原则、六层架构、
 > 各包逐一详解（API/示例/边界契约）、横向能力专题（可靠性/成本/多副本/安全）、
@@ -22,7 +22,7 @@ AI Agent 开发工具箱 —— 从生产项目提炼的通用组件库：代码
 
 - ✅ **该用**：步骤不可预知、边做边看；探索型任务（定位根因/未知代码库找证据）；工具结果会改变后续方向。
 - ❌ **不该用**：步骤固定可枚举（≥4 步 → 写代码/Graph）；单次调用可完成；对延迟极敏感。
-- ⚠️ MaxIterations 必设；有副作用的工具必配 `WithCallLimit`；必须有降级出口（失败落回单轮）。
+- ⚠️ MaxIterations 必设；有副作用的工具必配 `LimitCalls`；必须有降级出口（失败落回单轮）。
 
 ### 3. Plan-and-Execute —— `agentrun.PlanAndExecute`
 
@@ -74,7 +74,7 @@ git.enjoye.top/enjoydream/agentkit
 | `router` | Router 架构原语（LLM 意图分类→选路→分发） | eino |
 | `blackboard` | Blackboard 架构原语（共享黑板 + 专家轮转） | 无 |
 | `clarify` | 澄清/标准化词表内核（term_map 模型/加载/校验 + 序数指代解析 + 回答消解） | yaml.v3 |
-| `policy` | 操作审计门（四模式裁决矩阵 + 例外规则 + fail-safe 仲裁 + WithAuditGate 工具装饰器） | eino, yaml.v3 |
+| `policy` | 操作审计门（四模式裁决矩阵 + 例外规则 + fail-safe 仲裁 + AuditGate 工具装饰器） | eino, yaml.v3 |
 | `dispatch` | 通用派发守卫（allow 矩阵 + 深度上限 + 自派发拒绝，EdgeSource 拓扑注入） | 无 |
 | `obsx` | eino callbacks 追踪（llm.call.* 结构化日志） | eino, ekit |
 | `langfuse` | Langfuse Public API 只读客户端（trace 拉取 + 详情合并 + 官方契约类型） | 无 |
@@ -233,7 +233,7 @@ table.Add(toolprior.Entry{Tool: mcpSearchTool, Priority: toolprior.PriorityExter
 
 instruction += table.StrategyPrompt(ctx)      // 软：提示词指引
 tools := table.Ordered(ctx)                    // 隐式：按优先级排序
-tools = append(tools, toolprior.WithCallLimit(mcpTool, 5)) // 硬：限流
+tools = append(tools, toolprior.LimitCalls(mcpTool, 5)) // 硬：限流
 // 超限返回 "LIMIT_REACHED: ..." 文本（软止损，模型可见可收尾，不中止运行）
 ```
 
@@ -303,7 +303,7 @@ r, _ := router.New(&router.Config{Model: fastModel, Routes: []router.Route{
     {Name: "bug-fix", Description: "修代码类", Handle: fixChain},
     {Name: "explain", Description: "解释类", Handle: explainChain},
 }, MinConfidence: 0.6, Fallback: fallbackFn})
-d, out, _ := r.Do(ctx, userInput) // d.Route/d.Confidence/d.Reason 可观测
+d, out, _ := r.Run(ctx, userInput) // d.Route/d.Confidence/d.Reason 可观测
 
 // Blackboard：无中心多专家互看协作（多视角分析场景）
 board := blackboard.NewBoard()
@@ -596,7 +596,7 @@ focus, _ := lin.Focus("skill-x", 2)                 // 焦点邻接子图（dept
 - `Allow` 白名单全部未命中时经 `OnError` 告警（返回 0 个工具不报错）。
 
 **toolprior**
-- `WithCallLimit` 每次调用**新建包装实例**（计数不跨任务共享）——跨重试需要重置
+- `LimitCalls` 每次调用**新建包装实例**（计数不跨任务共享）——跨重试需要重置
   预算时配合 agentrun `ToolsFactory`。
 - 超限返回 `LIMIT_REACHED: ...` 文本（nil error）：模型可见、可收尾；不要改回
   返回 error——那会中止整个 agent 运行。
@@ -790,7 +790,7 @@ Argus 内部包改为 import agentkit：
 | bianque 旧路径 | agentkit 新路径 |
 |---|---|
 | `bianque/internal/engine/policy` | `agentkit/policy`（yaml 路径约定改显式入参；bianque 侧薄转发） |
-| `bianque/internal/engine/runner/audit.go` | `agentkit/policy.WithAuditGate` |
+| `bianque/internal/engine/runner/audit.go` | `agentkit/policy.AuditGate` |
 | `bianque/internal/engine/scheduler/normalize.go` postNegated | `agentkit/router.KeywordPostNegated` |
 
 ### bianque（v0.9.7）

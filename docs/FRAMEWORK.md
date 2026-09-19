@@ -1,6 +1,6 @@
 # agentkit 框架完整文档
 
-> 版本：v0.10.11 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
+> 版本：v0.10.12 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
 > 配套文档：[架构模式支持矩阵](patterns.md)（七架构何时用/何时不用）· [README](../README.md)（快速上手）
 
 > 文中架构图使用 Mermaid：Forgejo/GitHub 等端原生渲染；不支持渲染的查看端，
@@ -93,7 +93,7 @@
 | `router` | LLM 意图路由：分类→选路→分发（意图槽位 + 词表匹配内核） | eino | v0.8.0（v0.9.3 槽位，v0.9.4 词表内核） |
 | `blackboard` | 共享黑板 + 专家轮转 | 无 | v0.8.0 |
 | `dispatch` | 通用派发守卫：allow 矩阵 + 深度上限 + 自派发拒绝（EdgeSource 拓扑注入，DenyError 结构化拒绝） | 无 | v0.9.5 |
-| `policy` | 操作审计门：四模式统一操作裁决（例外规则→矩阵→fail-safe 兜底 + Arbiter 灰区仲裁 + WithAuditGate 工具装饰器） | eino, yaml | v0.9.6 |
+| `policy` | 操作审计门：四模式统一操作裁决（例外规则→矩阵→fail-safe 兜底 + Arbiter 灰区仲裁 + AuditGate 工具装饰器） | eino, yaml | v0.9.6 |
 | `clarify` | 澄清/标准化词表内核：term_map 模型/加载/内在校验 + OrdinalIndex 序数指代 + ResolveAnswer 回答消解 | yaml | v0.9.7 |
 | `acpx` | 9 家 CLI 编码 agent 统一调用（执行纪律经 procx） | eino | v0.1.0 后（v0.10.11 进程托管迁 procx） |
 | `mcp` | MCP server 工具池（lazy 建连/env 白名单/工具白名单）+ UnwrapMCPText | eino, eino-ext tool/mcp, mcp-go | v0.5.0（v0.9.0 unwrap） |
@@ -108,6 +108,7 @@
 | `logredact` | 日志/审计凭据脱敏（URL/token/Bearer）+ Redact 高敏感打码 + Masker/Restore 拓扑标识令牌化 | 无 | v0.9.0（v0.10.2 Redact/Masker） |
 | `jsonrepair` | LLM 宽容 JSON 修复（栅栏/尾逗号/全角/散文 + 标量归一） | 无 | v0.9.0 |
 | `procx` | 子进程托管纪律单源：进程组执行/超时整组终止/限容采集/环境白名单（acpx/mcp/workcopy 共用） | 无 | v0.10.11（自 acpx 进程层迁出） |
+| `llm/llmtest` | 脚本化 ChatModel/Provider 测试桩（RepeatLast/耗尽报错两语义显式化，输入记录/ResponseMeta 可编程） | eino | v0.10.12 |
 | `httpx` | HTTP+JSON 调用纪律单源：限容读体 + rune 安全错误摘要（langfuse/rag/websearch 共用） | 无 | v0.10.11 |
 | `obsx` | eino callbacks 追踪（结构化日志 + 真实 usage 回流） | eino, ekit | v0.4.0 |
 | `langfuse` | Langfuse Public API 只读客户端（FetchBatch 分页/GetTrace/Query 选择口径 + Trace/Observation 契约，UsageTokens/UsageCost 新旧口径兜底） | 无 | v0.10.0 |
@@ -252,8 +253,9 @@ eino `BaseChatModel`/`ToolCallingChatModel` 双形态装饰器：主模型失败
 
 ### UsageHandler —— 完整用量采集（v0.9.0）
 
-比 `Client.OnUsage` / `obsx.OnUsage` 五数字更完整：Cached/Reasoning tokens、
-FinishReason、Duration、Iteration。归因经 `Labels` 泛化，领域键由调用方决定。
+**全仓唯一的 callbacks 侧记账出口**（v0.10.12 前 obsx.Options.OnUsage 是并行
+的五数字出口，已退役）：Cached/Reasoning tokens、FinishReason、Duration、
+Iteration 都有；归因经 `Labels` 泛化，领域键由调用方决定。
 
 ```go
 h := llm.NewUsageHandler(func(r llm.UsageRecord) {
@@ -275,8 +277,9 @@ ct.Record(model, stage, promptTokens, completionTokens, [2]float64{prompt费率,
 ct.Summary() // map[model]ModelSummary{TotalTokens, TotalCostUSD, CallCount}
 ```
 
-上限 10_000 条（防长驻进程无界增长）。注意：`llm.Client.OnUsage` 只覆盖 Generate
-路径；ReAct（RawModel 直用）路径的真实 usage 经 `obsx.Options.OnUsage` 回流（见 obsx）。
+上限 10_000 条（防长驻进程无界增长）。ReAct（RawModel 直用）路径的真实 usage
+回收：把 NewUsageHandler 经 `callbacks.InitCallbacks` 注入 ctx——Client 侧已配
+OnUsage/Budget 时 handler 自动跳过（防重护栏 v0.10.12 自 obsx 移入记账侧）。
 
 #### PriceOf —— 定价估算（v0.9.5）
 
@@ -310,7 +313,7 @@ out, err := agentrun.RunWithEvents(ctx, agentrun.Config{
     Name: "reviewer", Description: "审查专家",
     Instruction: instruction,
     Model: chatModel,                       // 或 RawModel()
-    ToolsFactory: func() []tool.BaseTool {  // 每次尝试重建——WithCallLimit 计数按尝试重置
+    ToolsFactory: func() []tool.BaseTool {  // 每次尝试重建——LimitCalls 计数按尝试重置
         return buildTools()
     },
     MaxIterations: 12,
@@ -321,7 +324,7 @@ out, err := agentrun.RunWithEvents(ctx, agentrun.Config{
 
 - `Run` / `RunWithEvents` / `RunWithRetry` / `RunWithEventsAndRetry` 四种入口；
 - `Config.Tools`（静态表）与 `ToolsFactory`（按尝试重建）二选一，后者优先——
-  **RunWithRetry + WithCallLimit 组合必须用 Factory**，否则限流计数跨尝试累计；
+  **RunWithRetry + LimitCalls 组合必须用 Factory**，否则限流计数跨尝试累计；
 - MaxIterations 默认 12；迭代耗尽/空答复返回明确错误，无死循环；
 - 失败语义：与 toolprior 软止损配合（超限返回 LIMIT_REACHED 文本而非 error，
   不会中止整图丢弃进展）；
@@ -506,7 +509,7 @@ pol, err := policy.LoadOverrides(os.DirFS(expertsDir), "_shared/operation_policy
 // 缺文件回内置基座（auto≤L2/full≤L3）；阈值 clamp 只降不升（调高=扩权，须改基座）
 ```
 
-工具调用面配套 `WithAuditGate` 装饰器：每次调用先裁决、`onAudit` 回调留痕、deny 沿
+工具调用面配套 `AuditGate` 装饰器：每次调用先裁决、`onAudit` 回调留痕、deny 沿
 工具结果通道返回错误（agent 拿到工具错误自行降级，不中断整个环节）；gate 为 nil 原样
 返回（未装配=存量行为）。沉淀自 bianque engine/policy + runner/audit.go，yaml 路径
 约定改为显式入参。
@@ -518,7 +521,7 @@ pol, err := policy.LoadOverrides(os.DirFS(expertsDir), "_shared/operation_policy
 ### toolprior —— 工具优先级三层约束
 
 扁平工具表上叠加：① `StrategyPrompt`（提示词软约束：优先级序/何时用/成本）②
-`Ordered`（表序注意力引导，Info 失败条目排末尾）③ `WithCallLimit`（硬限流：超限
+`Ordered`（表序注意力引导，Info 失败条目排末尾）③ `LimitCalls`（硬限流：超限
 返回模型可见的 `LIMIT_REACHED: ...` 文本软止损——**不返回 error**，避免 eino
 ToolsNode 上抛中止整图丢弃全部进展）。
 
@@ -530,7 +533,7 @@ table.Add(toolprior.Entry{Tool: mcpTool, Priority: toolprior.PriorityExternal,  
     When: "本地证据不足再用", Cost: "high"})
 tools := table.Ordered(ctx)                 // 排序后工具表
 instruction += table.StrategyPrompt(ctx)    // 策略提示注入 instruction
-limited := toolprior.WithCallLimit(invokableTool, 5) // 每次包装新建实例（计数不跨任务）
+limited := toolprior.LimitCalls(invokableTool, 5) // 每次包装新建实例（计数不跨任务）
 ```
 
 档位：Core(0) < Support(1) < External(2)，自定义数值可插中间。`Table` 构建期写入、
@@ -540,7 +543,7 @@ limited := toolprior.WithCallLimit(invokableTool, 5) // 每次包装新建实例
 flowchart TD
     T["Table（注册期）"] --> L1["层1 软：StrategyPrompt<br/>优先级序/何时用/成本 → 注入 instruction"]
     T --> L2["层2 隐式：Ordered<br/>按优先级稳定排序 → 模型表序注意力"]
-    T --> L3["层3 硬：WithCallLimit<br/>超限返回 LIMIT_REACHED 文本（模型可见）<br/>不返回 error——不中止整图"]
+    T --> L3["层3 硬：LimitCalls<br/>超限返回 LIMIT_REACHED 文本（模型可见）<br/>不返回 error——不中止整图"]
 ```
 
 ### skill —— SKILL.md 渐进披露
@@ -1007,10 +1010,9 @@ reportutil 详解见上（聚簇语义与 Wilson/McNemar 口径不重复展开�
 ctx = obsx.InitLLMObservability(ctx, log, obsx.Options{
     SlowThreshold: 60 * time.Second,
     PreviewLen:    0, // 默认 0 = 不落消息内容（可能含用户代码/凭证），勿误设
-    OnUsage: func(component, modelName, stage string, prompt, completion int) {
-        // v0.7.2：真实 token 回流——ReAct RawModel 旁路的成本/预算记账入口
-    },
 })
+// v0.10.12：Options.OnUsage 退役——TracingHandler 只做 trace；callbacks 侧
+// 记账统一 llm.NewUsageHandler（ReAct RawModel 旁路的成本/预算记账入口）
 // 之后自动产出：llm.call.start / llm.call.end / llm.call.error
 // 字段：stage/component/model/duration_ms/prompt|completion|total|reasoning_tokens
 ```
@@ -1022,7 +1024,7 @@ flowchart LR
     CALL["任意 eino 模型调用<br/>（直连 Generate 或 ReAct RawModel）"] --> CB["callbacks 触发"]
     CB --> H["obsx TracingHandler"]
     H --> LOG["llm.call.start / end / error<br/>stage/model/耗时/真实 usage"]
-    H -- "Options.OnUsage" --> CT["CostTracker<br/>（任务级 + 全局）"]
+    CB -- "llm.NewUsageHandler" --> CT["CostTracker<br/>（任务级 + 全局）"]
 ```
 
 langfuse（v0.10.0，沉淀自 heimdallr）——Langfuse Public API 只读客户端，把已经
@@ -1066,7 +1068,7 @@ langfuse（v0.10.0，沉淀自 heimdallr）——Langfuse Public API 只读客�
 
 ```
 预算：BudgetConfig 由窗口单一基准派生（diff 上限 35%/任务预算 60%/输出 5%）
-记账：llm.Client.OnUsage（直连）+ obsx.OnUsage（ReAct 旁路）双口径 → CostTracker
+记账：llm.Client.OnUsage（直连）+ llm.NewUsageHandler（callbacks 单出口，防重护栏内置）→ CostTracker
 定价：llm.PriceOf 前缀定价表估算成本（精确 → 最长前缀回落，未配价归零）
 路由：StageRouter 按阶段分级配模型（大窗口吃长输入/快模型跑判定/强模型保质量）
 ```
@@ -1149,8 +1151,8 @@ flowchart TD
 
 | 陷阱 | 正解 |
 |---|---|
-| ReAct + WithCallLimit 重试后限流不重置 | 用 `Config.ToolsFactory` 每次尝试重建工具表 |
-| ReAct 流量绕过降级/预算 | RawModel 旁路是设计取舍；成本经 obsx.OnUsage 回流记账 |
+| ReAct + LimitCalls 重试后限流不重置 | 用 `Config.ToolsFactory` 每次尝试重建工具表 |
+| ReAct 流量绕过降级/预算 | RawModel 旁路是设计取舍；成本经 llm.NewUsageHandler 注入 callbacks 记账 |
 | 熔断 Allow 后不配对 Success/Failure | 半开会卡死——v0.7.0 起有探测超时兜底，但仍应配对 |
 | prompt 传给 CLI 被当 flag 消费 | acpx 已自动防护（`-` 开头前置换行）；自拼 argv 时注意同类注入 |
 | MCP 子进程继承宿主密钥 | mcp 包 env 白名单已强制；自写 spawn 时同样只能白名单 |
@@ -1192,7 +1194,7 @@ flowchart TD
 - **v0.9.5**：llm.PriceOf 前缀定价估算；新包 dispatch（通用派发守卫，
   EdgeSource 拓扑注入 + DenyError 结构化拒绝）——第 27 包
 - **v0.9.6**：bianque 操作审计门沉淀——新包 policy（四模式三层裁决 + Arbiter 灰区仲裁 +
-  WithAuditGate 装饰器）——第 28 包；router KeywordPostNegated 后置否定守门
+  AuditGate 装饰器）——第 28 包；router KeywordPostNegated 后置否定守门
 - **v0.9.7**：新包 clarify（澄清/标准化词表内核：term_map/LoadVocab/Validate +
   OrdinalIndex 序数指代 + ResolveAnswer 回答消解）——第 29 包
 - **v0.9.8**：新包 llmjson（模型输出 JSON 统一解析入口：ExtractJSON 快路径 →

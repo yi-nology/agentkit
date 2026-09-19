@@ -103,7 +103,7 @@ out, err := agentrun.RunWithEvents(ctx, agentrun.Config{
 ```
 
 工具表经 `toolprior` 组织：`StrategyPrompt`（提示词软约束）+ `Ordered`（排序注意力）
-+ `WithCallLimit`（硬限流，超限返回模型可见的 LIMIT_REACHED 文本软止损）。
++ `LimitCalls`（硬限流，超限返回模型可见的 LIMIT_REACHED 文本软止损）。
 
 **✅ 该用**
 - 步骤不可预知：下一步做什么取决于上一步的工具结果
@@ -118,7 +118,7 @@ out, err := agentrun.RunWithEvents(ctx, agentrun.Config{
 
 **⚠️ 陷阱**
 - MaxIterations 必须显式设置（agentrun 默认 12）
-- 外部/有副作用工具必须 `toolprior.WithCallLimit`（且每次尝试重建工具表重置计数）
+- 外部/有副作用工具必须 `toolprior.LimitCalls`（且每次尝试重建工具表重置计数）
 - 必须有降级出口：ReAct 失败落回单轮调用（Argus builtin/QA 均是此模式）
 
 ## 3. Plan-and-Execute —— `agentrun.PlanAndExecute`
@@ -144,7 +144,7 @@ res, err := agentrun.PlanAndExecute(ctx, agentrun.PlanExecuteConfig{
     MaxSteps: 10,
     PlannerInstruction: "只规划代码相关步骤",
 }, "把模块 X 从框架 A 迁移到框架 B")
-fmt.Println(res.Answer)
+fmt.Println(res.Text)
 ```
 
 需要定制 Replanner 提示词/输入整形时，直接用 eino `adk/prebuilt/planexecute` 原语。
@@ -188,7 +188,7 @@ res, err := reflection.Refine(ctx, &reflection.Config{
     Rubric: "1. 处理了空切片 2. 无 data race 3. 有表驱动测试",
     MaxIterations: 3,
 })
-fmt.Println(res.Output, res.Converged, len(res.Rounds)) // Rounds 含每稿与批判留痕
+fmt.Println(res.Text, res.Converged, len(res.Rounds)) // Rounds 含每稿与批判留痕
 ```
 
 **✅ 该用**
@@ -233,7 +233,7 @@ flowchart TD
       MinConfidence: 0.6,
       Fallback: func(ctx context.Context, input, reason string) (string, error) { ... },
   })
-  d, out, _ := r.Do(ctx, userInput) // d.Route/d.Confidence/d.Reason 可观测
+  d, out, _ := r.Run(ctx, userInput) // d.Route/d.Confidence/d.Reason 可观测
   ```
 
 - **隐式路由**（`skill`）：类别多到枚举不动/由领域文档定义时，不做前置分类——把 skill

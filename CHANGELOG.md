@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.10.12 (2026-09-20)
+
+### Changed
+
+- **obsx/llm**【行为变化·破坏性】：token 记账单源化——`obsx.Options.OnUsage`
+  退役（五数字回调删除），callbacks 侧记账统一出口 `llm.NewUsageHandler`
+  （完整版 UsageRecord：Cached/Reasoning/FinishReason/Duration/Iteration/Labels）。
+  防重护栏（Client 记账标记）自 obsx 移入记账侧：`NewUsageHandler` 检测
+  `Client.OnUsage/Budget` 已配置时自动跳过，obsx 回归纯 trace（TracingHandler
+  不再承担记账职责，跨包协议 `WithClientAccounting/ClientAccounted` 删除）。
+  ReAct/RawModel 旁路的成本记账迁移：`callbacks.InitCallbacks(ctx, nil,
+  llm.NewUsageHandler(sink))`。
+- **新测试桩包 `llm/llmtest`**：llm（resilient/client_path/failover）与
+  reflection/router 五份手写模型桩收敛为脚本化 `Model`/`ToolModel`/`Provider`
+  ——脚本耗尽语义显式化（`RepeatLast` 重复末条 vs 默认报错），输入记录
+  （FirstInput/LastInput/Inputs）、ResponseMeta/Usage 可编程、并发安全；
+  含桩自测。
+- **命名消歧（破坏性）**：`toolprior.WithCallLimit`→`LimitCalls`、
+  `policy.WithAuditGate`→`AuditGate`——工具装饰器不再占用 `With*` 前缀
+  （该前缀保留给 option applier 与 ctx setter，返回类型可由名字推断）。
+- **文档**：patterns/README 的 API 漂移修正（`res.Answer`/`res.Output`→`Text`、
+  `r.Do`→`r.Run`）。
+
 ## v0.10.10 (2026-09-19)
 
 ### Changed
