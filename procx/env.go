@@ -1,4 +1,4 @@
-package acpx
+package procx
 
 import (
 	"os"
@@ -8,7 +8,7 @@ import (
 // baseEnvAllow 子进程缺省环境白名单：路径/临时目录/语言/代理/CA。
 // 绝不全量继承——cli agent / MCP server 等待启动的子进程会在用户工作目录执行
 // 任意代码，全量环境等于把宿主凭证交给待执行任务。
-// 本表是全仓库子进程环境纪律的单一事实源（acpx 适配器 / RunProcess / mcp
+// 本表是全仓库子进程环境纪律的单一事实源（procx.Run / acpx 适配器 / mcp
 // stdio server 共用）；新增基础变量只改这里。
 var baseEnvAllow = map[string]bool{
 	"PATH": true, "HOME": true, "TMPDIR": true, "USER": true,
@@ -22,7 +22,8 @@ var baseEnvAllow = map[string]bool{
 	"XDG_CONFIG_HOME": true, "XDG_DATA_HOME": true,
 }
 
-// ChildEnv 构造子进程最小环境（导出：mcp 等 spawn 外部子进程的包共用同一纪律）：
+// ChildEnv 构造子进程最小环境（导出：mcp 等自行 spawn 外部子进程的包共用同一
+// 纪律；经 procx.Run 执行时无需调用——Run 内部已应用）：
 // 白名单 + 显式透传项 + 禁交互。
 // extra 两种形态：纯名（如 "HF_TOKEN"）从当前进程按名透传（不存在则丢弃）；
 // 含 "="（如 "HF_TOKEN=xxx"）按 KEY=VALUE 字面注入，且同名父进程值不透传

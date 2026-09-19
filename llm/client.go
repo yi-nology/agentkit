@@ -16,6 +16,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"golang.org/x/time/rate"
 
+	"git.enjoye.top/enjoydream/agentkit/jsonrepair"
 	"git.enjoye.top/enjoydream/agentkit/obsx"
 )
 
@@ -226,6 +227,9 @@ func backoffDelay(attempt int, base, ceil time.Duration, err error) time.Duratio
 // GenerateJSON 生成并解析 JSON；解析失败把原始输出与错误回喂重试 1 次。
 // out 必须是 *T。截断在 Generate 内部已转为错误返回，走到这里的 lastErr 只会是
 // json.Unmarshal 错误——回喂提示只有"输出合法 JSON"一种。
+// 刻意走 ExtractJSON+严格 Unmarshal 而非 jsonrepair.Unmarshal 宽容链：宽容修复
+// 会改变输出内容，而本方法的失败路径要回喂重试，lastErr 须是纯解析错误。
+// 宽容回收半损坏输出归 jsonrepair.Unmarshal（无重试回喂的场景用）。
 func (c *Client) GenerateJSON(ctx context.Context, stage string, msgs []*schema.Message, out any) error {
 	ctx = obsx.WithStage(ctx, stage)
 	msgs = copyMsgs(msgs)
@@ -244,7 +248,7 @@ func (c *Client) GenerateJSON(ctx context.Context, stage string, msgs []*schema.
 		if err != nil {
 			return err
 		}
-		raw := ExtractJSON(resp.Content)
+		raw := jsonrepair.ExtractJSON(resp.Content)
 		if err := json.Unmarshal([]byte(raw), out); err != nil {
 			lastErr = err
 			lastRaw = resp.Content

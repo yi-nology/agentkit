@@ -10,6 +10,8 @@ import (
 
 	"github.com/cloudwego/eino/callbacks"
 	"github.com/cloudwego/eino/components/model"
+
+	"git.enjoye.top/enjoydream/agentkit/obsx"
 )
 
 // UsageRecord 单次 LLM 调用的用量记录。
@@ -81,19 +83,8 @@ func NewUsageHandler(onRecord Sink) callbacks.Handler {
 			if out == nil {
 				return ctx
 			}
-			usage := out.TokenUsage
-			if usage == nil && out.Message != nil && out.Message.ResponseMeta != nil {
-				// compose 图节点对裸 ChatModel 只透传 Message。
-				if u := out.Message.ResponseMeta.Usage; u != nil {
-					usage = &model.TokenUsage{
-						PromptTokens:            u.PromptTokens,
-						PromptTokenDetails:      model.PromptTokenDetails{CachedTokens: u.PromptTokenDetails.CachedTokens},
-						CompletionTokens:        u.CompletionTokens,
-						TotalTokens:             u.TotalTokens,
-						CompletionTokensDetails: model.CompletionTokensDetails{ReasoningTokens: u.CompletionTokensDetails.ReasoningTokens},
-					}
-				}
-			}
+			// 真实用量提取（含 compose 只透传 Message 的回退）单源 obsx.TokenUsageOf。
+			usage := obsx.TokenUsageOf(out)
 			if usage == nil {
 				return ctx
 			}

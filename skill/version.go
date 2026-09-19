@@ -18,11 +18,11 @@ func VersionInRange(version, expr string) (bool, error) {
 	}
 	c, err := semver.NewConstraint(expr)
 	if err != nil {
-		return false, fmt.Errorf("版本区间非法 %q: %w", expr, err)
+		return false, fmt.Errorf("skill: 版本区间非法 %q: %w", expr, err)
 	}
 	v, err := semver.NewVersion(version)
 	if err != nil {
-		return false, fmt.Errorf("版本 %q 非法（SemVer）: %w", version, err)
+		return false, fmt.Errorf("skill: 版本 %q 非法（SemVer）: %w", version, err)
 	}
 	return c.Check(v), nil
 }

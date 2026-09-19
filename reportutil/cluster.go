@@ -1,14 +1,14 @@
-// Package sampling 测试时计算放大（test-time compute）的确定性聚合原语。
+// 采样聚簇：best-of-N 确定性聚合原语。
 //
 // 同一任务对同一输入跑 N 次（best-of-N），「多份采样相互复现」是确定性的
-// 可信度信号——本包按调用方提供的签名通道与等价判定把 N 份输出聚簇计数，
+// 可信度信号——按调用方提供的签名通道与等价判定把 N 份输出聚簇计数，
 // 不引入任何模型判断（与「裁决不走 LLM」的确定性纪律兼容）。
 //
 // 典型用法：审查/生成类 agent 对高危输入 opt-in N 采样，聚簇后 Count≥2 的
 // 簇升级呈现权重、孤立单现的低权重条目标注降权提示；全部簇保留（漏报防线）。
 // Fingerprint/NormalizeComment 提供「file+规范化文本」精确指纹通道的 canonical
 // 实现（v0.10.9 自 severity 迁入——指纹是聚簇签名的自然组成部分）。
-package sampling
+package reportutil
 
 import (
 	"crypto/sha256"

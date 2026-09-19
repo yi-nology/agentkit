@@ -80,8 +80,11 @@ func cacheKey(ref Ref) string {
 	return ref.Name
 }
 
-// Resolve 解析引用，返回内容（带缓存）。
-func (p *FileProvider) Resolve(_ context.Context, ref Ref) (*Skill, error) {
+// Resolve 解析引用，返回内容（带缓存）。磁盘读取前检查 ctx 取消。
+func (p *FileProvider) Resolve(ctx context.Context, ref Ref) (*Skill, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("skill: %w", err)
+	}
 	if ref.Source == "" {
 		ref.Source = "file"
 	}
@@ -175,20 +178,21 @@ func (p *FileProvider) ListSkills(ctx context.Context) ([]Meta, error) {
 }
 
 // CanonicalName 把展示名（frontmatter name）归一化为规范引用名（目录名/文件名）。
-// 未命中返回 ("", false)。别名表懒扫描构建（进程内 skill 目录通常不变）。
-func (p *FileProvider) CanonicalName(name string) (string, bool) {
+// 未命中返回 ("", false)。别名表懒扫描构建（进程内 skill 目录通常不变）；
+// 首次扫描为全目录磁盘 I/O，ctx 取消随链透传。
+func (p *FileProvider) CanonicalName(ctx context.Context, name string) (string, bool) {
 	p.mu.RLock()
 	aliases := p.aliases
 	p.mu.RUnlock()
 	if aliases == nil {
-		aliases = p.scanAliases()
+		aliases = p.scanAliases(ctx)
 	}
 	n, ok := aliases[name]
 	return n, ok
 }
 
-func (p *FileProvider) scanAliases() map[string]string {
-	metas, err := p.ListSkills(context.Background())
+func (p *FileProvider) scanAliases(ctx context.Context) map[string]string {
+	metas, err := p.ListSkills(ctx)
 	m := map[string]string{}
 	if err == nil {
 		for _, meta := range metas {
@@ -211,7 +215,7 @@ type Lister interface {
 // AliasResolver 可选能力：把展示别名归一化为规范引用名（渐进披露链路闭环：
 // 清单可能展示 frontmatter name，模型会原样回填给 use_skill）。
 type AliasResolver interface {
-	CanonicalName(name string) (string, bool)
+	CanonicalName(ctx context.Context, name string) (string, bool)
 }
 
 // 编译期断言：FileProvider 支持发现与别名归一化。

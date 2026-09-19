@@ -2,7 +2,6 @@ package websearch
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -12,6 +11,8 @@ import (
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
+
+	"git.enjoye.top/enjoydream/agentkit/httpx"
 )
 
 // Searxng SearXNG 自建实例客户端（GET /search?format=json——实例 settings.yml 须启用
@@ -44,7 +45,8 @@ type searxngResp struct {
 	} `json:"results"`
 }
 
-// Search 实现 Service。HTTP 非 200 / 响应非 JSON（实例未开 json format 时返回 HTML）一律报错。
+// Search 实现 Service。HTTP 非 2xx / 响应非 JSON 一律报错——实例未开
+// formats: [json] 时 /search 返回 HTML，报错形态即「响应解析失败」。
 func (s *Searxng) Search(ctx context.Context, query string, topK int) ([]Result, error) {
 	if strings.TrimSpace(query) == "" {
 		return nil, fmt.Errorf("searxng: 空 query")
@@ -62,21 +64,11 @@ func (s *Searxng) Search(ctx context.Context, query string, topK int) ([]Result,
 	if s.Language != "" {
 		q.Set("language", s.Language)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.BaseURL+"/search?"+q.Encode(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("searxng: 构造请求失败: %w", err)
-	}
-	resp, err := hc.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("searxng: 检索失败: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("searxng: 检索失败: HTTP %d", resp.StatusCode)
-	}
 	var parsed searxngResp
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return nil, fmt.Errorf("searxng: 响应解析失败（实例是否开启 format=json?）: %w", err)
+	if err := httpx.DoJSON(ctx, hc, httpx.Request{
+		URL: s.BaseURL + "/search?" + q.Encode(),
+	}, &parsed); err != nil {
+		return nil, fmt.Errorf("searxng: %w", err)
 	}
 	out := make([]Result, 0, topK)
 	for _, r := range parsed.Results {

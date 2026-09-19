@@ -14,7 +14,7 @@
 //	defer pool.Close()
 //	tools, err := pool.Tools(ctx, []mcp.ToolSpec{{Server: "docs", Allow: []string{"search_docs"}}})
 //
-// 安全模型：stdio 子进程环境走白名单透传（绝不继承密钥，经 acpx.ChildEnv
+// 安全模型：stdio 子进程环境走白名单透传（绝不继承密钥，经 procx.ChildEnv
 // 单一纪律）；工具白名单按 spec 收敛（未声明的 server/工具不暴露给 agent）。
 package mcp
 
@@ -34,7 +34,7 @@ import (
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 
-	"git.enjoye.top/enjoydream/agentkit/acpx"
+	"git.enjoye.top/enjoydream/agentkit/procx"
 )
 
 // DefaultTimeout 连接与初始化的缺省超时。
@@ -49,7 +49,7 @@ type ServerConfig struct {
 	Command []string
 	// Env stdio 子进程环境白名单：条目为纯变量名（如 "GITHUB_TOKEN"）时按名从
 	// 当前进程透传；含 "=" 时按 KEY=VALUE 字面透传。未列出的变量一律不继承
-	// （基础集见 acpx.ChildEnv），防止本进程密钥泄漏给外部 MCP server。
+	// （基础集见 procx.ChildEnv），防止本进程密钥泄漏给外部 MCP server。
 	Env []string
 	// URL HTTP 传输（streamable http）。
 	URL string
@@ -223,12 +223,12 @@ func dial(ctx context.Context, cfg ServerConfig) (client.MCPClient, error) {
 		if cfg.Command[0] == "" || strings.HasPrefix(cfg.Command[0], "-") {
 			return nil, fmt.Errorf("mcp: server %s 非法 command %q", cfg.Name, cfg.Command[0])
 		}
-		// 经 CommandFunc 接管 exec.Cmd：环境只给白名单（acpx.ChildEnv，
+		// 经 CommandFunc 接管 exec.Cmd：环境只给白名单（procx.ChildEnv，
 		// 全仓库子进程环境纪律单一事实源），绝不继承全量 os.Environ()
 		return client.NewStdioMCPClientWithOptions(cfg.Command[0], cfg.Env, cfg.Command[1:],
 			transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
 				cmd := exec.CommandContext(ctx, command, args...)
-				cmd.Env = acpx.ChildEnv(env)
+				cmd.Env = procx.ChildEnv(env)
 				return cmd, nil
 			}))
 	case cfg.URL != "":
@@ -236,7 +236,7 @@ func dial(ctx context.Context, cfg ServerConfig) (client.MCPClient, error) {
 			transport.WithHTTPHeaders(cfg.Headers),
 			transport.WithHTTPTimeout(cfg.timeoutOr(DefaultTimeout)))
 	default:
-		return nil, fmt.Errorf("stdio（command）与 http（url）均未配置")
+		return nil, fmt.Errorf("mcp: server %s stdio（command）与 http（url）均未配置", cfg.Name)
 	}
 }
 

@@ -143,7 +143,7 @@ func (p *Pool) guardedCall(panicLog, failLog string, fn func(ctx context.Context
 	defer func() {
 		if r := recover(); r != nil {
 			p.logger().Error(panicLog, "panic", fmt.Sprint(r))
-			err = fmt.Errorf("queue panic: %v", r)
+			err = fmt.Errorf("worker: queue panic: %v", r)
 		}
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), queueCallTimeout)
@@ -222,7 +222,7 @@ func (p *Pool) loop(loopCtx, runCtx context.Context, id int) {
 func (p *Pool) claim(ctx context.Context) (taskID string, ok bool, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("queue panic: %v", r)
+			err = fmt.Errorf("worker: queue panic: %v", r)
 		}
 	}()
 	return p.Queue.ClaimNextPending(ctx)

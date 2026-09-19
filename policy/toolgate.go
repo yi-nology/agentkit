@@ -23,7 +23,7 @@ func (t auditTool) InvokableRun(ctx context.Context, args string, opts ...tool.O
 		t.onAudit(t.op, dec)
 	}
 	if dec.Verdict == VerdictDeny {
-		return "", fmt.Errorf("操作审计门拒绝该工具调用（%s: %s）", dec.RuleID, dec.Reason)
+		return "", fmt.Errorf("policy: 操作审计门拒绝该工具调用（%s: %s）", dec.RuleID, dec.Reason)
 	}
 	return t.InvokableTool.InvokableRun(ctx, args, opts...)
 }

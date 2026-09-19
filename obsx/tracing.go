@@ -69,6 +69,30 @@ type Options struct {
 	OnUsage func(component, model, stage string, prompt, completion int)
 }
 
+// TokenUsageOf 模型回调输出的真实 token 用量提取（全仓单源）：
+// 优先 out.TokenUsage；compose 图节点对裸 ChatModel 只透传 Message 时回退读
+// ResponseMeta.Usage（缺该回退会静默漏采——v0.10.10 前仅 llm/usage 侧有，
+// obsx 侧漏采已修）。llm.NewUsageHandler 与 TracingHandler 共用本函数。
+func TokenUsageOf(out *model.CallbackOutput) *model.TokenUsage {
+	if out == nil {
+		return nil
+	}
+	if out.TokenUsage != nil {
+		return out.TokenUsage
+	}
+	if out.Message != nil && out.Message.ResponseMeta != nil && out.Message.ResponseMeta.Usage != nil {
+		u := out.Message.ResponseMeta.Usage
+		return &model.TokenUsage{
+			PromptTokens:            u.PromptTokens,
+			PromptTokenDetails:      model.PromptTokenDetails{CachedTokens: u.PromptTokenDetails.CachedTokens},
+			CompletionTokens:        u.CompletionTokens,
+			TotalTokens:             u.TotalTokens,
+			CompletionTokensDetails: model.CompletionTokensDetails{ReasoningTokens: u.CompletionTokensDetails.ReasoningTokens},
+		}
+	}
+	return nil
+}
+
 // TracingHandler eino 追踪 handler 的配置（经 NewTracingHandler 构建为 callbacks.Handler）。
 type TracingHandler struct {
 	log logx.Logger
@@ -110,15 +134,15 @@ func (h *TracingHandler) onEnd(ctx context.Context, info *callbacks.RunInfo,
 		"duration_ms", dur.Milliseconds(),
 	}
 	if out := model.ConvCallbackOutput(output); out != nil {
-		if out.TokenUsage != nil {
+		if usage := TokenUsageOf(out); usage != nil {
 			fields = append(fields,
-				"prompt_tokens", out.TokenUsage.PromptTokens,
-				"completion_tokens", out.TokenUsage.CompletionTokens,
-				"total_tokens", out.TokenUsage.TotalTokens,
-				"reasoning_tokens", out.TokenUsage.CompletionTokensDetails.ReasoningTokens)
+				"prompt_tokens", usage.PromptTokens,
+				"completion_tokens", usage.CompletionTokens,
+				"total_tokens", usage.TotalTokens,
+				"reasoning_tokens", usage.CompletionTokensDetails.ReasoningTokens)
 			if h.opt.OnUsage != nil && !ClientAccounted(ctx) {
 				h.opt.OnUsage(compOf(info), modelOf(info), StageFromContext(ctx),
-					out.TokenUsage.PromptTokens, out.TokenUsage.CompletionTokens)
+					usage.PromptTokens, usage.CompletionTokens)
 			}
 		}
 		if out.Message != nil && h.opt.PreviewLen > 0 {

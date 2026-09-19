@@ -96,13 +96,13 @@ func TestLibraryProvider(t *testing.T) {
 		t.Fatalf("ListSkills = %v %v", metas, err)
 	}
 
-	if n, ok := lib.CanonicalName("oom-diagnosis"); !ok || n != "oom-diagnosis" {
+	if n, ok := lib.CanonicalName(context.Background(), "oom-diagnosis"); !ok || n != "oom-diagnosis" {
 		t.Fatalf("规范名归一失败: %q %v", n, ok)
 	}
-	if n, ok := lib.CanonicalName("OOM 诊断"); !ok || n != "oom-diagnosis" {
+	if n, ok := lib.CanonicalName(context.Background(), "OOM 诊断"); !ok || n != "oom-diagnosis" {
 		t.Fatalf("展示名归一失败: %q %v", n, ok)
 	}
-	if _, ok := lib.CanonicalName("nope"); ok {
+	if _, ok := lib.CanonicalName(context.Background(), "nope"); ok {
 		t.Fatal("未知名不应命中")
 	}
 }

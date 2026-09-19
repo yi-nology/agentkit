@@ -25,13 +25,13 @@ func LoadOverrides(fsys fs.FS, path string) (*Policy, error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			return base, nil
 		}
-		return nil, fmt.Errorf("读取 %s: %w", path, err)
+		return nil, fmt.Errorf("policy: 读取 %s: %w", path, err)
 	}
 	var doc struct {
 		Policy Policy `yaml:"operation_policy"`
 	}
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("%s 解析: %w", path, err)
+		return nil, fmt.Errorf("policy: %s 解析: %w", path, err)
 	}
 	p := &doc.Policy
 	if p.AutoMaxRisk <= 0 || p.AutoMaxRisk > base.AutoMaxRisk {

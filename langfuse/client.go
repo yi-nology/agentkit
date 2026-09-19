@@ -5,16 +5,15 @@ package langfuse
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/base64"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
-	"git.enjoye.top/enjoydream/agentkit/textutil"
+	"git.enjoye.top/enjoydream/agentkit/httpx"
 )
 
 // Client Langfuse 只读客户端。
@@ -88,7 +87,7 @@ func (c *Client) FetchBatch(ctx context.Context, q Query) (Batch, error) {
 			}
 			detail, err := c.GetTrace(ctx, tr.ID)
 			if err != nil {
-				return batch, fmt.Errorf("trace %s: %w", tr.ID, err)
+				return batch, fmt.Errorf("langfuse: trace %s: %w", tr.ID, err)
 			}
 			if detail.Name == "" {
 				detail.Name = tr.Name
@@ -139,30 +138,19 @@ func listQuery(q Query, page, pageSize int) url.Values {
 }
 
 func (c *Client) get(ctx context.Context, u string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	err := httpx.DoJSON(ctx, c.http, httpx.Request{
+		URL: u,
+		Header: func(h http.Header) {
+			h.Set("Authorization", "Basic "+basicAuth(c.pk, c.sk))
+		},
+	}, out)
 	if err != nil {
 		return fmt.Errorf("langfuse: %w", err)
-	}
-	req.SetBasicAuth(c.pk, c.sk)
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("langfuse: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
-	if err != nil {
-		return fmt.Errorf("langfuse: read: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("langfuse: api %d: %s", resp.StatusCode, truncateStr(string(body), 200))
-	}
-	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("langfuse: decode: %w", err)
 	}
 	return nil
 }
 
-// truncateStr 按 rune 截断（textutil.TruncEllipsis 单源——此前按字节切会腰斩 UTF-8）。
-func truncateStr(s string, n int) string {
-	return textutil.TruncEllipsis(s, n)
+// basicAuth RFC 7617 Basic 凭证（pk:sk，URL-safe 编码不受内容影响）。
+func basicAuth(user, pass string) string {
+	return base64.StdEncoding.EncodeToString([]byte(user + ":" + pass))
 }

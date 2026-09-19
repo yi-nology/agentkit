@@ -55,7 +55,7 @@ func AsSkillTool(p Provider, allowed []string) (tool.BaseTool, error) {
 			// 加载与 allowed 校验一律以规范引用名为准
 			name := in.Name
 			if ar, ok := p.(AliasResolver); ok {
-				if n, hit := ar.CanonicalName(in.Name); hit {
+				if n, hit := ar.CanonicalName(ctx, in.Name); hit {
 					name = n
 				}
 			}

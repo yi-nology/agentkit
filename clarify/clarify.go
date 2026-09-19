@@ -46,13 +46,13 @@ func LoadVocab(fsys fs.FS, path string) ([]Entry, error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("读取 %s: %w", path, err)
+		return nil, fmt.Errorf("clarify: 读取 %s: %w", path, err)
 	}
 	var doc struct {
 		TermMap []Entry `yaml:"term_map"`
 	}
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("%s 解析: %w", path, err)
+		return nil, fmt.Errorf("clarify: %s 解析: %w", path, err)
 	}
 	return doc.TermMap, nil
 }
@@ -68,20 +68,20 @@ func Validate(entries []Entry) error {
 	for i := range entries {
 		e := &entries[i]
 		if e.Word == "" {
-			return fmt.Errorf("term_map 第 %d 条缺 word", i+1)
+			return fmt.Errorf("clarify: term_map 第 %d 条缺 word", i+1)
 		}
 		if prev, hit := owner[e.Word]; hit {
-			return fmt.Errorf("term_map 词 %q 重复（%s / %s）", e.Word, prev, e.Dimension)
+			return fmt.Errorf("clarify: term_map 词 %q 重复（%s / %s）", e.Word, prev, e.Dimension)
 		}
 		owner[e.Word] = e.Dimension
 		if !dimRe.MatchString(e.Dimension) {
-			return fmt.Errorf("term_map %q 维度键非法 %q（须 ^[a-z][a-z0-9_]*$）", e.Word, e.Dimension)
+			return fmt.Errorf("clarify: term_map %q 维度键非法 %q（须 ^[a-z][a-z0-9_]*$）", e.Word, e.Dimension)
 		}
 		if e.Vague && (e.Clarify == nil || e.Clarify.Question == "" || len(e.Clarify.Options) == 0 || e.Clarify.Fallback == "") {
-			return fmt.Errorf("term_map %q vague=true 须配 clarify{question,options,fallback}（逃生选项必带）", e.Word)
+			return fmt.Errorf("clarify: term_map %q vague=true 须配 clarify{question,options,fallback}（逃生选项必带）", e.Word)
 		}
 		if !e.Vague && e.Clarify != nil {
-			return fmt.Errorf("term_map %q 非 vague 不得配置 clarify", e.Word)
+			return fmt.Errorf("clarify: term_map %q 非 vague 不得配置 clarify", e.Word)
 		}
 	}
 	return nil

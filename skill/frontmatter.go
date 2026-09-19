@@ -123,7 +123,7 @@ func ParseRichFrontmatter(dirName, content string) (LibMeta, string, error) {
 	// 定位独立成行的闭合 ---（围栏语义唯一事实源见 findClosingFence）。
 	blockEnd, bodyStart, closed := findClosingFence(rest)
 	if !closed {
-		return meta, body, fmt.Errorf("frontmatter 未闭合")
+		return meta, body, fmt.Errorf("skill: frontmatter 未闭合")
 	}
 	fmRaw := rest[:blockEnd]
 	body = strings.TrimSpace(rest[bodyStart:])
@@ -131,7 +131,7 @@ func ParseRichFrontmatter(dirName, content string) (LibMeta, string, error) {
 	// 直接解进 LibMeta（schema 唯一事实源）；Name/Title 语义 fixup 在下方。
 	var fm LibMeta
 	if err := yaml.Unmarshal([]byte(fmRaw), &fm); err != nil {
-		return meta, body, fmt.Errorf("frontmatter YAML 非法: %w", err)
+		return meta, body, fmt.Errorf("skill: frontmatter YAML 非法: %w", err)
 	}
 	meta = fm
 	meta.Name = dirName  // 目录名作规范名

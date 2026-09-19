@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"git.enjoye.top/enjoydream/agentkit/acpx"
+	"git.enjoye.top/enjoydream/agentkit/procx"
 	"git.enjoye.top/enjoydream/agentkit/logredact"
 	"git.enjoye.top/enjoydream/ekit/observability/logx"
 	"golang.org/x/sync/singleflight"
@@ -301,15 +301,15 @@ func (p *Pool) refresh(ctx context.Context, dir string, key WorktreeKey, token s
 // gitExecTimeout 单步 git 命令超时（clone/fetch/checkout 各自独立计时）。
 const gitExecTimeout = 5 * time.Minute
 
-// runGit 经 acpx 进程组纪律执行 git：Setpgid 建组 + 超时 TERM 整组（ssh/askpass
+// runGit 经 procx 进程组纪律执行 git：Setpgid 建组 + 超时 TERM 整组（ssh/askpass
 // 孙进程不泄漏）、环境白名单（clone URL 内嵌 token——全量继承会把宿主凭证透传给
-// 子进程）、stderr 截尾随错误返回。GIT_TERMINAL_PROMPT=0 禁交互由 acpx.ChildEnv 统一注入。
+// 子进程）、stderr 截尾随错误返回。GIT_TERMINAL_PROMPT=0 禁交互由 procx 统一注入。
 func runGit(ctx context.Context, args []string, insecureTLS bool) error {
 	var env []string
 	if insecureTLS {
 		env = append(env, "GIT_SSL_NO_VERIFY=true")
 	}
-	_, _, _, err := acpx.RunProcess(ctx, acpx.ProcessRequest{
+	_, _, _, err := procx.Run(ctx, procx.RunRequest{
 		Argv:    args,
 		Env:     env,
 		Timeout: gitExecTimeout,

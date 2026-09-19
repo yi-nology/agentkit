@@ -161,9 +161,9 @@ func walkNormalize(m map[string]any, schema *Schema) {
 		case schema.StringKeys[k]:
 			if s, ok := coerceString(v); ok {
 				m[k] = s
-			} else if flat, ok := FlattenObject(v); ok {
+			} else if flat, ok := flattenObject(v); ok {
 				m[k] = flat
-			} else if flat, ok := FlattenList(v); ok {
+			} else if flat, ok := flattenList(v); ok {
 				m[k] = flat
 			}
 		case schema.ListKeys[k]:
@@ -201,7 +201,7 @@ func walkNormalize(m map[string]any, schema *Schema) {
 
 // ParseLenient 栅栏剥离 → 直接解析 → Repair 重试 → ExtractObject+Repair 重试。
 func ParseLenient(raw string, v any, schema *Schema) error {
-	candidate := textutil.StripFence(raw)
+	candidate := textutil.StripCodeFence(raw)
 	if candidate == "" {
 		return fmt.Errorf("jsonrepair: 空输入")
 	}
@@ -229,11 +229,7 @@ func ParseLenient(raw string, v any, schema *Schema) error {
 	return fmt.Errorf("jsonrepair: 无法解析为 JSON")
 }
 
-// CoerceString bool/数字 → 文本；字符串原样；其余（nil/对象/数组）不处理。
-func CoerceString(v any) (string, bool) {
-	return coerceString(v)
-}
-
+// coerceString bool/数字 → 文本；字符串原样；其余（nil/对象/数组）不处理。
 func coerceString(v any) (string, bool) {
 	switch t := v.(type) {
 	case string:
@@ -246,8 +242,8 @@ func coerceString(v any) (string, bool) {
 	return "", false
 }
 
-// FlattenObject 对象形态 → 按 key 字典序取标量值拼为「v1；v2」文本。全空对象返回 false。
-func FlattenObject(v any) (string, bool) {
+// flattenObject 对象形态 → 按 key 字典序取标量值拼为「v1；v2」文本。全空对象返回 false。
+func flattenObject(v any) (string, bool) {
 	m, ok := v.(map[string]any)
 	if !ok || len(m) == 0 {
 		return "", false
@@ -269,8 +265,8 @@ func FlattenObject(v any) (string, bool) {
 	return strings.Join(parts, "；"), true
 }
 
-// FlattenList 数组形态 → 「1. x；2. y」序号拼接。结构化条目取 title/detail。
-func FlattenList(v any) (string, bool) {
+// flattenList 数组形态 → 「1. x；2. y」序号拼接。结构化条目取 title/detail。
+func flattenList(v any) (string, bool) {
 	arr, ok := v.([]any)
 	if !ok || len(arr) == 0 {
 		return "", false
@@ -289,7 +285,7 @@ func FlattenList(v any) (string, bool) {
 			case detail != "":
 				s = detail
 			default:
-				s, _ = FlattenObject(m)
+				s, _ = flattenObject(m)
 			}
 		} else {
 			s, _ = coerceString(item)

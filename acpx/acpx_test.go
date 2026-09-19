@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"git.enjoye.top/enjoydream/agentkit/procx"
 )
 
 // fakeCLI 创建可执行的假 CLI 脚本（脚本内容 = shell 代码），返回其路径。
@@ -317,7 +319,7 @@ func TestRequestValidation(t *testing.T) {
 func TestEnvAllowlist(t *testing.T) {
 	t.Setenv("SECRET_TOKEN", "leak-me")
 
-	env := ChildEnv(nil)
+	env := procx.ChildEnv(nil)
 	joined := strings.Join(env, "\n")
 	if strings.Contains(joined, "SECRET_TOKEN") {
 		t.Fatal("SECRET_TOKEN 不应透传给子进程")
@@ -405,39 +407,6 @@ func TestPromptArgGuard(t *testing.T) {
 	}
 }
 
-func TestLineWriterFloodCap(t *testing.T) {
-	// C3 回归：单行无换行洪泛不得绕过限容（partial 上限），且后续正常行可恢复
-	var lines []string
-	lw := &lineWriter{buf: &cappedBuffer{}, onLine: func(l string) { lines = append(lines, l) }}
-
-	big := strings.Repeat("A", 3<<20) // 3MB 单行，无换行
-	if _, err := lw.Write([]byte(big)); err != nil {
-		t.Fatal(err)
-	}
-	if !lw.overflow {
-		t.Fatal("超限后 overflow 应置位")
-	}
-	if len(lw.partial) > maxLineLen {
-		t.Fatalf("partial 应被限容: %d", len(lw.partial))
-	}
-	if len(lines) != 0 {
-		t.Fatalf("超限行不应回调: %d", len(lines))
-	}
-	// 洪泛结束（出现换行）→ 重新同步，后续正常行照常回调
-	if _, err := lw.Write([]byte("tail\n")); err != nil {
-		t.Fatal(err)
-	}
-	if lw.overflow {
-		t.Fatal("行尾后应解除 overflow")
-	}
-	if _, err := lw.Write([]byte(`{"type":"result","result":"ok"}` + "\n")); err != nil {
-		t.Fatal(err)
-	}
-	if len(lines) != 1 || !strings.Contains(lines[0], `"result":"ok"`) {
-		t.Fatalf("洪泛后正常行应恢复回调: %v", lines)
-	}
-}
-
 func TestFailureFlushesPartial(t *testing.T) {
 	// I-2 回归：失败路径也必须 flush 无尾换行的流尾事件——
 	// result 已产出但进程非零退出时，"result 优先"策略应救回结果
@@ -465,49 +434,18 @@ func TestTimeoutAndCancelSentinels(t *testing.T) {
 	a := NewClaudeCode()
 	a.Bin = bin
 
-	if _, err := a.Run(context.Background(), RunRequest{Prompt: "x", Timeout: 150 * time.Millisecond}); !errors.Is(err, ErrTimeout) {
-		t.Fatalf("超时应 errors.Is ErrTimeout: %v", err)
+	if _, err := a.Run(context.Background(), RunRequest{Prompt: "x", Timeout: 150 * time.Millisecond}); !errors.Is(err, procx.ErrTimeout) {
+		t.Fatalf("超时应 errors.Is procx.ErrTimeout: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { time.Sleep(100 * time.Millisecond); cancel() }()
 	_, err := a.Run(ctx, RunRequest{Prompt: "x"})
-	if !errors.Is(err, ErrCanceled) {
-		t.Fatalf("调用方取消应 errors.Is ErrCanceled（不得误报超时）: %v", err)
+	if !errors.Is(err, procx.ErrCanceled) {
+		t.Fatalf("调用方取消应 errors.Is procx.ErrCanceled（不得误报超时）: %v", err)
 	}
-	if errors.Is(err, ErrTimeout) {
-		t.Fatalf("取消不得同时命中 ErrTimeout: %v", err)
-	}
-}
-
-func TestRunProcess(t *testing.T) {
-	// 导出 API：进程组纪律 + 白名单环境 + 限容 + sentinel，供非 Agent 抽象调用方使用
-	bin := fakeCLI(t, `echo "$RUNPROC_OK"; echo '{"findings":[]}'`)
-	dir := t.TempDir()
-	t.Setenv("RUNPROC_SECRET", "leak-me")
-	t.Setenv("RUNPROC_OK", "passed")
-
-	stdout, _, code, err := RunProcess(context.Background(), ProcessRequest{
-		Argv: []string{bin}, Dir: dir,
-		Env:       []string{"RUNPROC_OK"},
-		Timeout:   30 * time.Second,
-		MaxStdout: 1 << 20,
-	})
-	if err != nil || code != 0 {
-		t.Fatalf("RunProcess 失败: %v code=%d", err, code)
-	}
-	if !strings.Contains(stdout, "passed") {
-		t.Fatalf("白名单变量的值应透传: %q", stdout)
-	}
-	if strings.Contains(stdout, "leak-me") || strings.Contains(stdout, "RUNPROC_SECRET") {
-		t.Fatalf("非白名单变量不得继承: %q", stdout)
-	}
-
-	// 超时 → ErrTimeout sentinel
-	if _, _, _, err := RunProcess(context.Background(), ProcessRequest{
-		Argv: []string{fakeCLI(t, `sleep 30`)}, Timeout: 150 * time.Millisecond,
-	}); !errors.Is(err, ErrTimeout) {
-		t.Fatalf("超时应 errors.Is ErrTimeout: %v", err)
+	if errors.Is(err, procx.ErrTimeout) {
+		t.Fatalf("取消不得同时命中 procx.ErrTimeout: %v", err)
 	}
 }
 

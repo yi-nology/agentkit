@@ -2,14 +2,14 @@
 package rag
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"git.enjoye.top/enjoydream/agentkit/httpx"
 )
 
 // Embedder 文本向量化接口。
@@ -80,7 +80,7 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, texts []string) ([][]float32
 
 		embeddings, err := e.embedBatch(ctx, batch)
 		if err != nil {
-			return nil, fmt.Errorf("embedding batch %d-%d: %w", i, end, err)
+			return nil, fmt.Errorf("rag: embedding batch %d-%d: %w", i, end, err)
 		}
 		allEmbeddings = append(allEmbeddings, embeddings...)
 	}
@@ -91,28 +91,18 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, texts []string) ([][]float32
 func (e *OpenAIEmbedder) embedBatch(ctx context.Context, texts []string) ([][]float32, error) {
 	body, _ := json.Marshal(embedRequest{Input: texts, Model: e.Model})
 
-	url := e.BaseURL + "/embeddings"
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+e.APIKey)
-
-	resp, err := e.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("embedding API %d: %s", resp.StatusCode, string(respBody[:min(200, len(respBody))]))
-	}
-
 	var er embedResponse
-	if err := json.Unmarshal(respBody, &er); err != nil {
-		return nil, fmt.Errorf("解析 embedding 响应: %w", err)
+	err := httpx.DoJSON(ctx, e.client, httpx.Request{
+		Method: http.MethodPost,
+		URL:    e.BaseURL + "/embeddings",
+		Body:   body,
+		Header: func(h http.Header) {
+			h.Set("Content-Type", "application/json")
+			h.Set("Authorization", "Bearer "+e.APIKey)
+		},
+	}, &er)
+	if err != nil {
+		return nil, fmt.Errorf("embedding: %w", err)
 	}
 
 	// 按 index 排序（API 保证返回顺序，但防御性排序）
@@ -128,7 +118,7 @@ func (e *OpenAIEmbedder) embedBatch(ctx context.Context, texts []string) ([][]fl
 	// 验证维度
 	for i, emb := range embeddings {
 		if len(emb) != e.dimension {
-			return nil, fmt.Errorf("embedding[%d] 维度 %d != 期望 %d", i, len(emb), e.dimension)
+			return nil, fmt.Errorf("rag: embedding[%d] 维度 %d != 期望 %d", i, len(emb), e.dimension)
 		}
 	}
 

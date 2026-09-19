@@ -88,27 +88,27 @@ func (m LibMeta) Validate() error {
 	switch m.Mode {
 	case ModeStatic, ModeOnDemand:
 	default:
-		return fmt.Errorf("mode 非法 %q（static|on_demand）", m.Mode)
+		return fmt.Errorf("skill: mode 非法 %q（static|on_demand）", m.Mode)
 	}
 	switch m.Maturity {
 	case MaturityExperimental, MaturityStable, MaturityFrozen, MaturityDeprecated:
 	default:
-		return fmt.Errorf("maturity 非法 %q（experimental|stable|frozen|deprecated）", m.Maturity)
+		return fmt.Errorf("skill: maturity 非法 %q（experimental|stable|frozen|deprecated）", m.Maturity)
 	}
 	if m.Version != "" && m.Version != DefaultVersion && !semverRe.MatchString(m.Version) {
-		return fmt.Errorf("version 非法 %q（SemVer）", m.Version)
+		return fmt.Errorf("skill: version 非法 %q（SemVer）", m.Version)
 	}
 	if m.Maturity == MaturityDeprecated {
 		if m.Deprecated == nil || m.Deprecated.RemoveAfter == "" {
-			return fmt.Errorf("maturity=deprecated 必须填写 deprecated.remove_after（YYYY-MM-DD）")
+			return fmt.Errorf("skill: maturity=deprecated 必须填写 deprecated.remove_after（YYYY-MM-DD）")
 		}
 		if !dateRe.MatchString(m.Deprecated.RemoveAfter) {
-			return fmt.Errorf("deprecated.remove_after 非法 %q（YYYY-MM-DD）", m.Deprecated.RemoveAfter)
+			return fmt.Errorf("skill: deprecated.remove_after 非法 %q（YYYY-MM-DD）", m.Deprecated.RemoveAfter)
 		}
 	}
 	for i, dep := range m.RequiresMCP {
 		if dep.Server == "" {
-			return fmt.Errorf("requires_mcp[%d].server 不能为空", i)
+			return fmt.Errorf("skill: requires_mcp[%d].server 不能为空", i)
 		}
 	}
 	return nil
@@ -313,7 +313,8 @@ func (l *Library) ListSkills(_ context.Context) ([]Meta, error) {
 }
 
 // CanonicalName 实现 AliasResolver：frontmatter name（展示名）→ 目录名。
-func (l *Library) CanonicalName(name string) (string, bool) {
+// 纯内存查询，ctx 仅随接口签名透传（无取消点）。
+func (l *Library) CanonicalName(_ context.Context, name string) (string, bool) {
 	if l == nil {
 		return "", false
 	}

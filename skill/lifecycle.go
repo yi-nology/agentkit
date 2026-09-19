@@ -12,10 +12,10 @@ import (
 // 无 frontmatter 或未闭合 → 报错（不猜格式，与解析 fail-fast 同哲学）。
 func RewriteMode(content, mode string) (string, error) {
 	if mode != ModeStatic && mode != ModeOnDemand {
-		return "", fmt.Errorf("mode 非法 %q（static|on_demand）", mode)
+		return "", fmt.Errorf("skill: mode 非法 %q（static|on_demand）", mode)
 	}
 	if !strings.HasPrefix(content, "---") {
-		return "", fmt.Errorf("SKILL.md 无 frontmatter，无法切换 mode")
+		return "", fmt.Errorf("skill: SKILL.md 无 frontmatter，无法切换 mode")
 	}
 	meta, body, err := ParseRichFrontmatter("tmp", content)
 	if err != nil {
@@ -36,7 +36,7 @@ func RewriteMode(content, mode string) (string, error) {
 // 无 frontmatter 或未闭合 → 报错（围栏是元数据的唯一保护壳，不整段重建）。
 func RewriteBody(content, body string) (string, error) {
 	if !strings.HasPrefix(content, "---") {
-		return "", fmt.Errorf("SKILL.md 无 frontmatter，无法编辑正文")
+		return "", fmt.Errorf("skill: SKILL.md 无 frontmatter，无法编辑正文")
 	}
 	lines := strings.Split(content, "\n")
 	end := -1
@@ -47,7 +47,7 @@ func RewriteBody(content, body string) (string, error) {
 		}
 	}
 	if end < 0 {
-		return "", fmt.Errorf("frontmatter 未闭合，拒绝编辑")
+		return "", fmt.Errorf("skill: frontmatter 未闭合，拒绝编辑")
 	}
 	kept := strings.Join(lines[:end+1], "\n")
 	return kept + "\n\n" + strings.TrimRight(body, "\n") + "\n", nil

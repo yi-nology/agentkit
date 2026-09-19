@@ -1,10 +1,33 @@
-package llmjson
+package jsonrepair
 
 import (
 	"encoding/json"
 	"strings"
 	"testing"
 )
+
+func TestExtractJSON(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"plain object", `{"a":1}`, `{"a":1}`},
+		{"plain array", `[1,2]`, `[1,2]`},
+		{"markdown fence", "```json\n{\"a\":1}\n```", `{"a":1}`},
+		{"fence no lang", "```\n{\"a\":1}\n```", `{"a":1}`},
+		{"extra text", `some text {"a":1} more`, `{"a":1}`},
+		{"nested braces", `{"a":{"b":1}}`, `{"a":{"b":1}}`},
+		{"empty", ``, ``},
+		{"no braces", `hello`, `hello`},
+	}
+	for _, c := range cases {
+		got := ExtractJSON(c.input)
+		if got != c.want {
+			t.Errorf("%s: ExtractJSON(%q) = %q, want %q", c.name, c.input, got, c.want)
+		}
+	}
+}
 
 // 目标 schema（对象含数组字段 / 顶层数组两种常见宿主形态）。
 type out struct {

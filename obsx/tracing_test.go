@@ -167,3 +167,36 @@ func TestOnUsageCallback(t *testing.T) {
 		t.Fatalf("stage/model 不应缺失: %+v", got)
 	}
 }
+
+func TestTokenUsageOfResponseMetaFallback(t *testing.T) {
+	// compose 图节点对裸 ChatModel 只透传 Message（无 TokenUsage 字段）——
+	// v0.10.10 前obsx 侧缺 ResponseMeta 回退会静默漏采；回退路径须与 llm 侧一致。
+	u := TokenUsageOf(&model.CallbackOutput{
+		Message: &schema.Message{
+			Role: schema.Assistant,
+			ResponseMeta: &schema.ResponseMeta{
+				Usage: &schema.TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+			},
+		},
+	})
+	if u == nil || u.PromptTokens != 10 || u.CompletionTokens != 5 || u.TotalTokens != 15 {
+		t.Fatalf("ResponseMeta.Usage 回退应生效: %+v", u)
+	}
+
+	// TokenUsage 字段优先，不受 Message 影响。
+	u = TokenUsageOf(&model.CallbackOutput{
+		Message:    &schema.Message{Role: schema.Assistant},
+		TokenUsage: &model.TokenUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
+	})
+	if u == nil || u.PromptTokens != 100 {
+		t.Fatalf("TokenUsage 字段应优先: %+v", u)
+	}
+
+	// 两者皆无 → nil（调用方静默跳过）。
+	if TokenUsageOf(&model.CallbackOutput{Message: &schema.Message{Role: schema.Assistant}}) != nil {
+		t.Fatal("无 usage 应返回 nil")
+	}
+	if TokenUsageOf(nil) != nil {
+		t.Fatal("nil 输出应返回 nil")
+	}
+}

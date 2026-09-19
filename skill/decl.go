@@ -27,7 +27,7 @@ func (d *Decl) UnmarshalYAML(value *yaml.Node) error {
 		}
 		d.Name = strings.TrimSpace(s)
 		if d.Name == "" {
-			return fmt.Errorf("skill 引用为空")
+			return fmt.Errorf("skill: 技能引用为空")
 		}
 		return nil
 	}
@@ -37,7 +37,7 @@ func (d *Decl) UnmarshalYAML(value *yaml.Node) error {
 		return err
 	}
 	if v.Name == "" {
-		return fmt.Errorf("skill 引用缺 name")
+		return fmt.Errorf("skill: 技能引用缺 name")
 	}
 	*d = Decl(v)
 	return nil

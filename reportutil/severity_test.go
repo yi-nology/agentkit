@@ -1,4 +1,4 @@
-package severity
+package reportutil
 
 import (
 	"testing"

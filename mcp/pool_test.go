@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"git.enjoye.top/enjoydream/agentkit/acpx"
+	"git.enjoye.top/enjoydream/agentkit/procx"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -210,7 +210,7 @@ func TestWhitelistEnv(t *testing.T) {
 	t.Setenv("AK_MCP_SECRET_TOKEN", "s3cret")
 	t.Setenv("AK_MCP_PLAIN", "v=1") // 值里含 = 的字面透传
 
-	out := acpx.ChildEnv([]string{"AK_MCP_SECRET_TOKEN", "AK_MCP_MISSING_VAR", "FOO=bar"})
+	out := procx.ChildEnv([]string{"AK_MCP_SECRET_TOKEN", "AK_MCP_MISSING_VAR", "FOO=bar"})
 	joined := strings.Join(out, "\n")
 
 	if !strings.Contains(joined, "AK_MCP_SECRET_TOKEN=s3cret") {
@@ -223,7 +223,7 @@ func TestWhitelistEnv(t *testing.T) {
 		t.Fatalf("KEY=VALUE 字面条目应透传: %v", out)
 	}
 	// 核心安全断言：当前进程的其它环境变量（哪怕名字可疑）一律不继承。
-	// 允许集 = acpx.ChildEnv 基础白名单（并集口径）+ 白名单条目 + 禁交互追加项。
+	// 允许集 = procx.ChildEnv 基础白名单（并集口径）+ 白名单条目 + 禁交互追加项。
 	allowed := map[string]bool{
 		"PATH": true, "HOME": true, "TMPDIR": true, "USER": true, "LOGNAME": true,
 		"SHELL": true, "LANG": true, "LC_ALL": true, "TERM": true,
@@ -247,7 +247,7 @@ func TestWhitelistEnvRealSubprocess(t *testing.T) {
 	t.Setenv("AK_MCP_PARENT_SECRET", "topsecret") // 未列入白名单 → 不得继承
 	t.Setenv("AK_MCP_ALLOWED", "okvalue")         // 列入白名单 → 应透传
 	cmd := exec.Command("env")
-	cmd.Env = acpx.ChildEnv([]string{"AK_MCP_ALLOWED"})
+	cmd.Env = procx.ChildEnv([]string{"AK_MCP_ALLOWED"})
 	out, err := cmd.Output()
 	if err != nil {
 		t.Skipf("无法运行 env: %v", err)

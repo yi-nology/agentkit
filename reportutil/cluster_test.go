@@ -1,4 +1,4 @@
-package sampling
+package reportutil
 
 import "testing"
 

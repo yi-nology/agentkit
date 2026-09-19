@@ -174,15 +174,7 @@ func (r *RunRequest) validate() error {
 	return nil
 }
 
-// defaultTimeout 单次运行缺省超时（RunRequest.Timeout 与 ProcessRequest.Timeout 共用）。
-const defaultTimeout = 10 * time.Minute
-
-func (r *RunRequest) timeout() time.Duration {
-	if r.Timeout > 0 {
-		return r.Timeout
-	}
-	return defaultTimeout
-}
+// RunRequest.Timeout 的 0 值缺省（10 分钟）由 procx 统一提供。
 
 // promptArg prompt 传参防注入：以 "-" 开头的 prompt 传给位置参数或 flag 值时，
 // 主流 CLI flag 解析器（clap/commander 等）可能把它当 flag 消费——LLM 自主填写
