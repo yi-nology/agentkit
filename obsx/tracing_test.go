@@ -145,29 +145,6 @@ func toErr(v any) error {
 	return e
 }
 
-func TestOnUsageCallback(t *testing.T) {
-	// v0.7.2：OnUsage 回调回收真实 usage（RawModel 旁路记账入口），stage 取自 ctx 标记
-	rl := &recordLogger{Logger: logx.NewSlogLogger("test")}
-	got := struct {
-		model, stage string
-		p, c         int
-	}{}
-	h := NewTracingHandler(rl, Options{
-		OnUsage: func(component, model, stage string, prompt, completion int) {
-			got.model, got.stage, got.p, got.c = model, stage, prompt, completion
-		},
-	})
-	ctx := callbacks.InitCallbacks(context.Background(), nil, h)
-	ctx = WithStage(ctx, "R3")
-	_ = fireModelCallbacks(ctx)
-	if got.p != 100 || got.c != 50 {
-		t.Fatalf("OnUsage 应回收真实 usage: %+v", got)
-	}
-	if got.stage != "R3" || got.model == "" {
-		t.Fatalf("stage/model 不应缺失: %+v", got)
-	}
-}
-
 func TestTokenUsageOfResponseMetaFallback(t *testing.T) {
 	// compose 图节点对裸 ChatModel 只透传 Message（无 TokenUsage 字段）——
 	// v0.10.10 前obsx 侧缺 ResponseMeta 回退会静默漏采；回退路径须与 llm 侧一致。

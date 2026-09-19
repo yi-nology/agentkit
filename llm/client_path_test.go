@@ -9,15 +9,17 @@ import (
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+
+	"git.enjoye.top/enjoydream/agentkit/llm/llmtest"
 )
 
 // ---------- Client.Generate 重试主路径（Resilient 之外的原生路径） ----------
 
 func TestClientGenerateRetryThenSuccess(t *testing.T) {
-	m := &fakeChatModel{script: []fakeResp{
-		{err: errors.New("500 internal error")},
-		{err: errors.New("connection reset")},
-		{content: "ok"},
+	m := &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{
+		{Err: errors.New("500 internal error")},
+		{Err: errors.New("connection reset")},
+		{Content: "ok"},
 	}}
 	c := NewClient(m, "test", nil)
 	c.BaseDelay = time.Millisecond
@@ -30,15 +32,15 @@ func TestClientGenerateRetryThenSuccess(t *testing.T) {
 	if out.Content != "ok" {
 		t.Fatalf("Content = %q", out.Content)
 	}
-	if m.callCount() != 3 {
-		t.Fatalf("应调 3 次（2 败 1 成），实际 %d", m.callCount())
+	if m.Calls != 3 {
+		t.Fatalf("应调 3 次（2 败 1 成），实际 %d", m.Calls)
 	}
 }
 
 func TestClientGenerateNonRetryable(t *testing.T) {
-	m := &fakeChatModel{script: []fakeResp{
-		{err: errors.New("401 unauthorized")},
-		{content: "should not reach"},
+	m := &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{
+		{Err: errors.New("401 unauthorized")},
+		{Content: "should not reach"},
 	}}
 	c := NewClient(m, "test", nil)
 	c.BaseDelay = time.Millisecond
@@ -47,16 +49,16 @@ func TestClientGenerateNonRetryable(t *testing.T) {
 	if err == nil {
 		t.Fatal("401 应直接失败")
 	}
-	if m.callCount() != 1 {
-		t.Fatalf("401 不应重试，实际调了 %d 次", m.callCount())
+	if m.Calls != 1 {
+		t.Fatalf("401 不应重试，实际调了 %d 次", m.Calls)
 	}
 }
 
 func TestClientGenerateTruncationBoost(t *testing.T) {
 	// 第一次输出被截断（finish_reason=length）→ 提升 MaxTokens 重试 → 第二次成功
-	m := &fakeChatModel{script: []fakeResp{
-		{content: "半截", finishReason: "length", prompt: 10, completion: 5},
-		{content: "完整输出", prompt: 10, completion: 20},
+	m := &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{
+		{Content: "半截", FinishReason: "length", Prompt: 10, Completion: 5},
+		{Content: "完整输出", Prompt: 10, Completion: 20},
 	}}
 	c := NewClient(m, "test", nil)
 	c.BaseDelay = time.Millisecond
@@ -69,16 +71,16 @@ func TestClientGenerateTruncationBoost(t *testing.T) {
 	if out.Content != "完整输出" {
 		t.Fatalf("Content = %q", out.Content)
 	}
-	if m.callCount() != 2 {
-		t.Fatalf("截断应触发一次重试，实际 %d 次", m.callCount())
+	if m.Calls != 2 {
+		t.Fatalf("截断应触发一次重试，实际 %d 次", m.Calls)
 	}
 }
 
 func TestClientGenerateJSONRetryWithFeedback(t *testing.T) {
 	// 第一次非法 JSON → 回喂错误重试 → 第二次合法
-	m := &fakeChatModel{script: []fakeResp{
-		{content: "不是 JSON"},
-		{content: `{"a":1}`},
+	m := &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{
+		{Content: "不是 JSON"},
+		{Content: `{"a":1}`},
 	}}
 	c := NewClient(m, "test", nil)
 	c.BaseDelay = time.Millisecond
@@ -92,14 +94,14 @@ func TestClientGenerateJSONRetryWithFeedback(t *testing.T) {
 	if out.A != 1 {
 		t.Fatalf("A = %d", out.A)
 	}
-	if m.callCount() != 2 {
-		t.Fatalf("JSON 回喂重试应调 2 次，实际 %d", m.callCount())
+	if m.Calls != 2 {
+		t.Fatalf("JSON 回喂重试应调 2 次，实际 %d", m.Calls)
 	}
 }
 
 func TestClientGenerateBudgetAccounting(t *testing.T) {
-	m := &fakeChatModel{script: []fakeResp{
-		{content: "ok", prompt: 100, completion: 50},
+	m := &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{
+		{Content: "ok", Prompt: 100, Completion: 50},
 	}}
 	budget := NewBudget(1000)
 	c := NewClient(m, "test", budget)
@@ -119,7 +121,7 @@ func TestClientGenerateBudgetAccounting(t *testing.T) {
 }
 
 func TestClientUsedTokensNilBudget(t *testing.T) {
-	c := NewClient(&fakeChatModel{}, "test", nil)
+	c := NewClient(&llmtest.Model{RepeatLast: true}, "test", nil)
 	if c.UsedTokens() != 0 {
 		t.Fatal("无预算时 UsedTokens 应为 0")
 	}
@@ -150,7 +152,7 @@ func TestClientBackoffDelay(t *testing.T) {
 // ---------- Generator 接口在 Client 上的行为 ----------
 
 func TestClientGeneratorInterface(t *testing.T) {
-	m := &fakeChatModel{script: []fakeResp{{content: `{"x":1}`}}}
+	m := &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{Content: `{"x":1}`}}}
 	var g Generator = NewClient(m, "test", nil)
 
 	if _, err := g.Generate(context.Background(), "R1", msgs("hi")); err != nil {

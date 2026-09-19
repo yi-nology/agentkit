@@ -5,36 +5,19 @@ import (
 	"errors"
 	"testing"
 
-	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+
+	"git.enjoye.top/enjoydream/agentkit/llm/llmtest"
 )
 
-type failoverStub struct {
-	err error
-	tag string
-}
-
-func (s *failoverStub) Generate(_ context.Context, _ []*schema.Message, _ ...einomodel.Option) (*schema.Message, error) {
-	if s.err != nil {
-		return nil, s.err
-	}
-	return &schema.Message{Role: schema.Assistant, Content: s.tag}, nil
-}
-
-func (s *failoverStub) Stream(_ context.Context, _ []*schema.Message, _ ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
-	if s.err != nil {
-		return nil, s.err
-	}
-	sr, sw := schema.Pipe[*schema.Message](1)
-	sw.Send(&schema.Message{Role: schema.Assistant, Content: s.tag}, nil)
-	sw.Close()
-	return sr, nil
-}
+// 桩统一走 llmtest（Model/ToolModel）——此前本文件手写 failoverStub/withToolsStub。
 
 // TestFailoverGenerate 主模型失败 → 备模型接管；主模型健康 → 备模型零调用。
 func TestFailoverGenerate(t *testing.T) {
-	primary := &failoverStub{err: errors.New("429 rate limited"), tag: "primary"}
-	fallback := &failoverStub{tag: "fallback"}
+	// 脚本序：第一次 429 失败 → 切备；第二次"恢复"（末条重复语义）→ 主模型直出。
+	primary := &llmtest.Model{RepeatLast: true, StreamContent: "primary",
+		Script: []llmtest.Resp{{Err: errors.New("429 rate limited")}, {Content: "primary"}}}
+	fallback := &llmtest.Model{RepeatLast: true, StreamContent: "fallback", Script: []llmtest.Resp{{Content: "fallback"}}}
 	m := NewFailoverModel(ChainLink{Model: primary, Name: "main"}, ChainLink{Model: fallback, Name: "backup"})
 
 	var hooked [][2]string
@@ -48,8 +31,7 @@ func TestFailoverGenerate(t *testing.T) {
 		t.Fatalf("OnFailover 应记录切换: %v", hooked)
 	}
 
-	// 主模型恢复：不再切换。
-	primary.err = nil
+	// 主模型恢复（脚本第二条）：不再切换。
 	hooked = nil
 	resp, err = m.Generate(context.Background(), []*schema.Message{{Role: schema.User, Content: "hi"}})
 	if err != nil || resp.Content != "primary" {
@@ -62,8 +44,8 @@ func TestFailoverGenerate(t *testing.T) {
 
 // TestFailoverStream 首块前失败同样切备模型。
 func TestFailoverStream(t *testing.T) {
-	primary := &failoverStub{err: errors.New("conn refused")}
-	fallback := &failoverStub{tag: "backup-stream"}
+	primary := &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{Err: errors.New("conn refused")}}}
+	fallback := &llmtest.Model{RepeatLast: true, StreamContent: "backup-stream", Script: []llmtest.Resp{{Content: "backup-stream"}}}
 	m := NewFailoverModel(ChainLink{Model: primary, Name: "main"}, ChainLink{Model: fallback, Name: "backup"})
 
 	sr, err := m.Stream(context.Background(), []*schema.Message{{Role: schema.User, Content: "hi"}})
@@ -78,8 +60,8 @@ func TestFailoverStream(t *testing.T) {
 
 // TestFailoverCtxCancelled 调用方取消/超时是调用语义：不切换，原样上抛。
 func TestFailoverCtxCancelled(t *testing.T) {
-	primary := &failoverStub{err: context.Canceled, tag: "primary"}
-	fallback := &failoverStub{tag: "fallback"}
+	primary := &llmtest.Model{RepeatLast: true, StreamContent: "primary", Script: []llmtest.Resp{{Err: context.Canceled, Content: "primary"}}}
+	fallback := &llmtest.Model{RepeatLast: true, StreamContent: "fallback", Script: []llmtest.Resp{{Content: "fallback"}}}
 	m := NewFailoverModel(ChainLink{Model: primary, Name: "main"}, ChainLink{Model: fallback, Name: "backup"})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -92,8 +74,8 @@ func TestFailoverCtxCancelled(t *testing.T) {
 
 // TestFailoverBothFail 主备皆失败：备模型错误如实上抛（不吞错）。
 func TestFailoverBothFail(t *testing.T) {
-	primary := &failoverStub{err: errors.New("boom")}
-	fallback := &failoverStub{err: errors.New("backup also down")}
+	primary := &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{Err: errors.New("boom")}}}
+	fallback := &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{Err: errors.New("backup also down")}}}
 	m := NewFailoverModel(ChainLink{Model: primary, Name: "main"}, ChainLink{Model: fallback, Name: "backup"})
 
 	_, err := m.Generate(context.Background(), []*schema.Message{{Role: schema.User, Content: "hi"}})
@@ -102,20 +84,10 @@ func TestFailoverBothFail(t *testing.T) {
 	}
 }
 
-// withToolsStub 记录 WithTools 派生（验证装饰器对 ADK 绑工具契约的可派生性）。
-type withToolsStub struct {
-	failoverStub
-	toolTag string
-}
-
-func (s *withToolsStub) WithTools(tools []*schema.ToolInfo) (einomodel.ToolCallingChatModel, error) {
-	return &withToolsStub{toolTag: s.tag + "-withtools", failoverStub: failoverStub{err: s.err, tag: s.tag}}, nil
-}
-
 // TestFailoverWithTools WithTools 派生后仍保持 failover 语义（ADK 绑工具路径）。
 func TestFailoverWithTools(t *testing.T) {
-	p := &withToolsStub{failoverStub: failoverStub{err: errors.New("down")}, toolTag: "p"}
-	f := &withToolsStub{failoverStub: failoverStub{tag: "fb"}}
+	p := &llmtest.ToolModel{Model: &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{Err: errors.New("down")}}}}
+	f := &llmtest.ToolModel{Model: &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{Content: "fb"}}}}
 
 	m := NewFailoverModel(ChainLink{Model: p, Name: "main"}, ChainLink{Model: f, Name: "backup"})
 	w, err := m.WithTools(nil)
@@ -130,7 +102,7 @@ func TestFailoverWithTools(t *testing.T) {
 
 // TestFailoverWithToolsUnsupported 主/备不支持工具绑定时如实报错。
 func TestFailoverWithToolsUnsupported(t *testing.T) {
-	m := NewFailoverModel(ChainLink{Model: &failoverStub{}, Name: "main"}, ChainLink{Model: &failoverStub{}, Name: "backup"})
+	m := NewFailoverModel(ChainLink{Model: &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{}}}, Name: "main"}, ChainLink{Model: &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{}}}, Name: "backup"})
 	if _, err := m.WithTools(nil); err == nil {
 		t.Fatal("非 ToolCallingChatModel 主/备应报错")
 	}

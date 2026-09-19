@@ -1,6 +1,9 @@
-// usage.go — LLM 用量采集（eino callbacks）：比 obsx.OnUsage 五数字更完整，
-// 拿得到 Cached/Reasoning tokens、FinishReason、Duration、Iteration。
+// usage.go — LLM 用量采集（eino callbacks）——**全仓唯一的 callbacks 侧记账
+// 出口**：拿得到 Cached/Reasoning tokens、FinishReason、Duration、Iteration。
 // 归因经 Labels（map）透传，领域键由调用方决定。
+// （v0.10.12 前 obsx.Options.OnUsage 是并行的五数字出口，防重护栏跨包放在
+// obsx——现护栏归位于本包，obsx 回归纯 trace，ReAct/RawModel 旁路记账统一
+// 走 NewUsageHandler 注入 callbacks。）
 package llm
 
 import (
@@ -63,8 +66,24 @@ func WithCallCounter(ctx context.Context) context.Context {
 
 type startKey struct{}
 
+// clientAccountingCtxKey 标记「本次模型调用的 token 记账由 Client 侧负责」
+// （Client.OnUsage/Budget 已配置，generateRetry 打点）：NewUsageHandler 检测到
+// 标记跳过发射——同一物理调用的 Generate 路径与 callbacks 路径只记一次账。
+type clientAccountingCtxKey struct{}
+
+func withClientAccounting(ctx context.Context) context.Context {
+	return context.WithValue(ctx, clientAccountingCtxKey{}, true)
+}
+
+func clientAccounted(ctx context.Context) bool {
+	v, _ := ctx.Value(clientAccountingCtxKey{}).(bool)
+	return v
+}
+
 // NewUsageHandler 构建 eino callbacks.Handler（非流式 OnStart/OnEnd）。
 // 无 TokenUsage、无 RunInfo 的调用静默跳过；Labels 缺省不阻断采集。
+// 防重：Client 自身配置了 OnUsage/Budget 时（Client 记账标记已在 ctx），
+// 本 handler 对同一次物理调用自动跳过——两侧不会双倍记账，可同时启用。
 func NewUsageHandler(onRecord Sink) callbacks.Handler {
 	return callbacks.NewHandlerBuilder().
 		OnStartFn(func(ctx context.Context, _ *callbacks.RunInfo, _ callbacks.CallbackInput) context.Context {
@@ -75,6 +94,10 @@ func NewUsageHandler(onRecord Sink) callbacks.Handler {
 			return context.WithValue(ctx, startKey{}, time.Now())
 		}).
 		OnEndFn(func(ctx context.Context, info *callbacks.RunInfo, output callbacks.CallbackOutput) context.Context {
+			// Client 侧已记账（OnUsage/Budget 配置时 generateRetry 打点）→ 跳过。
+			if clientAccounted(ctx) {
+				return ctx
+			}
 			// 只认带 RunInfo 的 OnEnd，否则 token 双计、iteration 虚增。
 			if info == nil || info.Type == "" {
 				return ctx

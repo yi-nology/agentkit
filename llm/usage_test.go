@@ -119,3 +119,23 @@ func TestUsageHandlerSkips(t *testing.T) {
 		t.Fatalf("应全部跳过, got %d", n)
 	}
 }
+
+func TestUsageHandlerClientAccountedSkips(t *testing.T) {
+	// 防重护栏（v0.10.12 自 obsx 移入并归位于记账侧）：Client 侧已配置
+	// OnUsage/Budget 时 generateRetry 打标记，NewUsageHandler 对同一次物理
+	// 调用跳过——两侧不双倍记账。
+	var n int
+	h := NewUsageHandler(func(UsageRecord) { n++ })
+	ctx := withClientAccounting(context.Background())
+	h.OnEnd(ctx, &callbacks.RunInfo{Type: "OpenAI"},
+		&model.CallbackOutput{TokenUsage: &model.TokenUsage{PromptTokens: 10}})
+	if n != 0 {
+		t.Fatalf("Client 记账标记存在时应跳过: %d", n)
+	}
+	// 无标记时照常发射。
+	h.OnEnd(context.Background(), &callbacks.RunInfo{Type: "OpenAI"},
+		&model.CallbackOutput{TokenUsage: &model.TokenUsage{PromptTokens: 10}})
+	if n != 1 {
+		t.Fatalf("无标记应发射: %d", n)
+	}
+}

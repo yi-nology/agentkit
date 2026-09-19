@@ -29,7 +29,7 @@ var _ tool.InvokableTool = (*fakeTool)(nil)
 func TestWithAuditGateDeniesMutatingCall(t *testing.T) {
 	inner := &fakeTool{name: "shell_execute"}
 	var got Decision
-	wrapped := WithAuditGate(NewGate(nil, nil),
+	wrapped := AuditGate(NewGate(nil, nil),
 		Op{Type: OpToolCall, Mode: ModeConfirm, Tool: "shell_execute", Mutating: true},
 		func(_ Op, dec Decision) { got = dec }, inner)
 	if _, err := wrapped.InvokableRun(context.Background(), "{}"); err == nil {
@@ -46,7 +46,7 @@ func TestWithAuditGateDeniesMutatingCall(t *testing.T) {
 func TestWithAuditGatePassesReadonlyCall(t *testing.T) {
 	inner := &fakeTool{name: "get_load"}
 	audits := 0
-	wrapped := WithAuditGate(NewGate(nil, nil),
+	wrapped := AuditGate(NewGate(nil, nil),
 		Op{Type: OpToolCall, Mode: ModeAuto, Tool: "get_load"},
 		func(_ Op, _ Decision) { audits++ }, inner)
 	if out, err := wrapped.InvokableRun(context.Background(), "{}"); err != nil || out != "ok" {
@@ -59,7 +59,7 @@ func TestWithAuditGatePassesReadonlyCall(t *testing.T) {
 
 func TestWithAuditGateNilGatePassthrough(t *testing.T) {
 	inner := &fakeTool{name: "shell_execute"}
-	wrapped := WithAuditGate(nil,
+	wrapped := AuditGate(nil,
 		Op{Type: OpToolCall, Mode: ModeConfirm, Tool: "shell_execute", Mutating: true},
 		nil, inner)
 	if _, err := wrapped.InvokableRun(context.Background(), "{}"); err != nil {

@@ -2,42 +2,21 @@ package reflection
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 
-	"github.com/cloudwego/eino/components/model"
-	"github.com/cloudwego/eino/schema"
+	"git.enjoye.top/enjoydream/agentkit/llm/llmtest"
 )
 
-// fakeModel 脚本化假模型：按调用序返回脚本内容（Generate 计数）。
-type fakeModel struct {
-	responses []string
-	calls     int
-	prompts   []string
-}
-
-func (f *fakeModel) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
-	return nil, fmt.Errorf("reflection 测试桩不支持流式")
-}
-
-func (f *fakeModel) Generate(_ context.Context, in []*schema.Message, _ ...model.Option) (*schema.Message, error) {
-	f.prompts = append(f.prompts, in[len(in)-1].Content)
-	if f.calls >= len(f.responses) {
-		return nil, fmt.Errorf("脚本耗尽（第 %d 次调用）", f.calls+1)
-	}
-	resp := f.responses[f.calls]
-	f.calls++
-	return &schema.Message{Role: schema.Assistant, Content: resp}, nil
-}
+// 桩统一走 llmtest.Model（耗尽报错语义与原桩一致）。
 
 func TestRefineConvergesSecondRound(t *testing.T) {
 	// 调用序：draft → critique(不通过) → revise → critique(通过)
-	fm := &fakeModel{responses: []string{
-		"初稿代码", // draft
-		`{"pass":false,"issues":["缺少错误处理","命名不清"]}`, // critique 1
-		"修订稿代码",                     // revise
-		`{"pass":true,"issues":[]}`, // critique 2
+	fm := &llmtest.Model{Script: []llmtest.Resp{
+		{Content: "初稿代码"}, // draft
+		{Content: `{"pass":false,"issues":["缺少错误处理","命名不清"]}`}, // critique 1
+		{Content: "修订稿代码"},                     // revise
+		{Content: `{"pass":true,"issues":[]}`}, // critique 2
 	}}
 	res, err := Refine(context.Background(), &Config{
 		Model: fm, ModelName: "fake",
@@ -58,16 +37,19 @@ func TestRefineConvergesSecondRound(t *testing.T) {
 		t.Fatalf("轮次记录不符: %+v", res.Rounds)
 	}
 	// 修订提示词应携带上一稿与全量 issues
-	if !strings.Contains(fm.prompts[2], "初稿代码") || !strings.Contains(fm.prompts[2], "缺少错误处理") {
-		t.Fatalf("修订输入应含草稿与问题: %q", fm.prompts[2])
+	if !strings.Contains(fm.Inputs[2], "初稿代码") || !strings.Contains(fm.Inputs[2], "缺少错误处理") {
+		t.Fatalf("修订输入应含草稿与问题: %q", fm.Inputs[2])
 	}
 }
 
 func TestRefineMaxIterations(t *testing.T) {
-	fm := &fakeModel{responses: []string{
-		"d1", `{"pass":false,"issues":["x"]}`,
-		"d2", `{"pass":false,"issues":["y"]}`,
-		"d3", `{"pass":false,"issues":["z"]}`,
+	fm := &llmtest.Model{Script: []llmtest.Resp{
+		{Content: "d1"},
+		{Content: `{"pass":false,"issues":["x"]}`},
+		{Content: "d2"},
+		{Content: `{"pass":false,"issues":["y"]}`},
+		{Content: "d3"},
+		{Content: `{"pass":false,"issues":["z"]}`},
 	}}
 	res, err := Refine(context.Background(), &Config{
 		Model: fm, Task: "t", Rubric: "r", MaxIterations: 3,
@@ -82,9 +64,11 @@ func TestRefineMaxIterations(t *testing.T) {
 
 func TestRefineSelfContradictoryCritique(t *testing.T) {
 	// pass=true 但带 issues → 以 issues 为准（不自洽评审不可信）
-	fm := &fakeModel{responses: []string{
-		"d1", `{"pass":true,"issues":["仍有问题"]}`,
-		"d2", `{"pass":true,"issues":[]}`,
+	fm := &llmtest.Model{Script: []llmtest.Resp{
+		{Content: "d1"},
+		{Content: `{"pass":true,"issues":["仍有问题"]}`},
+		{Content: "d2"},
+		{Content: `{"pass":true,"issues":[]}`},
 	}}
 	res, err := Refine(context.Background(), &Config{Model: fm, Task: "t", Rubric: "r", MaxIterations: 2})
 	if err != nil {
@@ -102,10 +86,10 @@ func TestRefineValidation(t *testing.T) {
 	if _, err := Refine(context.Background(), &Config{Rubric: "r"}); err == nil {
 		t.Fatal("缺 Model 应报错")
 	}
-	if _, err := Refine(context.Background(), &Config{Model: &fakeModel{}}); err == nil {
+	if _, err := Refine(context.Background(), &Config{Model: &llmtest.Model{}}); err == nil {
 		t.Fatal("缺 Task 应报错")
 	}
-	if _, err := Refine(context.Background(), &Config{Model: &fakeModel{}, Task: "t"}); err == nil {
+	if _, err := Refine(context.Background(), &Config{Model: &llmtest.Model{}, Task: "t"}); err == nil {
 		t.Fatal("缺 Rubric 应报错")
 	}
 }

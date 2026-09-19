@@ -11,90 +11,13 @@ import (
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+
+	"git.enjoye.top/enjoydream/agentkit/llm/llmtest"
 )
 
-// fakeChatModel 可编程的假 ChatModel：按脚本依次返回响应/错误。
-type fakeChatModel struct {
-	mu     sync.Mutex
-	calls  int
-	script []fakeResp // 依次消费；耗尽后重复最后一个
-}
-
-type fakeResp struct {
-	err          error
-	content      string
-	finishReason string
-	prompt       int
-	completion   int
-}
-
-func (f *fakeChatModel) Generate(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	resp := f.script[f.min(f.calls, len(f.script)-1)]
-	f.calls++
-	if resp.err != nil {
-		return nil, resp.err
-	}
-	out := &schema.Message{Role: schema.Assistant, Content: resp.content}
-	if resp.finishReason != "" || resp.prompt > 0 {
-		out.ResponseMeta = &schema.ResponseMeta{}
-		if resp.finishReason != "" {
-			out.ResponseMeta.FinishReason = resp.finishReason
-		}
-		if resp.prompt > 0 {
-			out.ResponseMeta.Usage = &schema.TokenUsage{
-				PromptTokens: resp.prompt, CompletionTokens: resp.completion,
-				TotalTokens: resp.prompt + resp.completion,
-			}
-		}
-	}
-	return out, nil
-}
-
-func (f *fakeChatModel) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
-	return nil, errors.New("stream not supported")
-}
-
-func (f *fakeChatModel) min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func (f *fakeChatModel) callCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.calls
-}
-
-// fakeProvider 测试用 Provider。
-type fakeProvider struct {
-	name      string
-	model     model.BaseChatModel
-	ctxTokens int
-	maxOut    int
-	timeout   time.Duration
-	costs     [2]float64
-}
-
-func (p *fakeProvider) Name() string                        { return p.name }
-func (p *fakeProvider) Model() model.BaseChatModel          { return p.model }
-func (p *fakeProvider) ModelName() string                   { return p.name + "-model" }
-func (p *fakeProvider) ContextTokens() int                  { return p.ctxTokens }
-func (p *fakeProvider) MaxOutputTokens() int                { return p.maxOut }
-func (p *fakeProvider) CostPer1KTokens() (float64, float64) { return p.costs[0], p.costs[1] }
-func (p *fakeProvider) AttemptTimeout() time.Duration       { return p.timeout }
-
-func newFakeProvider(name string, script ...fakeResp) *fakeProvider {
-	return &fakeProvider{
-		name:      name,
-		model:     &fakeChatModel{script: script},
-		ctxTokens: 128_000,
-		maxOut:    4096,
-		costs:     [2]float64{0.001, 0.002},
-	}
+// 桩统一走 llmtest（脚本化 Model/Provider）——此前本文件四份手写桩之一。
+func newFakeProvider(name string, script ...llmtest.Resp) *llmtest.Provider {
+	return llmtest.NewScriptedProvider(name, script...)
 }
 
 func newResilient(t *testing.T, providers ...Provider) *Resilient {
@@ -136,8 +59,8 @@ func TestResilientConfigDefaults(t *testing.T) {
 // ---------- 成功路径 ----------
 
 func TestResilientPrimarySuccess(t *testing.T) {
-	p1 := newFakeProvider("primary", fakeResp{content: "ok"})
-	p2 := newFakeProvider("fallback", fakeResp{content: "fallback-ok"})
+	p1 := newFakeProvider("primary", llmtest.Resp{Content: "ok"})
+	p2 := newFakeProvider("fallback", llmtest.Resp{Content: "fallback-ok"})
 	r := newResilient(t, p1, p2)
 
 	out, err := r.Generate(context.Background(), "R1", msgs("hi"))
@@ -150,7 +73,7 @@ func TestResilientPrimarySuccess(t *testing.T) {
 	if r.LastModel() != "primary-model" {
 		t.Fatalf("LastModel = %q", r.LastModel())
 	}
-	if p2.model.(*fakeChatModel).callCount() != 0 {
+	if p2.ModelValue.(*llmtest.Model).Calls != 0 {
 		t.Fatal("备选模型不应被调用")
 	}
 }
@@ -159,8 +82,8 @@ func TestResilientPrimarySuccess(t *testing.T) {
 
 func TestResilient429ImmediateSwitch(t *testing.T) {
 	// 429 不重试同模型：脚本全放 429，主模型只被调 1 次
-	p1 := newFakeProvider("primary", fakeResp{err: errors.New("429 rate limit exceeded")})
-	p2 := newFakeProvider("fallback", fakeResp{content: "fallback-ok"})
+	p1 := newFakeProvider("primary", llmtest.Resp{Err: errors.New("429 rate limit exceeded")})
+	p2 := newFakeProvider("fallback", llmtest.Resp{Content: "fallback-ok"})
 	r := newResilient(t, p1, p2)
 
 	out, err := r.Generate(context.Background(), "R1", msgs("hi"))
@@ -170,7 +93,7 @@ func TestResilient429ImmediateSwitch(t *testing.T) {
 	if out.Content != "fallback-ok" {
 		t.Fatal("应降级到备选模型")
 	}
-	if n := p1.model.(*fakeChatModel).callCount(); n != 1 {
+	if n := p1.ModelValue.(*llmtest.Model).Calls; n != 1 {
 		t.Fatalf("429 应立即切换：主模型只调 1 次，实际 %d", n)
 	}
 	if r.LastModel() != "fallback-model" {
@@ -180,28 +103,28 @@ func TestResilient429ImmediateSwitch(t *testing.T) {
 
 func TestResilientContextTooLongSwitch(t *testing.T) {
 	// context too long：同模型重试必然再败 → 立即切换
-	p1 := newFakeProvider("primary", fakeResp{err: errors.New("This model's maximum context length is 8192 tokens")})
-	p2 := newFakeProvider("fallback", fakeResp{content: "ok"})
+	p1 := newFakeProvider("primary", llmtest.Resp{Err: errors.New("This model's maximum context length is 8192 tokens")})
+	p2 := newFakeProvider("fallback", llmtest.Resp{Content: "ok"})
 	r := newResilient(t, p1, p2)
 
 	if _, err := r.Generate(context.Background(), "R1", msgs("hi")); err != nil {
 		t.Fatal(err)
 	}
-	if n := p1.model.(*fakeChatModel).callCount(); n != 1 {
+	if n := p1.ModelValue.(*llmtest.Model).Calls; n != 1 {
 		t.Fatalf("context 超限不应同模型重试：调了 %d 次", n)
 	}
 }
 
 func TestResilient401SwitchNotRetry(t *testing.T) {
 	// 401：同模型不重试（确定性失败），但切换模型（各 Provider 独立 APIKey）
-	p1 := newFakeProvider("primary", fakeResp{err: errors.New("401 unauthorized: invalid api key")})
-	p2 := newFakeProvider("fallback", fakeResp{content: "ok"})
+	p1 := newFakeProvider("primary", llmtest.Resp{Err: errors.New("401 unauthorized: invalid api key")})
+	p2 := newFakeProvider("fallback", llmtest.Resp{Content: "ok"})
 	r := newResilient(t, p1, p2)
 
 	if _, err := r.Generate(context.Background(), "R1", msgs("hi")); err != nil {
 		t.Fatal(err)
 	}
-	if n := p1.model.(*fakeChatModel).callCount(); n != 1 {
+	if n := p1.ModelValue.(*llmtest.Model).Calls; n != 1 {
 		t.Fatalf("401 不应同模型重试：调了 %d 次", n)
 	}
 }
@@ -209,11 +132,11 @@ func TestResilient401SwitchNotRetry(t *testing.T) {
 func TestResilientTransientRetryThenSuccess(t *testing.T) {
 	// 瞬态错误：同模型重试，第 3 次成功 → 不降级
 	p1 := newFakeProvider("primary",
-		fakeResp{err: errors.New("500 internal server error")},
-		fakeResp{err: errors.New("connection reset")},
-		fakeResp{content: "ok"},
+		llmtest.Resp{Err: errors.New("500 internal server error")},
+		llmtest.Resp{Err: errors.New("connection reset")},
+		llmtest.Resp{Content: "ok"},
 	)
-	p2 := newFakeProvider("fallback", fakeResp{content: "fallback-ok"})
+	p2 := newFakeProvider("fallback", llmtest.Resp{Content: "fallback-ok"})
 	r := newResilient(t, p1, p2)
 
 	out, err := r.Generate(context.Background(), "R1", msgs("hi"))
@@ -223,7 +146,7 @@ func TestResilientTransientRetryThenSuccess(t *testing.T) {
 	if out.Content != "ok" {
 		t.Fatal("瞬态错误重试后应成功")
 	}
-	if p2.model.(*fakeChatModel).callCount() != 0 {
+	if p2.ModelValue.(*llmtest.Model).Calls != 0 {
 		t.Fatal("不应降级")
 	}
 }
@@ -231,8 +154,8 @@ func TestResilientTransientRetryThenSuccess(t *testing.T) {
 // ---------- 全部失败 ----------
 
 func TestResilientAllFailAttemptError(t *testing.T) {
-	p1 := newFakeProvider("primary", fakeResp{err: errors.New("429 too many requests")})
-	p2 := newFakeProvider("fallback", fakeResp{err: errors.New("500 server error")})
+	p1 := newFakeProvider("primary", llmtest.Resp{Err: errors.New("429 too many requests")})
+	p2 := newFakeProvider("fallback", llmtest.Resp{Err: errors.New("500 server error")})
 	r := newResilient(t, p1, p2)
 
 	_, err := r.Generate(context.Background(), "R1", msgs("hi"))
@@ -263,7 +186,7 @@ func TestResilientBudgetShortCircuit(t *testing.T) {
 	_ = budget.Remaining()
 	budget.Add(10) // 耗尽
 
-	p1 := newFakeProvider("primary", fakeResp{content: "ok"})
+	p1 := newFakeProvider("primary", llmtest.Resp{Content: "ok"})
 	r, _ := NewResilient(NewFallbackChain(p1), ResilientConfig{})
 	r.Budget = budget
 
@@ -274,7 +197,7 @@ func TestResilientBudgetShortCircuit(t *testing.T) {
 	if !strings.Contains(err.Error(), "预算") {
 		t.Fatalf("错误应说明预算耗尽: %v", err)
 	}
-	if p1.model.(*fakeChatModel).callCount() != 0 {
+	if p1.ModelValue.(*llmtest.Model).Calls != 0 {
 		t.Fatal("预算耗尽不应调用模型")
 	}
 }
@@ -283,7 +206,7 @@ func TestResilientCtxCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	p1 := newFakeProvider("primary", fakeResp{content: "ok"})
+	p1 := newFakeProvider("primary", llmtest.Resp{Content: "ok"})
 	r := newResilient(t, p1)
 
 	_, err := r.Generate(ctx, "R1", msgs("hi"))
@@ -297,8 +220,8 @@ func TestResilientCtxCancelled(t *testing.T) {
 func TestResilientMsgsNotMutated(t *testing.T) {
 	// 主模型窗口 128k，输入超限 → fitInput 截断副本；
 	// 调用方的原始 msgs 必须保持原样（后续降级/重试/审计依赖原文）
-	p1 := newFakeProvider("primary", fakeResp{content: "ok"})
-	p1.ctxTokens = 100 // 极小窗口触发 fitInput
+	p1 := newFakeProvider("primary", llmtest.Resp{Content: "ok"})
+	p1.CtxTokens = 100 // 极小窗口触发 fitInput
 	r := newResilient(t, p1)
 
 	original := msgs(strings.Repeat("你好", 500)) // 1000 runes
@@ -317,8 +240,8 @@ func TestResilientMsgsNotMutated(t *testing.T) {
 func TestResilientBreakerTrips(t *testing.T) {
 	// 主模型连续失败 3 次（3 次独立调用各失败 1 次=429 立即切）→ 熔断
 	// 第 4 次调用：主模型被熔断跳过，直接走备选（主模型 callCount 不再增长）
-	p1 := newFakeProvider("primary", fakeResp{err: errors.New("429 rate limit")})
-	p2 := newFakeProvider("fallback", fakeResp{content: "ok"})
+	p1 := newFakeProvider("primary", llmtest.Resp{Err: errors.New("429 rate limit")})
+	p2 := newFakeProvider("fallback", llmtest.Resp{Content: "ok"})
 	r := newResilient(t, p1, p2)
 	ctx := context.Background()
 
@@ -327,7 +250,7 @@ func TestResilientBreakerTrips(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	callsAfter3 := p1.model.(*fakeChatModel).callCount()
+	callsAfter3 := p1.ModelValue.(*llmtest.Model).Calls
 	if callsAfter3 != 3 {
 		t.Fatalf("3 次调用主模型应各被尝试 1 次，实际 %d", callsAfter3)
 	}
@@ -336,7 +259,7 @@ func TestResilientBreakerTrips(t *testing.T) {
 	if _, err := r.Generate(ctx, "R1", msgs("hi")); err != nil {
 		t.Fatal(err)
 	}
-	if n := p1.model.(*fakeChatModel).callCount(); n != callsAfter3 {
+	if n := p1.ModelValue.(*llmtest.Model).Calls; n != callsAfter3 {
 		t.Fatalf("熔断后主模型不应再被调用: %d → %d", callsAfter3, n)
 	}
 }
@@ -344,8 +267,8 @@ func TestResilientBreakerTrips(t *testing.T) {
 // ---------- 成本记账跟随实际模型 ----------
 
 func TestResilientCostTrackerFollowsModel(t *testing.T) {
-	p1 := newFakeProvider("primary", fakeResp{err: errors.New("429 rate limit")})
-	p2 := newFakeProvider("fallback", fakeResp{content: "ok", prompt: 100, completion: 50})
+	p1 := newFakeProvider("primary", llmtest.Resp{Err: errors.New("429 rate limit")})
+	p2 := newFakeProvider("fallback", llmtest.Resp{Content: "ok", Prompt: 100, Completion: 50})
 	r := newResilient(t, p1, p2)
 	tracker := NewCostTracker()
 	r.Tracker = tracker
@@ -371,8 +294,8 @@ func TestResilientCostTrackerFollowsModel(t *testing.T) {
 
 func TestResilientGenerateJSONFallback(t *testing.T) {
 	// 主模型输出非法 JSON（回喂重试仍失败）→ 切换备选模型成功
-	bad := newFakeProvider("primary", fakeResp{content: "not json at all"})
-	good := newFakeProvider("fallback", fakeResp{content: `{"a":1}`})
+	bad := newFakeProvider("primary", llmtest.Resp{Content: "not json at all"})
+	good := newFakeProvider("fallback", llmtest.Resp{Content: `{"a":1}`})
 	r := newResilient(t, bad, good)
 
 	var out struct {
@@ -392,7 +315,7 @@ func TestResilientGenerateJSONFallback(t *testing.T) {
 // ---------- 单模型链 ----------
 
 func TestResilientSingleProvider(t *testing.T) {
-	p1 := newFakeProvider("only", fakeResp{content: "ok"})
+	p1 := newFakeProvider("only", llmtest.Resp{Content: "ok"})
 	r := newResilient(t, p1)
 
 	out, err := r.Generate(context.Background(), "R1", msgs("hi"))
@@ -407,8 +330,8 @@ func TestResilientSingleProvider(t *testing.T) {
 // ---------- nil model 防御 ----------
 
 func TestResilientNilModelSkipped(t *testing.T) {
-	broken := &fakeProvider{name: "broken", model: nil, ctxTokens: 128_000, maxOut: 4096}
-	good := newFakeProvider("good", fakeResp{content: "ok"})
+	broken := &llmtest.Provider{Label: "broken", ModelValue: nil, CtxTokens: 128_000, MaxOut: 4096}
+	good := newFakeProvider("good", llmtest.Resp{Content: "ok"})
 	r := newResilient(t, broken, good)
 
 	out, err := r.Generate(context.Background(), "R1", msgs("hi"))
@@ -423,8 +346,8 @@ func TestResilientNilModelSkipped(t *testing.T) {
 // ---------- OnFallback 回调 ----------
 
 func TestResilientOnFallbackCallback(t *testing.T) {
-	p1 := newFakeProvider("primary", fakeResp{err: errors.New("429 rate limit")})
-	p2 := newFakeProvider("fallback", fakeResp{content: "ok"})
+	p1 := newFakeProvider("primary", llmtest.Resp{Err: errors.New("429 rate limit")})
+	p2 := newFakeProvider("fallback", llmtest.Resp{Content: "ok"})
 	r := newResilient(t, p1, p2)
 
 	var mu sync.Mutex
@@ -449,13 +372,13 @@ func TestResilientOnFallbackCallback(t *testing.T) {
 
 func TestResilientAttemptTimeoutSwitch(t *testing.T) {
 	// 主模型单次尝试超时（其 AttemptTimeout=10ms，但脚本让它阻塞）→ 切换备选
-	slow := newFakeProvider("slow", fakeResp{content: "slow-ok"})
-	slow.timeout = 10 * time.Millisecond
+	slow := newFakeProvider("slow", llmtest.Resp{Content: "slow-ok"})
+	slow.Timeout = 10 * time.Millisecond
 	// 用一个阻塞的模型模拟慢响应
-	slow.model = &blockingChatModel{release: make(chan struct{})}
-	fast := newFakeProvider("fast", fakeResp{content: "fast-ok"})
+	slow.ModelValue = &blockingChatModel{release: make(chan struct{})}
+	fast := newFakeProvider("fast", llmtest.Resp{Content: "fast-ok"})
 	r := newResilient(t, slow, fast)
-	defer close(slow.model.(*blockingChatModel).release)
+	defer close(slow.ModelValue.(*blockingChatModel).release)
 	out, err := r.Generate(context.Background(), "R1", msgs("hi"))
 	if err != nil {
 		t.Fatal(err)
@@ -488,7 +411,7 @@ func (b *blockingChatModel) Stream(_ context.Context, _ []*schema.Message, _ ...
 func TestGeneratorInterface(t *testing.T) {
 	var g Generator = &Client{}
 	_ = g
-	p1 := newFakeProvider("x", fakeResp{content: "ok"})
+	p1 := newFakeProvider("x", llmtest.Resp{Content: "ok"})
 	r := newResilient(t, p1)
 	g = r
 	_ = g
@@ -498,11 +421,11 @@ func TestRawModelWithFailover(t *testing.T) {
 	// v0.10.9 组合点回归：RawModel/RawModelWithFailover 返回包住整条链的
 	// failover 装饰器——裸模型路径（ReAct）首模型失败自动切下一个，不再
 	// 静默丢弃降级链。
-	primary := &fakeChatModel{script: []fakeResp{{err: errors.New("primary down")}}}
-	fallback := &fakeChatModel{script: []fakeResp{{content: "from-fallback"}}}
+	primary := &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{Err: errors.New("primary down")}}}
+	fallback := &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{Content: "from-fallback"}}}
 	chain := &FallbackChain{Providers: []Provider{
-		&fakeProvider{name: "p1", model: primary, ctxTokens: 128_000, maxOut: 4096},
-		&fakeProvider{name: "p2", model: fallback, ctxTokens: 128_000, maxOut: 4096},
+		&llmtest.Provider{Label: "p1", ModelValue: primary, CtxTokens: 128_000, MaxOut: 4096},
+		&llmtest.Provider{Label: "p2", ModelValue: fallback, CtxTokens: 128_000, MaxOut: 4096},
 	}}
 	r, err := NewResilient(chain, ResilientConfig{BaseDelay: time.Millisecond, MaxDelay: 2 * time.Millisecond})
 	if err != nil {
@@ -532,9 +455,9 @@ func TestRawModelWithFailover(t *testing.T) {
 
 func TestChainFailoverModel(t *testing.T) {
 	// NewFailoverModel N 模型按序降级；全败上抛末模型错误，切换逐级回调。
-	m1 := &fakeChatModel{script: []fakeResp{{err: errors.New("m1 down")}}}
-	m2 := &fakeChatModel{script: []fakeResp{{err: errors.New("m2 down")}}}
-	m3 := &fakeChatModel{script: []fakeResp{{content: "m3-ok"}}}
+	m1 := &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{Err: errors.New("m1 down")}}}
+	m2 := &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{Err: errors.New("m2 down")}}}
+	m3 := &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{Content: "m3-ok"}}}
 	fm := NewFailoverModel(
 		ChainLink{Model: m1, Name: "m1"},
 		ChainLink{Model: m2, Name: "m2"},

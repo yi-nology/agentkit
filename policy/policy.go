@@ -4,7 +4,7 @@
 //
 // 裁决分层：例外规则（Policy.Rules，首个命中即胜）→ 模式×风险矩阵 → 兜底 need_human
 // （未知形态 fail-safe）。灰区可挂 Arbiter 仲裁插件，失败/非法输出一律 fail-safe 升人审
-// ——「只升不降」在 fail-safe 方向恒成立。工具调用面的装饰器见 WithAuditGate。
+// ——「只升不降」在 fail-safe 方向恒成立。工具调用面的装饰器见 AuditGate。
 //
 // 沉淀自 bianque engine/policy（v0.9.6）：领域包 yaml 路径约定改为显式入参
 // （LoadOverrides path），其余原样。

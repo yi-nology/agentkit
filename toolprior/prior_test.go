@@ -95,9 +95,9 @@ func TestStrategyPromptEmpty(t *testing.T) {
 
 func TestWithCallLimit(t *testing.T) {
 	ft := &fakeTool{name: "mcp", desc: "external"}
-	limited := WithCallLimit(ft, 2)
+	limited := LimitCalls(ft, 2)
 
-	// 前两次正常（WithCallLimit 返回 BaseTool，调用经 InvokableTool 断言）
+	// 前两次正常（LimitCalls 返回 BaseTool，调用经 InvokableTool 断言）
 	lt, ok := limited.(tool.InvokableTool)
 	if !ok {
 		t.Fatal("应实现 tool.InvokableTool")
@@ -134,7 +134,7 @@ func TestWithCallLimit(t *testing.T) {
 
 func TestWithCallLimitZero(t *testing.T) {
 	ft := &fakeTool{name: "x"}
-	limited := WithCallLimit(ft, 0) // 0 = 不限（原样返回）
+	limited := LimitCalls(ft, 0) // 0 = 不限（原样返回）
 	lt := limited.(tool.InvokableTool)
 	for i := 0; i < 10; i++ {
 		if _, err := lt.InvokableRun(context.Background(), "{}"); err != nil {

@@ -7,7 +7,7 @@
 // 三层机制：
 //  1. StrategyPrompt()——把"何时用哪个、成本多高"渲染成提示词段，注入 instruction
 //  2. Ordered()——工具表按优先级稳定排序（模型对表顺序有注意力偏好）
-//  3. WithCallLimit()——调用次数硬上限，超限返回固定提示文本软止损（模型可见，
+//  3. LimitCalls()——调用次数硬上限，超限返回固定提示文本软止损（模型可见，
 //     防 runaway 循环）
 package toolprior
 
@@ -142,13 +142,13 @@ type limitedTool struct {
 	calls atomic.Int64
 }
 
-// WithCallLimit 包装工具：调用超过 max 次后返回固定提示文本（nil error）软止损。
+// LimitCalls 包装工具：调用超过 max 次后返回固定提示文本（nil error）软止损。
 // 必须返回文本而非 Go error——eino ToolsNode 会把工具 error 直接上抛中止整个
 // agent 运行，模型永远看不到提示、此前轮次的部分结论全部丢弃；返回文本则模型
 // 可见，可基于已有信息收尾（软止损 + 保留部分进展）。
 // max<=0 = 不限制（原样返回）。包装每次新建——计数不跨任务共享。
 // 入参需 InvokableTool（嵌入 BaseTool，Info 由内层透出）。
-func WithCallLimit(t tool.InvokableTool, max int) tool.BaseTool {
+func LimitCalls(t tool.InvokableTool, max int) tool.BaseTool {
 	if max <= 0 {
 		return t
 	}

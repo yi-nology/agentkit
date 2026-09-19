@@ -395,7 +395,7 @@ func (r *Resilient) buildClient(p Provider) *Client {
 	c.Limiter = r.Limiter
 	c.MaxRetries = 1 // 重试由 Resilient 统一控制，Client 内不再重试
 	// 仅在确有记账出口时设置 OnUsage：恒设置会让 generateRetry 的 Client 记账
-	// 标记误跳过 callbacks 侧的 Options.OnUsage（调用方可能只配了 callbacks）
+	// 标记误跳过 callbacks 侧的 NewUsageHandler（调用方可能只配了 callbacks）
 	if r.OnUsage != nil || r.Tracker != nil {
 		costPer1K := [2]float64{}
 		costPer1K[0], costPer1K[1] = p.CostPer1KTokens()

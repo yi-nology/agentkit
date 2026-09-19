@@ -255,7 +255,7 @@ func TestMaxIterationsDefault(t *testing.T) {
 
 func TestRunWithRetryToolsFactoryFreshPerAttempt(t *testing.T) {
 	// A1 回归：RunWithRetry + ToolsFactory 时，每次尝试应拿到新建的工具表
-	//（toolprior.WithCallLimit 等有状态包装的计数按尝试重置，不跨尝试累计）
+	//（toolprior.LimitCalls 等有状态包装的计数按尝试重置，不跨尝试累计）
 	_, cm := newMockOpenAI(t,
 		mockResponse{content: ""}, // 首轮失败（空最终文本）
 		mockResponse{content: "重试成功"},

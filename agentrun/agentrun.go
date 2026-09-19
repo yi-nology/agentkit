@@ -45,7 +45,7 @@ type Config struct {
 	// 与 ToolsFactory 二选一；两者都设置时 ToolsFactory 优先。
 	Tools []tool.BaseTool
 	// ToolsFactory 工具表工厂：每次 run 调用新建一份工具表。
-	// RunWithRetry 场景建议设置——工具表含 toolprior.WithCallLimit 等
+	// RunWithRetry 场景建议设置——工具表含 toolprior.LimitCalls 等
 	// 有状态包装时，复用同一实例会让限流计数跨重试累计（重试继承 0 余额，
 	// 每次调用立即被拒）。工厂内每次重新包装即可让预算按尝试重置。
 	ToolsFactory func() []tool.BaseTool
@@ -110,7 +110,7 @@ func RunWithEvents(ctx context.Context, cfg Config, query string, onEvent func(E
 // 副作用守卫：首轮已调用变更类工具（见 IsMutatingTool）后不整体重跑，除非
 // Config.RetryAfterMutation=true——重跑会重复副作用（脚本执行/服务操作类工具
 // 在首轮已生效）。
-// 注意：两次尝试共用 cfg.Tools 实例——工具表含 toolprior.WithCallLimit 等
+// 注意：两次尝试共用 cfg.Tools 实例——工具表含 toolprior.LimitCalls 等
 // 有状态包装时，限流计数会跨尝试累计；需要按尝试重置预算请设置 ToolsFactory。
 func RunWithRetry(ctx context.Context, cfg Config, query, retryQuery string) (string, error) {
 	return RunWithEventsAndRetry(ctx, cfg, query, retryQuery, nil)

@@ -3,28 +3,13 @@ package router
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 
-	"github.com/cloudwego/eino/components/model"
-	"github.com/cloudwego/eino/schema"
+	"git.enjoye.top/enjoydream/agentkit/llm/llmtest"
 )
 
-type fakeModel struct {
-	resp       string
-	lastSystem string // 最近一次分类调用的 system 消息（提示词断言用）
-}
-
-func (f *fakeModel) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
-	return nil, fmt.Errorf("桩不支持流式")
-}
-func (f *fakeModel) Generate(_ context.Context, msgs []*schema.Message, _ ...model.Option) (*schema.Message, error) {
-	if len(msgs) > 0 {
-		f.lastSystem = msgs[0].Content
-	}
-	return &schema.Message{Role: schema.Assistant, Content: f.resp}, nil
-}
+// 桩统一走 llmtest.Model（单响应恒定 + 首消息记录）。
 
 func testRoutes() []Route {
 	return []Route{
@@ -38,7 +23,7 @@ func testRoutes() []Route {
 }
 
 func TestRouterDoDispatches(t *testing.T) {
-	r, err := New(&Config{Model: &fakeModel{resp: `{"route":"bug-fix","confidence":0.9,"reason":"修代码"}`}, Routes: testRoutes()})
+	r, err := New(&Config{Model: &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{Content: `{"route":"bug-fix","confidence":0.9,"reason":"修代码"}`}}}, Routes: testRoutes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +39,7 @@ func TestRouterDoDispatches(t *testing.T) {
 func TestRouterFallbackOnLowConfidence(t *testing.T) {
 	var fbReason string
 	r, err := New(&Config{
-		Model:  &fakeModel{resp: `{"route":"bug-fix","confidence":0.3,"reason":"不确定"}`},
+		Model:  &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{Content: `{"route":"bug-fix","confidence":0.3,"reason":"不确定"}`}}},
 		Routes: testRoutes(), MinConfidence: 0.6,
 		Fallback: func(ctx context.Context, input string, reason string) (string, error) {
 			fbReason = reason
@@ -75,7 +60,7 @@ func TestRouterFallbackOnLowConfidence(t *testing.T) {
 
 func TestRouterUnknownRouteNoFallback(t *testing.T) {
 	r, err := New(&Config{
-		Model:  &fakeModel{resp: `{"route":"no-such","confidence":1.0,"reason":"乱说"}`},
+		Model:  &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{Content: `{"route":"no-such","confidence":1.0,"reason":"乱说"}`}}},
 		Routes: testRoutes(),
 	})
 	if err != nil {
@@ -87,10 +72,10 @@ func TestRouterUnknownRouteNoFallback(t *testing.T) {
 }
 
 func TestRouterValidation(t *testing.T) {
-	if _, err := New(&Config{Model: &fakeModel{resp: "{}"}}); err == nil {
+	if _, err := New(&Config{Model: &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{Content: "{}"}}}}); err == nil {
 		t.Fatal("空路由表应报错")
 	}
-	_, err := New(&Config{Model: &fakeModel{resp: "{}"}, Routes: []Route{
+	_, err := New(&Config{Model: &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{Content: "{}"}}}, Routes: []Route{
 		{Name: "a", Handle: func(context.Context, string) (string, error) { return "", nil }},
 		{Name: "a", Handle: func(context.Context, string) (string, error) { return "", nil }},
 	}})
@@ -100,7 +85,7 @@ func TestRouterValidation(t *testing.T) {
 }
 
 func TestRouterClassifyError(t *testing.T) {
-	r, err := New(&Config{Model: &fakeModel{resp: "not json"}, Routes: testRoutes()})
+	r, err := New(&Config{Model: &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{Content: "not json"}}}, Routes: testRoutes()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +100,7 @@ func TestRouterClassifyError(t *testing.T) {
 // Decision 仍返回供可观测。
 func TestRouterClassifyGatesLowConfidence(t *testing.T) {
 	r, err := New(&Config{
-		Model:  &fakeModel{resp: `{"route":"bug-fix","confidence":0.3,"reason":"不确定"}`},
+		Model:  &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{Content: `{"route":"bug-fix","confidence":0.3,"reason":"不确定"}`}}},
 		Routes: testRoutes(), MinConfidence: 0.6,
 	})
 	if err != nil {
@@ -136,7 +121,7 @@ func TestRouterClassifyGatesLowConfidence(t *testing.T) {
 // 未知名（含 "none"）在 Classify 即报错，不再放行给调用方。
 func TestRouterClassifyGatesUnknownRoute(t *testing.T) {
 	r, err := New(&Config{
-		Model:  &fakeModel{resp: `{"route":"none","confidence":1.0,"reason":"没有合适类别"}`},
+		Model:  &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{Content: `{"route":"none","confidence":1.0,"reason":"没有合适类别"}`}}},
 		Routes: testRoutes(),
 	})
 	if err != nil {
@@ -150,7 +135,7 @@ func TestRouterClassifyGatesUnknownRoute(t *testing.T) {
 // MinConfidence=0 = 不设门槛：低置信也放行（原始语义保留）。
 func TestRouterClassifyNoGateWhenDisabled(t *testing.T) {
 	r, err := New(&Config{
-		Model:  &fakeModel{resp: `{"route":"explain","confidence":0.1,"reason":"随便"}`},
+		Model:  &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{Content: `{"route":"explain","confidence":0.1,"reason":"随便"}`}}},
 		Routes: testRoutes(),
 	})
 	if err != nil {
@@ -164,7 +149,7 @@ func TestRouterClassifyNoGateWhenDisabled(t *testing.T) {
 // 置信度越界钳位：LLM 幻觉出 1.5 不能借越界值绕过门槛，负值不被判为必拒。
 func TestRouterClassifyClampsConfidence(t *testing.T) {
 	r, err := New(&Config{
-		Model:  &fakeModel{resp: `{"route":"bug-fix","confidence":1.5,"reason":"幻觉"}`},
+		Model:  &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{Content: `{"route":"bug-fix","confidence":1.5,"reason":"幻觉"}`}}},
 		Routes: testRoutes(), MinConfidence: 0.9,
 	})
 	if err != nil {
@@ -180,7 +165,9 @@ func TestRouterClassifyClampsConfidence(t *testing.T) {
 // 空值丢弃、超长值截断；未配置 Slots 时提示词保持纯选路原样。
 func TestRouterClassifySlots(t *testing.T) {
 	r, err := New(&Config{
-		Model:  &fakeModel{resp: `{"route":"bug-fix","confidence":0.9,"reason":"修代码","slots":{"plan":"true","hack":"x","empty":"  ","long":"` + strings.Repeat("长", 80) + `"}}`},
+		Model: &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{
+			{Content: `{"route":"bug-fix","confidence":0.9,"reason":"修代码","slots":{"plan":"true","hack":"x","empty":"  ","long":"` + strings.Repeat("长", 80) + `"}}`}},
+		},
 		Routes: testRoutes(),
 		Slots: []SlotSpec{
 			{Name: "plan", Description: "是否要方案（true/false）"},
@@ -210,7 +197,7 @@ func TestRouterClassifySlots(t *testing.T) {
 
 // 未配置 Slots：提示词不含槽位段，模型多给的 slots 一律丢弃（Decision.Slots=nil）。
 func TestRouterClassifyNoSlotsConfigDropsReplySlots(t *testing.T) {
-	m := &fakeModel{resp: `{"route":"explain","confidence":0.9,"reason":"解释","slots":{"plan":"true"}}`}
+	m := &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{{Content: `{"route":"explain","confidence":0.9,"reason":"解释","slots":{"plan":"true"}}`}}}
 	r, err := New(&Config{Model: m, Routes: testRoutes()})
 	if err != nil {
 		t.Fatal(err)
@@ -219,10 +206,10 @@ func TestRouterClassifyNoSlotsConfigDropsReplySlots(t *testing.T) {
 	if err != nil || d.Slots != nil {
 		t.Fatalf("未配置槽位应丢弃且回复 slots 不透传: %+v %v", d.Slots, err)
 	}
-	if strings.Contains(m.gotSystemPrompt(), "slots") {
-		t.Fatalf("纯选路提示词不应含槽位段: %q", m.gotSystemPrompt())
+	if prompt := systemPromptOf(m); strings.Contains(prompt, "slots") {
+		t.Fatalf("纯选路提示词不应含槽位段: %q", prompt)
 	}
 }
 
-// gotSystemPrompt 返回分类调用的 system 消息（提示词断言用）。
-func (f *fakeModel) gotSystemPrompt() string { return f.lastSystem }
+// systemPromptOf 返回分类调用的 system 消息（提示词断言用）。
+func systemPromptOf(m *llmtest.Model) string { return m.FirstInput }

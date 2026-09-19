@@ -147,10 +147,10 @@ type retryPolicy struct {
 // （一次）→ Generate → finish_reason=length 转错误并记账 → 按 ClassifyLLMError
 // 决定重试。ctx 取消原样上抛。
 func (c *Client) generateRetry(ctx context.Context, stage string, msgs []*schema.Message, pol retryPolicy) (*schema.Message, error) {
-	// Client 侧已配置记账（OnUsage/Budget）时打标记：obsx TracingHandler 检测到
-	// 标记跳过 callbacks 侧 OnUsage——同一次物理调用不双倍记账
+	// Client 侧已配置记账（OnUsage/Budget）时打标记：NewUsageHandler 检测到
+	// 标记跳过发射——同一次物理调用的 Generate 路径与 callbacks 路径只记一次账
 	if c.OnUsage != nil || c.Budget != nil {
-		ctx = obsx.WithClientAccounting(ctx)
+		ctx = withClientAccounting(ctx)
 	}
 	var lastErr error
 	truncatedBoosted := false

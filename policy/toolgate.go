@@ -28,8 +28,8 @@ func (t auditTool) InvokableRun(ctx context.Context, args string, opts ...tool.O
 	return t.InvokableTool.InvokableRun(ctx, args, opts...)
 }
 
-// WithAuditGate 给工具套操作审计门；gate 为 nil 原样返回（未装配审计门=存量行为）。
-func WithAuditGate(g *Gate, op Op, onAudit func(Op, Decision), t tool.InvokableTool) tool.InvokableTool {
+// AuditGate 给工具套操作审计门；gate 为 nil 原样返回（未装配审计门=存量行为）。
+func AuditGate(g *Gate, op Op, onAudit func(Op, Decision), t tool.InvokableTool) tool.InvokableTool {
 	if g == nil {
 		return t
 	}
