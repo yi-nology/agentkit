@@ -10,8 +10,8 @@ package lineage
 
 import (
 	"sort"
-	"sync"
 
+	"git.enjoye.top/enjoydream/agentkit/hotplug"
 	"git.enjoye.top/enjoydream/agentkit/pack"
 	"git.enjoye.top/enjoydream/agentkit/skill"
 )
@@ -436,10 +436,15 @@ func (l *Lineage) Focus(focus string, depth int) (*LineageFocus, bool) {
 }
 
 // Hub 血缘中枢：reload/Resync 时重建（Set），list API 与 lineage 端点共享读。
+// 快照持有点复用 hotplug.Holder（读无锁整体原子换——与 Plugboard 同一并发纪律）。
 // 零值可用；nil *Hub 的全部方法安全 no-op（测试/未接线路径）。
 type Hub struct {
-	mu        sync.RWMutex
-	cur       *Lineage
+	st hotplug.Holder[hubState]
+}
+
+// hubState 一次装配快照：血缘图 + 契约清单（Set 整体换，消双字段中间态）。
+type hubState struct {
+	lin       *Lineage
 	manifests map[string]*pack.ToolManifest
 }
 
@@ -451,9 +456,7 @@ func (h *Hub) Set(lin *Lineage, manifests map[string]*pack.ToolManifest) *Lineag
 	if h == nil {
 		return lin
 	}
-	h.mu.Lock()
-	h.cur, h.manifests = lin, manifests
-	h.mu.Unlock()
+	h.st.Store(&hubState{lin: lin, manifests: manifests})
 	return lin
 }
 
@@ -462,9 +465,12 @@ func (h *Hub) Resync(lin *Lineage) {
 	if h == nil {
 		return
 	}
-	h.mu.Lock()
-	h.cur = lin
-	h.mu.Unlock()
+	cur := h.st.Load()
+	m := map[string]*pack.ToolManifest(nil)
+	if cur != nil {
+		m = cur.manifests
+	}
+	h.Set(lin, m)
 }
 
 // Get 当前血缘（未 Set 过为 nil，调用方回退现场构建）。
@@ -472,9 +478,10 @@ func (h *Hub) Get() *Lineage {
 	if h == nil {
 		return nil
 	}
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return h.cur
+	if st := h.st.Load(); st != nil {
+		return st.lin
+	}
+	return nil
 }
 
 // Manifests 最近一次 Set 的契约清单（未 Set 过为 nil）。
@@ -482,7 +489,8 @@ func (h *Hub) Manifests() map[string]*pack.ToolManifest {
 	if h == nil {
 		return nil
 	}
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return h.manifests
+	if st := h.st.Load(); st != nil {
+		return st.manifests
+	}
+	return nil
 }

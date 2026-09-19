@@ -43,8 +43,9 @@ type Round struct {
 
 // Result 反思循环结果。
 type Result struct {
-	// Output 末稿（收敛稿或达上限时的最佳稿）。
-	Output string
+	// Text 末稿（收敛稿或达上限时的最佳稿）——与 acpx.RunResult.Text、
+	// agentrun.Event.Text 同词表（Text=模型/agent 最终产出文本）。
+	Text string
 	// Rounds 每轮记录（Round[0] = 初稿）。
 	Rounds []Round
 	// Converged 是否通过 Rubric 收敛（false = 达到轮次上限返回末稿）。
@@ -85,7 +86,7 @@ func Refine(ctx context.Context, cfg *Config) (*Result, error) {
 		})
 		if verdict.Pass {
 			res.Converged = true
-			res.Output = draft
+			res.Text = draft
 			return res, nil
 		}
 		if i == maxIter-1 {
@@ -97,7 +98,7 @@ func Refine(ctx context.Context, cfg *Config) (*Result, error) {
 			return nil, fmt.Errorf("reflection: 第 %d 轮修订失败: %w", i+1, err)
 		}
 	}
-	res.Output = draft
+	res.Text = draft
 	return res, nil
 }
 

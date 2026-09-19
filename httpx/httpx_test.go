@@ -19,13 +19,13 @@ func TestDoJSONSuccess(t *testing.T) {
 		if got := r.Header.Get("Content-Type"); got != "application/json" {
 			t.Errorf("Content-Type = %q", got)
 		}
-	body := make([]byte, r.ContentLength)
-	if _, err := r.Body.Read(body); err != nil && len(body) == 0 {
-		t.Errorf("读请求体: %v", err)
-	}
-	if string(body) != `"hi"` {
-		t.Errorf("Body = %q", body)
-	}
+		body := make([]byte, r.ContentLength)
+		if _, err := r.Body.Read(body); err != nil && len(body) == 0 {
+			t.Errorf("读请求体: %v", err)
+		}
+		if string(body) != `"hi"` {
+			t.Errorf("Body = %q", body)
+		}
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	defer srv.Close()

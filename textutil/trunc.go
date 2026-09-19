@@ -49,3 +49,14 @@ func TruncEllipsis(s string, n int) string {
 	}
 	return out
 }
+
+// TruncNote 截断并追加中文注记后缀（截断留痕语义单源：超限截断的输出带
+// 「…（注记）」尾巴，调用方/模型可感知截断发生）。无需截断时原样返回；
+// 注记以「…（」开头自行拼接，调用方传纯文字（如 "超长行截断"）。
+func TruncNote(s string, n int, note string) string {
+	out, truncated := TruncRunes(s, n)
+	if truncated {
+		return out + "…（" + note + "）"
+	}
+	return out
+}

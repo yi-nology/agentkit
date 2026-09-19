@@ -7,8 +7,19 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
+
+// containsAll 断言 s 依次包含全部子串（strings.Contains 薄封装）。
+func containsAll(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
+}
 
 // 假 Langfuse：验证 BasicAuth、查询参数、分页循环、详情合并（官方 openapi 契约形态）。
 func TestClientFetchBatch(t *testing.T) {
@@ -130,26 +141,4 @@ func TestClientDefaultLimit(t *testing.T) {
 	if len(batch.Traces) != 0 {
 		t.Fatalf("empty project must yield empty batch: %+v", batch)
 	}
-}
-
-func containsAll(s string, subs ...string) bool {
-	for _, sub := range subs {
-		if !stringContains(s, sub) {
-			return false
-		}
-	}
-	return true
-}
-
-func stringContains(s, sub string) bool {
-	return fmt.Sprint(s) != "" && len(s) >= len(sub) && indexOfStr(s, sub) >= 0
-}
-
-func indexOfStr(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }

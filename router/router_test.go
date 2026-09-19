@@ -42,7 +42,7 @@ func TestRouterDoDispatches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, out, err := r.Do(context.Background(), "帮我修这个空指针")
+	d, out, err := r.Run(context.Background(), "帮我修这个空指针")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestRouterFallbackOnLowConfidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, out, err := r.Do(context.Background(), "随便问点啥")
+	_, out, err := r.Run(context.Background(), "随便问点啥")
 	if err != nil || out != "fallback" {
 		t.Fatalf("低置信应走兜底: %q %v", out, err)
 	}
@@ -81,7 +81,7 @@ func TestRouterUnknownRouteNoFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := r.Do(context.Background(), "x"); err == nil {
+	if _, _, err := r.Run(context.Background(), "x"); err == nil {
 		t.Fatal("无兜底且分类非法应报错")
 	}
 }

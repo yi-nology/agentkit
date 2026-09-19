@@ -65,7 +65,7 @@ func parseFrontmatter(content string) (name, desc, ver, body string) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		key, val, ok := cut(line, ':')
+		key, val, ok := strings.Cut(line, ":")
 		if !ok {
 			continue
 		}
@@ -91,15 +91,6 @@ func trimQuoted(v string) string {
 		}
 	}
 	return v
-}
-
-func cut(s string, sep byte) (before, after string, found bool) {
-	for i := 0; i < len(s); i++ {
-		if s[i] == sep {
-			return s[:i], s[i+1:], true
-		}
-	}
-	return s, "", false
 }
 
 // ParseRichFrontmatter 用 yaml 解析 SKILL.md frontmatter（name/description/mode/

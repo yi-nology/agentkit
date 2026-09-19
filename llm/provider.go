@@ -1,6 +1,5 @@
-// Package llm LLM Provider 抽象与多后端支持。
-// 定义 Provider 接口，支持 OpenAI / Anthropic / Ollama 等后端，
-// 以及 FallbackChain 模型降级链。
+// 本文件族是 LLM Provider 抽象与多后端支持（Provider 接口 + FallbackChain
+// 模型降级链）。包级总览见 client.go 的唯一 package doc。
 package llm
 
 import (

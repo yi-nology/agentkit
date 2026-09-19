@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"git.enjoye.top/enjoydream/agentkit/procx"
 	"git.enjoye.top/enjoydream/agentkit/logredact"
+	"git.enjoye.top/enjoydream/agentkit/procx"
 	"git.enjoye.top/enjoydream/ekit/observability/logx"
 	"golang.org/x/sync/singleflight"
 )

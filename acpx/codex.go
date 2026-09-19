@@ -108,8 +108,5 @@ type codexEvent struct {
 		ItemType string `json:"item_type"`
 		Text     string `json:"text"`
 	} `json:"item"`
-	Usage *struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage"`
+	Usage *tokenPair `json:"usage"`
 }

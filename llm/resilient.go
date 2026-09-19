@@ -1,4 +1,4 @@
-// Package llm 弹性 LLM 客户端：多模型降级链 + 熔断 + 预算短路 + 窗口自适应。
+// 本文件族是弹性 LLM 客户端（多模型降级链 + 熔断 + 预算短路 + 窗口自适应）。
 //
 // 降级决策矩阵：
 //   - 429 rate limit   → 不重试同模型，立即切换（不同模型限速池独立）
@@ -7,6 +7,9 @@
 //   - 输出截断          → 提升 MaxTokens 重试，仍败切换
 //   - 401/403          → 不重试同模型，切换（各 Provider 独立 APIKey）
 //   - ctx 取消/预算耗尽 → 全链中止
+//
+// （包级总览见 client.go 的唯一 package doc——Go 只认第一份。）
+
 package llm
 
 import (
@@ -207,12 +210,11 @@ func (r *Resilient) RawModel() model.BaseChatModel { return r.RawModelWithFailov
 // 切换经 OnFallback 观测。
 func (r *Resilient) RawModelWithFailover() model.BaseChatModel {
 	ps := r.chain.Providers
-	models := make([]model.BaseChatModel, len(ps))
-	names := make([]string, len(ps))
+	links := make([]ChainLink, len(ps))
 	for i, p := range ps {
-		models[i], names[i] = p.Model(), p.ModelName()
+		links[i] = ChainLink{Model: p.Model(), Name: p.ModelName()}
 	}
-	fm := NewChainFailoverModel(models, names)
+	fm := NewFailoverModel(links...)
 	fm.OnFailover = func(from, to, _ string) {
 		if r.OnFallback != nil {
 			r.OnFallback(from, to, "raw_model", "切换备选模型")
@@ -348,7 +350,9 @@ func (r *Resilient) tryOneProvider(ctx context.Context, p Provider, stage string
 	c.fitInput(msgsCopy)
 
 	// 单次尝试超时：每次尝试独立计时。不能在循环外创建一次——否则 deadline
-	// 覆盖全部重试 + 退避睡眠，首次尝试耗满后重试全部形同虚设
+	// 覆盖全部重试 + 退避睡眠，首次尝试耗满后重试全部形同虚设。
+	// （JSON 路径 tryOneProviderJSON 是刻意相反的接线——回喂重试共享一个
+	// deadline，语义为"单次完整生成调用"；改任一侧前先读另一侧注释。）
 	attemptTimeout := time.Duration(0)
 	if tp, ok := p.(timeoutProvider); ok {
 		attemptTimeout = tp.AttemptTimeout()
@@ -369,7 +373,8 @@ func (r *Resilient) tryOneProviderJSON(ctx context.Context, p Provider, stage st
 	c.fitInput(msgsCopy)
 
 	// 同 tryOneProvider：超时约束单次尝试，由 Client.GenerateJSON 内部的
-	// 回喂重试循环各自继承该 deadline——语义为"单次完整生成调用"的时限
+	// 回喂重试循环各自继承该 deadline——语义为"单次完整生成调用"的时限。
+	// （与 Generate 路径的"每次尝试独立计时"刻意不同，互链见 tryOneProvider。）
 	attemptCtx := ctx
 	if tp, ok := p.(timeoutProvider); ok {
 		if d := tp.AttemptTimeout(); d > 0 {

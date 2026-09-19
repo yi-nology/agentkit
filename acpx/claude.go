@@ -150,11 +150,8 @@ type claudeEvent struct {
 			Name     string `json:"name"`
 		} `json:"content"`
 	} `json:"message"`
-	Result       string  `json:"result"`
-	IsError      bool    `json:"is_error"`
-	TotalCostUSD float64 `json:"total_cost_usd"`
-	Usage        *struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage"`
+	Result       string     `json:"result"`
+	IsError      bool       `json:"is_error"`
+	TotalCostUSD float64    `json:"total_cost_usd"`
+	Usage        *tokenPair `json:"usage"`
 }

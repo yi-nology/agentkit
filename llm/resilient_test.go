@@ -531,13 +531,14 @@ func TestRawModelWithFailover(t *testing.T) {
 }
 
 func TestChainFailoverModel(t *testing.T) {
-	// NewChainFailoverModel N 模型按序降级；全败上抛末模型错误，切换逐级回调。
+	// NewFailoverModel N 模型按序降级；全败上抛末模型错误，切换逐级回调。
 	m1 := &fakeChatModel{script: []fakeResp{{err: errors.New("m1 down")}}}
 	m2 := &fakeChatModel{script: []fakeResp{{err: errors.New("m2 down")}}}
 	m3 := &fakeChatModel{script: []fakeResp{{content: "m3-ok"}}}
-	fm := NewChainFailoverModel(
-		[]model.BaseChatModel{m1, m2, m3},
-		[]string{"m1", "m2", "m3"})
+	fm := NewFailoverModel(
+		ChainLink{Model: m1, Name: "m1"},
+		ChainLink{Model: m2, Name: "m2"},
+		ChainLink{Model: m3, Name: "m3"})
 	var pairs []string
 	fm.OnFailover = func(from, to, _ string) { pairs = append(pairs, from+"->"+to) }
 
@@ -549,9 +550,9 @@ func TestChainFailoverModel(t *testing.T) {
 		t.Fatalf("链式降级不符: %q %v", out.Content, pairs)
 	}
 	// 全败：上抛末模型错误。
-	fm2 := NewChainFailoverModel(
-		[]model.BaseChatModel{m1, m2},
-		[]string{"m1", "m2"})
+	fm2 := NewFailoverModel(
+		ChainLink{Model: m1, Name: "m1"},
+		ChainLink{Model: m2, Name: "m2"})
 	if _, err := fm2.Generate(context.Background(),
 		[]*schema.Message{schema.UserMessage("q")}); err == nil ||
 		!strings.Contains(err.Error(), "m2 down") {

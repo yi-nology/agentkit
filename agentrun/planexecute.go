@@ -38,8 +38,9 @@ type PlanExecuteConfig struct {
 
 // PlanExecuteResult 运行结果。
 type PlanExecuteResult struct {
-	// Answer 最终答复（Replanner 判定任务完成时产出）。
-	Answer string
+	// Text 最终答复（Replanner 判定任务完成时产出）——与 acpx.RunResult.Text、
+	// reflection.RefineResult.Text 同词表。
+	Text string
 }
 
 // PlanAndExecute 运行 Plan-and-Execute。
@@ -98,7 +99,7 @@ func PlanAndExecute(ctx context.Context, cfg PlanExecuteConfig, goal string) (*P
 	if answer == "" {
 		return nil, fmt.Errorf("agentrun: plan-execute 未产出最终答复（max_steps=%d）", maxSteps)
 	}
-	return &PlanExecuteResult{Answer: answer}, nil
+	return &PlanExecuteResult{Text: answer}, nil
 }
 
 func maxStepsOr(n int) int {

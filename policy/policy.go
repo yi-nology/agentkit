@@ -13,6 +13,7 @@ package policy
 import (
 	"context"
 	"fmt"
+	"slices"
 )
 
 // Mode 会话执行策略模式。
@@ -113,10 +114,10 @@ type Rule struct {
 }
 
 func (r Rule) matches(op Op) bool {
-	if len(r.OpTypes) > 0 && !contains(r.OpTypes, string(op.Type)) {
+	if len(r.OpTypes) > 0 && !slices.Contains(r.OpTypes, string(op.Type)) {
 		return false
 	}
-	if len(r.Tools) > 0 && !contains(r.Tools, op.Tool) {
+	if len(r.Tools) > 0 && !slices.Contains(r.Tools, op.Tool) {
 		return false
 	}
 	if r.MinRisk > 0 && op.Risk < r.MinRisk {
@@ -129,15 +130,6 @@ func (r Rule) matches(op Op) bool {
 		return false
 	}
 	return true
-}
-
-func contains(list []string, v string) bool {
-	for _, s := range list {
-		if s == v {
-			return true
-		}
-	}
-	return false
 }
 
 // Arbiter 灰区仲裁插件（可选）。契约：只允许返回 auto_proceed/need_human/deny；

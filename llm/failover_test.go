@@ -35,7 +35,7 @@ func (s *failoverStub) Stream(_ context.Context, _ []*schema.Message, _ ...einom
 func TestFailoverGenerate(t *testing.T) {
 	primary := &failoverStub{err: errors.New("429 rate limited"), tag: "primary"}
 	fallback := &failoverStub{tag: "fallback"}
-	m := NewFailoverModel(primary, fallback, "main", "backup")
+	m := NewFailoverModel(ChainLink{Model: primary, Name: "main"}, ChainLink{Model: fallback, Name: "backup"})
 
 	var hooked [][2]string
 	m.OnFailover = func(from, to, _ string) { hooked = append(hooked, [2]string{from, to}) }
@@ -64,7 +64,7 @@ func TestFailoverGenerate(t *testing.T) {
 func TestFailoverStream(t *testing.T) {
 	primary := &failoverStub{err: errors.New("conn refused")}
 	fallback := &failoverStub{tag: "backup-stream"}
-	m := NewFailoverModel(primary, fallback, "main", "backup")
+	m := NewFailoverModel(ChainLink{Model: primary, Name: "main"}, ChainLink{Model: fallback, Name: "backup"})
 
 	sr, err := m.Stream(context.Background(), []*schema.Message{{Role: schema.User, Content: "hi"}})
 	if err != nil {
@@ -80,7 +80,7 @@ func TestFailoverStream(t *testing.T) {
 func TestFailoverCtxCancelled(t *testing.T) {
 	primary := &failoverStub{err: context.Canceled, tag: "primary"}
 	fallback := &failoverStub{tag: "fallback"}
-	m := NewFailoverModel(primary, fallback, "main", "backup")
+	m := NewFailoverModel(ChainLink{Model: primary, Name: "main"}, ChainLink{Model: fallback, Name: "backup"})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -94,7 +94,7 @@ func TestFailoverCtxCancelled(t *testing.T) {
 func TestFailoverBothFail(t *testing.T) {
 	primary := &failoverStub{err: errors.New("boom")}
 	fallback := &failoverStub{err: errors.New("backup also down")}
-	m := NewFailoverModel(primary, fallback, "main", "backup")
+	m := NewFailoverModel(ChainLink{Model: primary, Name: "main"}, ChainLink{Model: fallback, Name: "backup"})
 
 	_, err := m.Generate(context.Background(), []*schema.Message{{Role: schema.User, Content: "hi"}})
 	if err == nil || err.Error() != "backup also down" {
@@ -117,7 +117,7 @@ func TestFailoverWithTools(t *testing.T) {
 	p := &withToolsStub{failoverStub: failoverStub{err: errors.New("down")}, toolTag: "p"}
 	f := &withToolsStub{failoverStub: failoverStub{tag: "fb"}}
 
-	m := NewFailoverModel(p, f, "main", "backup")
+	m := NewFailoverModel(ChainLink{Model: p, Name: "main"}, ChainLink{Model: f, Name: "backup"})
 	w, err := m.WithTools(nil)
 	if err != nil {
 		t.Fatalf("WithTools 不应报错: %v", err)
@@ -130,7 +130,7 @@ func TestFailoverWithTools(t *testing.T) {
 
 // TestFailoverWithToolsUnsupported 主/备不支持工具绑定时如实报错。
 func TestFailoverWithToolsUnsupported(t *testing.T) {
-	m := NewFailoverModel(&failoverStub{}, &failoverStub{}, "main", "backup")
+	m := NewFailoverModel(ChainLink{Model: &failoverStub{}, Name: "main"}, ChainLink{Model: &failoverStub{}, Name: "backup"})
 	if _, err := m.WithTools(nil); err == nil {
 		t.Fatal("非 ToolCallingChatModel 主/备应报错")
 	}

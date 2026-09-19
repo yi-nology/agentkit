@@ -57,13 +57,13 @@ func TestLocalRetrieve(t *testing.T) {
 	// 结果应包含编码规范相关内容（"函数"、"命名"、"代码"等）
 	found := false
 	for _, c := range chunks {
-		if contains(c.Content, "函数") || contains(c.Content, "命名") || contains(c.Content, "编码") {
+		if strings.Contains(c.Content, "函数") || strings.Contains(c.Content, "命名") || strings.Contains(c.Content, "编码") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("Top 结果应包含编码规范相关内容，得到: %q", chunks[0].Content[:testMin(80, len(chunks[0].Content))])
+		t.Fatalf("Top 结果应包含编码规范相关内容，得到: %q", chunks[0].Content[:min(80, len(chunks[0].Content))])
 	}
 
 	// 检索 "ArgoCD 部署"
@@ -76,7 +76,7 @@ func TestLocalRetrieve(t *testing.T) {
 	}
 	found2 := false
 	for _, c := range chunks2 {
-		if contains(c.Content, "ArgoCD") || contains(c.Content, "GitOps") {
+		if strings.Contains(c.Content, "ArgoCD") || strings.Contains(c.Content, "GitOps") {
 			found2 = true
 			break
 		}
@@ -151,7 +151,7 @@ func TestLocalRescan(t *testing.T) {
 	chunks2, _ := local.Retrieve(context.Background(), "部署", 5, nil)
 	found := false
 	for _, c := range chunks2 {
-		if contains(c.Content, "部署") {
+		if strings.Contains(c.Content, "部署") {
 			found = true
 			break
 		}
@@ -213,7 +213,7 @@ func main() {
 	// 代码块应完整保留在某个 chunk 中
 	found := false
 	for _, c := range chunks {
-		if containsSubstr(c.content, "fmt.Println") && containsSubstr(c.content, "```") {
+		if strings.Contains(c.content, "fmt.Println") && strings.Contains(c.content, "```") {
 			found = true
 			break
 		}
@@ -277,26 +277,6 @@ func TestLocalRescanNewContent(t *testing.T) {
 	if len(chunks2) == 0 {
 		t.Fatal("重扫描后应保留内容")
 	}
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsSubstr(s, sub))
-}
-
-func containsSubstr(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
-}
-
-func testMin(a, b int) int { // 不遮蔽内建 min（否则测试与生产各解析到不同实现）
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func TestChunkMarkdownHardCap(t *testing.T) {

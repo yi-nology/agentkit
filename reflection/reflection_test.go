@@ -48,8 +48,8 @@ func TestRefineConvergesSecondRound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Converged || res.Output != "修订稿代码" {
-		t.Fatalf("应收敛到修订稿: converged=%v output=%q", res.Converged, res.Output)
+	if !res.Converged || res.Text != "修订稿代码" {
+		t.Fatalf("应收敛到修订稿: converged=%v output=%q", res.Converged, res.Text)
 	}
 	if len(res.Rounds) != 2 {
 		t.Fatalf("应有两轮记录: %d", len(res.Rounds))
@@ -75,8 +75,8 @@ func TestRefineMaxIterations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Converged || res.Output != "d3" || len(res.Rounds) != 3 {
-		t.Fatalf("达上限应返回末稿: converged=%v output=%q rounds=%d", res.Converged, res.Output, len(res.Rounds))
+	if res.Converged || res.Text != "d3" || len(res.Rounds) != 3 {
+		t.Fatalf("达上限应返回末稿: converged=%v output=%q rounds=%d", res.Converged, res.Text, len(res.Rounds))
 	}
 }
 

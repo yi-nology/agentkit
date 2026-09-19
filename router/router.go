@@ -183,8 +183,10 @@ func sanitizeSlots(in map[string]string, configured map[string]bool) map[string]
 	return out
 }
 
-// Do 分类 + 分发执行：门槛未过（Classify 报错）时走 Fallback 处理链。
-func (r *Router) Do(ctx context.Context, input string) (Decision, string, error) {
+// Run 分类 + 分发执行：门槛未过（Classify 报错）时走 Fallback 处理链。
+// （v0.10.10 自 Do 改名——全仓主执行方法词表统一为 Run，与 acpx.Registry.Run、
+// agentrun 同词表。）
+func (r *Router) Run(ctx context.Context, input string) (Decision, string, error) {
 	d, err := r.Classify(ctx, input)
 	if err != nil {
 		if r.fb != nil {

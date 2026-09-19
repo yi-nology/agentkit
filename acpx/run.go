@@ -36,6 +36,13 @@ func parseJSONOut(stdout string, out any) error {
 	return json.Unmarshal([]byte(candidate), out)
 }
 
+// tokenPair 事件流 usage 的 input/output token 对（claude/codex 同一 JSON 形态；
+// mimo/opencode 键名不同，各自内联）。
+type tokenPair struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}
+
 // emitText 流式文本事件的 nil 安全发送（回调在 stdout 读取 goroutine 中同步执行，
 // 不得阻塞/panic——见 RunRequest.OnEvent 契约）。
 func emitText(req RunRequest, text, line string) {

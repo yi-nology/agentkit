@@ -61,9 +61,7 @@ func buildAsTool(svc KnowledgeService) tool.BaseTool {
 			var b strings.Builder
 			for _, c := range chunks {
 				content := c.Content
-				if truncated, tr := textutil.TruncRunes(content, toolSnippetRunes); tr {
-					content = truncated + "…（截断）"
-				}
+				content = textutil.TruncNote(content, toolSnippetRunes, "截断")
 				heading := c.Metadata["heading"]
 				file := c.Metadata["file"]
 				if heading != "" {

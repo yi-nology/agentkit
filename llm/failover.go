@@ -33,20 +33,25 @@ type FailoverModel struct {
 // 编译期断言：ADK 绑工具经 ToolCallingChatModel.WithTools，装饰器必须可派生。
 var _ einomodel.ToolCallingChatModel = (*FailoverModel)(nil)
 
-// NewFailoverModel 主备模型 failover 装饰（二元便捷构造）。
-func NewFailoverModel(primary, fallback einomodel.BaseChatModel, primaryName, fallbackName string) *FailoverModel {
-	return NewChainFailoverModel([]einomodel.BaseChatModel{primary, fallback},
-		[]string{primaryName, fallbackName})
+// ChainLink failover 链单链节：模型 + 观测名（结构化链节消平行切片错位——
+// names[i] 对不上 models[i] 是装配期静默事故）。
+type ChainLink struct {
+	Model einomodel.BaseChatModel
+	Name  string
 }
 
-// NewChainFailoverModel N 模型链按序 failover 装饰。models/names 等长且非空；
-// nil 模型会在被尝试到时报"model 为 nil"错误并继续下一个。
-func NewChainFailoverModel(models []einomodel.BaseChatModel, names []string) *FailoverModel {
-	if len(models) == 0 || len(models) != len(names) {
+// NewFailoverModel 模型链按序 failover 装饰（至少一节；主备二元传两节即可）。
+// nil 模型会在被尝试到时报"failover 链含 nil 模型"错误并继续下一个。
+func NewFailoverModel(links ...ChainLink) *FailoverModel {
+	if len(links) == 0 {
 		return &FailoverModel{names: []string{"invalid"}}
 	}
-	return &FailoverModel{models: append([]einomodel.BaseChatModel(nil), models...),
-		names: append([]string(nil), names...)}
+	m := &FailoverModel{models: make([]einomodel.BaseChatModel, len(links)),
+		names: make([]string, len(links))}
+	for i, l := range links {
+		m.models[i], m.names[i] = l.Model, l.Name
+	}
+	return m
 }
 
 // WithTools 工具绑定转发：链上各模型分别派生带工具的实例后重新包装（不可变派生，

@@ -1,9 +1,13 @@
-// Package llm LLM 客户端薄封装（eino BaseChatModel）：
-//   - 生成失败：指数退避 + jitter 重试，429 退避下限提高
-//   - JSON 输出：解析失败带错误信息回喂重试
-//   - token 记账：优先读响应 usage，缺省按 chars/4 估算
-//   - 输入自守恒：fitInput 超限截断最长 user 消息留痕
-//   - 限速：可选 token bucket 限速器
+// Package llm LLM 客户端栈（eino BaseChatModel 之上），本包唯一 package doc。
+// 文件族分工：
+//   - client/errors/config：客户端薄封装——生成失败指数退避+jitter 重试（429 退避
+//     下限提高）、JSON 输出解析失败带错误回喂重试、token 记账（优先响应 usage，
+//     缺省 chars/4 估算）、fitInput 输入自守恒、可选 token bucket 限速
+//   - provider/openai：Provider 抽象与多后端 + FallbackChain 降级链
+//   - resilient/failover：弹性客户端（降级矩阵/熔断/预算短路）+ 裸模型路径的
+//     FailoverModel 装饰器
+//   - budget/cost/usage：预算、成本、完整用量采集三套记账
+//   - stage_router：按业务阶段路由模型
 package llm
 
 import (
@@ -18,6 +22,7 @@ import (
 
 	"git.enjoye.top/enjoydream/agentkit/jsonrepair"
 	"git.enjoye.top/enjoydream/agentkit/obsx"
+	"git.enjoye.top/enjoydream/agentkit/textutil"
 )
 
 // TokenAccountant token 记账接口（调用方可接预算累计器或 Prometheus）。
@@ -290,8 +295,7 @@ func (c *Client) fitInput(msgs []*schema.Message) {
 	if keep < 0 {
 		keep = 0
 	}
-	r := []rune(msgs[longest].Content)
 	cloned := *msgs[longest]
-	cloned.Content = string(r[:keep]) + "\n…（输入超出模型窗口预算，已截断留痕）"
+	cloned.Content = "\n" + textutil.TruncNote(msgs[longest].Content, keep, "输入超出模型窗口预算，已截断留痕")
 	msgs[longest] = &cloned
 }

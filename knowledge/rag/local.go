@@ -15,6 +15,7 @@ import (
 
 	"github.com/cloudwego/eino/components/tool"
 
+	"git.enjoye.top/enjoydream/agentkit/textutil"
 	"git.enjoye.top/enjoydream/ekit/observability/logx"
 )
 
@@ -277,9 +278,8 @@ func chunkMarkdown(text string) []mdChunk {
 			if len(cur) > 0 {
 				flush()
 			}
-			runes := []rune(line)
 			chunks = append(chunks, mdChunk{heading: heading,
-				content: string(runes[:maxChunkRunes]) + "…（超长行截断）"})
+				content: textutil.TruncNote(line, maxChunkRunes, "超长行截断")})
 			continue
 		}
 		cur = append(cur, line)

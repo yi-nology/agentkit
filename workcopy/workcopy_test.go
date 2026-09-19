@@ -260,7 +260,7 @@ func TestScrub(t *testing.T) {
 	// 路径的实际载体形态：git 错误里的 clone URL 含 token，必须被抹除。
 	msg := "fatal: unable to access 'https://oauth2:secret123@host/repo.git/'"
 	out := logredact.RedactSecrets(msg, "secret123")
-	if containsStr(out, "secret123") {
+	if strings.Contains(out, "secret123") {
 		t.Fatalf("token 未脱敏: %s", out)
 	}
 }
@@ -292,17 +292,6 @@ func TestWorktreeKeyString(t *testing.T) {
 	if k.String() != "gitea/o/r#1@abc" {
 		t.Fatalf("String() = %q", k.String())
 	}
-}
-
-func containsStr(s, sub string) bool {
-	return len(s) >= len(sub) && (func() bool {
-		for i := 0; i <= len(s)-len(sub); i++ {
-			if s[i:i+len(sub)] == sub {
-				return true
-			}
-		}
-		return false
-	})()
 }
 
 func TestSweepKeepsInUseWorktree(t *testing.T) {

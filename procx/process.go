@@ -148,7 +148,7 @@ func execCLI(ctx context.Context, dir string, argv []string, env []string,
 }
 
 // RunRequest 独立进程执行请求：只要进程组托管纪律的调用方使用
-//（acpx 各 CLI agent 适配器经 acpx.runCLI 复用同一纪律）。
+// （acpx 各 CLI agent 适配器经 acpx.runCLI 复用同一纪律）。
 type RunRequest struct {
 	// Argv 可执行 + 参数（argv 直传，无 shell、无注入面）。
 	Argv []string
