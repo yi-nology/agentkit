@@ -196,8 +196,30 @@ func (r *Resilient) PrimaryModel() model.BaseChatModel {
 	return nil
 }
 
-// RawModel Generator 接口实现：返回主模型。
-func (r *Resilient) RawModel() model.BaseChatModel { return r.PrimaryModel() }
+// RawModel Generator 接口实现：等价 RawModelWithFailover()——裸模型路径同样获得
+// 链式降级（v0.10.9 起不再返回未装饰的主模型；要主模型裸实例用 PrimaryModel）。
+func (r *Resilient) RawModel() model.BaseChatModel { return r.RawModelWithFailover() }
+
+// RawModelWithFailover 把整条 Provider 链包装成一个带 failover 的 BaseChatModel：
+// ReAct 等裸模型路径按链序降级，不再静默丢弃降级链（此前 RawModel 返回未装饰的
+// 主模型——链/熔断只覆盖 Generate/GenerateJSON，两条路径两套命运）。语义与
+// FailoverModel 一致：薄切换（无熔断/限速/预算/同模型重试），全败上抛末个模型错误，
+// 切换经 OnFallback 观测。
+func (r *Resilient) RawModelWithFailover() model.BaseChatModel {
+	ps := r.chain.Providers
+	models := make([]model.BaseChatModel, len(ps))
+	names := make([]string, len(ps))
+	for i, p := range ps {
+		models[i], names[i] = p.Model(), p.ModelName()
+	}
+	fm := NewChainFailoverModel(models, names)
+	fm.OnFailover = func(from, to, _ string) {
+		if r.OnFallback != nil {
+			r.OnFallback(from, to, "raw_model", "切换备选模型")
+		}
+	}
+	return fm
+}
 
 // UsedTokens Generator 接口实现：返回预算累计消耗。
 func (r *Resilient) UsedTokens() int {
@@ -316,7 +338,8 @@ func (r *Resilient) walkChain(ctx context.Context, stage string, try func(p Prov
 }
 
 // tryOneProvider 单 Provider 内部：复制 msgs（防 fitInput 污染调用方）→
-// 按该 Provider 窗口裁剪 → 重试循环（每次尝试独立受 AttemptTimeout 约束）。
+// 按该 Provider 窗口裁剪 → 委托 Client.generateRetry 单模型重试骨架
+// （每次尝试独立受 AttemptTimeout 约束；chainFallback——上层链有备选模型）。
 func (r *Resilient) tryOneProvider(ctx context.Context, p Provider, stage string, msgs []*schema.Message) (*schema.Message, error) {
 	// 复制切片：fitInput 会原地替换元素，不能污染调用方的消息
 	msgsCopy := copyMsgs(msgs)
@@ -330,52 +353,13 @@ func (r *Resilient) tryOneProvider(ctx context.Context, p Provider, stage string
 	if tp, ok := p.(timeoutProvider); ok {
 		attemptTimeout = tp.AttemptTimeout()
 	}
-
-	maxRetries := r.cfg.RetriesPerModel + 1
-	var lastErr error
-	truncatedBoosted := false
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if attempt > 0 {
-			// 同模型重试仅限"值得在同模型上重试"的错误：
-			// 429（限速池独立）与 context 超限/401（确定性失败）直接跳出，切换下一模型
-			if !sameModelRetryable(lastErr) {
-				break
-			}
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(backoffDelay(attempt, r.cfg.BaseDelay, r.cfg.MaxDelay, lastErr)):
-			}
-		}
-		if r.Limiter != nil {
-			if err := r.Limiter.Wait(ctx); err != nil {
-				return nil, fmt.Errorf("llm: %s 限速等待取消: %w", stage, err)
-			}
-		}
-		attemptCtx := ctx
-		if attemptTimeout > 0 {
-			var cancel context.CancelFunc
-			attemptCtx, cancel = context.WithTimeout(ctx, attemptTimeout)
-			defer cancel()
-		}
-		var opts []model.Option
-		if IsTruncatedError(lastErr) && c.MaxOutputTokens > 0 && !truncatedBoosted {
-			opts = append(opts, model.WithMaxTokens(c.MaxOutputTokens*3/2))
-			truncatedBoosted = true
-		}
-		out, err := c.Model.Generate(attemptCtx, msgsCopy, opts...)
-		if err == nil {
-			if out.ResponseMeta != nil && out.ResponseMeta.FinishReason == "length" {
-				c.account(stage, msgsCopy, out)
-				err = fmt.Errorf("llm: %s 输出被截断（finish_reason=length）", stage)
-			} else {
-				c.account(stage, msgsCopy, out)
-				return out, nil
-			}
-		}
-		lastErr = err
-	}
-	return nil, lastErr
+	return c.generateRetry(ctx, stage, msgsCopy, retryPolicy{
+		maxAttempts:    r.cfg.RetriesPerModel + 1,
+		base:           r.cfg.BaseDelay,
+		ceil:           r.cfg.MaxDelay,
+		chainFallback:  true,
+		attemptTimeout: attemptTimeout,
+	})
 }
 
 // tryOneProviderJSON 单 Provider 的 JSON 生成（复用 Client.GenerateJSON 的回喂重试）。
@@ -405,14 +389,18 @@ func (r *Resilient) buildClient(p Provider) *Client {
 	c.MaxOutputTokens = p.MaxOutputTokens()
 	c.Limiter = r.Limiter
 	c.MaxRetries = 1 // 重试由 Resilient 统一控制，Client 内不再重试
-	costPer1K := [2]float64{}
-	costPer1K[0], costPer1K[1] = p.CostPer1KTokens()
-	c.OnUsage = func(stage string, prompt, completion int) {
-		if r.OnUsage != nil {
-			r.OnUsage(p.ModelName(), stage, prompt, completion)
-		}
-		if r.Tracker != nil {
-			r.Tracker.Record(p.ModelName(), stage, prompt, completion, costPer1K)
+	// 仅在确有记账出口时设置 OnUsage：恒设置会让 generateRetry 的 Client 记账
+	// 标记误跳过 callbacks 侧的 Options.OnUsage（调用方可能只配了 callbacks）
+	if r.OnUsage != nil || r.Tracker != nil {
+		costPer1K := [2]float64{}
+		costPer1K[0], costPer1K[1] = p.CostPer1KTokens()
+		c.OnUsage = func(stage string, prompt, completion int) {
+			if r.OnUsage != nil {
+				r.OnUsage(p.ModelName(), stage, prompt, completion)
+			}
+			if r.Tracker != nil {
+				r.Tracker.Record(p.ModelName(), stage, prompt, completion, costPer1K)
+			}
 		}
 	}
 	return c

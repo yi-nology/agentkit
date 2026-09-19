@@ -103,7 +103,9 @@ func (s *Searxng) AsTool() tool.BaseTool {
 		func(ctx context.Context, in *searchIn) (string, error) {
 			results, err := s.Search(ctx, in.Query, s.DefaultTopK)
 			if err != nil {
-				return "", err
+				// 执行失败返回模型可读文本（agent 可自行降级/换路），不上抛框架
+				// 错误通道中止整个 agent 运行——与 rag.AsTool 同一错误契约
+				return "检索失败：" + err.Error() + "。可稍后重试或改用已有信息作答。", nil
 			}
 			if len(results) == 0 {
 				return "未检索到相关公开资料。", nil

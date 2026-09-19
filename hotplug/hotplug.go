@@ -3,7 +3,10 @@
 // 运行中请求继续用旧快照跑完，新请求即时用新快照。
 package hotplug
 
-import "sync/atomic"
+import (
+	"sort"
+	"sync/atomic"
+)
 
 // Plugboard 启停视图（登记 id → 是否启用）。并发安全；nil 指针=全启用
 // （未接插拔的测试/装配路径零成本兼容）。未登记 id 视为启用——注册表校验才是
@@ -41,7 +44,7 @@ func (p *Plugboard) Enabled(id string) bool {
 	return true
 }
 
-// Disabled 被禁 id 列表。
+// Disabled 被禁 id 列表（字典序——可观测面输出稳定，不随 map 迭代漂移）。
 func (p *Plugboard) Disabled() []string {
 	if p == nil {
 		return nil
@@ -54,6 +57,7 @@ func (p *Plugboard) Disabled() []string {
 			}
 		}
 	}
+	sort.Strings(out)
 	return out
 }
 

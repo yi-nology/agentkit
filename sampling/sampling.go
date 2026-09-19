@@ -6,7 +6,36 @@
 //
 // 典型用法：审查/生成类 agent 对高危输入 opt-in N 采样，聚簇后 Count≥2 的
 // 簇升级呈现权重、孤立单现的低权重条目标注降权提示；全部簇保留（漏报防线）。
+// Fingerprint/NormalizeComment 提供「file+规范化文本」精确指纹通道的 canonical
+// 实现（v0.10.9 自 severity 迁入——指纹是聚簇签名的自然组成部分）。
 package sampling
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
+	"unicode"
+)
+
+// Fingerprint 精确指纹：规范化评论文本哈希 + file（SHA256 前 16 字节 hex）。
+// 行号不入指纹；同一指纹跨轮次即「同一问题」。常用作 Aggregate 的签名通道。
+func Fingerprint(file, comment string) string {
+	sum := sha256.Sum256([]byte(file + "\x1f" + NormalizeComment(comment)))
+	return hex.EncodeToString(sum[:16])
+}
+
+// NormalizeComment 规范化：全小写、去所有空白与标点/符号差异。
+func NormalizeComment(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range strings.ToLower(s) {
+		if unicode.IsSpace(r) || unicode.IsPunct(r) || unicode.IsSymbol(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
 
 // Group 一簇相互等价的采样结果。
 type Group[T any] struct {
@@ -36,8 +65,11 @@ func Aggregate[T any](items []T, signature func(T) []string, eq func(a, b T) boo
 	var groups []*Group[T]
 	byChannel := map[string]*Group[T]{}
 	for _, item := range items {
+		// 签名每 item 只算一次（匹配轮与建簇轮共用）——签名函数可能昂贵或非纯，
+		// 两次调用可能返回不同通道集导致注册与匹配不一致
+		channels := signature(item)
 		joined := false
-		for _, ch := range signature(item) {
+		for _, ch := range channels {
 			g, dup := byChannel[ch]
 			if !dup || !eq(g.Representative, item) {
 				continue // 未命中或签名命中但不等价（如行号不相容）→ 试下一通道
@@ -50,9 +82,9 @@ func Aggregate[T any](items []T, signature func(T) []string, eq func(a, b T) boo
 		if joined {
 			continue
 		}
-		g := &Group[T]{Representative: item, Signature: signature(item), Items: []T{item}, Count: 1}
+		g := &Group[T]{Representative: item, Signature: channels, Items: []T{item}, Count: 1}
 		groups = append(groups, g)
-		for _, ch := range g.Signature {
+		for _, ch := range channels {
 			// 首见者占位，后到者不抢通道（归属以首见为准）
 			if _, seen := byChannel[ch]; !seen {
 				byChannel[ch] = g

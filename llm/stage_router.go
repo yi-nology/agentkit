@@ -35,8 +35,13 @@ type StageRouter struct {
 	routes []stageRoute // 注册序；匹配时精确优先，其后最长前缀优先
 }
 
-// NewStageRouter 创建阶段路由器（def = 未命中阶段的缺省 Generator，不可为 nil）。
+// NewStageRouter 创建阶段路由器（def = 未命中阶段的缺省 Generator）。
+// def 为 nil panic——构造期配置错误尽早暴露（与 toolprior.Table.Add 同纪律），
+// 运行期才炸的 nil 难排查。
 func NewStageRouter(def Generator) *StageRouter {
+	if def == nil {
+		panic("llm: NewStageRouter def 不能为 nil")
+	}
 	return &StageRouter{def: def}
 }
 

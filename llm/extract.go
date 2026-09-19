@@ -1,20 +1,17 @@
 package llm
 
-import "strings"
+import (
+	"strings"
 
-// ExtractJSON 从模型输出中提取 JSON 文本：剥 ``` 围栏、截取首个 {/[ 到末个 }/]。
-// 快路径切片，不做语法修复——半损坏输出的宽容解析归 llmjson/jsonrepair。
+	"git.enjoye.top/enjoydream/agentkit/textutil"
+)
+
+// ExtractJSON 从模型输出中提取 JSON 文本：剥 ``` 围栏（语义单源
+// textutil.StripFence——取第一个围栏块）、截取首个 {/[ 到末个 }/]。
+// 快路径切片，不做语法修复——半损坏输出的宽容解析归 llmjson/jsonrepair；
+// 两者围栏语义一致，llmjson 回退链不会静默换目标块。
 func ExtractJSON(s string) string {
-	s = strings.TrimSpace(s)
-	if strings.HasPrefix(s, "```") {
-		if i := strings.Index(s, "\n"); i >= 0 {
-			s = s[i+1:]
-		}
-		if j := strings.LastIndex(s, "```"); j >= 0 {
-			s = s[:j]
-		}
-		s = strings.TrimSpace(s)
-	}
+	s = textutil.StripFence(s)
 	start := strings.IndexAny(s, "{[")
 	if start < 0 {
 		return s

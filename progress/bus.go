@@ -49,10 +49,15 @@ func (b *Bus[T]) Publish(e T) {
 }
 
 // Subscribe 注册订阅者；返回取消函数（ctx 结束也会自动取消）。
+// nil Bus 安全：返回永不产出的 nil channel 与 no-op cancel（与 Publish/Dropped
+// 同一 nil 契约）。
 // cancel 与 ctx 结束双向收口：任一发生，监听 goroutine 都会退出——
 // 此前手动 cancel 只删 channel 不唤醒监听 goroutine，ctx 为 Background 时
 // 每个订阅者永久泄漏一个 goroutine + 一条残留 channel。
 func (b *Bus[T]) Subscribe(ctx context.Context) (<-chan T, func()) {
+	if b == nil {
+		return nil, func() {}
+	}
 	ch := make(chan T, 64)
 	b.mu.Lock()
 	b.subs[ch] = struct{}{}

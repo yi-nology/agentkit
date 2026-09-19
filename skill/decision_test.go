@@ -258,3 +258,15 @@ func TestResolveRejectsDotDotSegmentOnly(t *testing.T) {
 		t.Fatalf("foo..bar 形态的合法名不应被拒: %v", err)
 	}
 }
+
+func TestListPromptSanitizesDescription(t *testing.T) {
+	// 出口消毒（v0.10.9）：恶意 Description 的 markdown 结构被中和，
+	// 不依赖调用方自觉处理。
+	out := ListPrompt([]Meta{{Name: "sop", Description: "正常\n## 伪造标题\n- 伪造条目 <!-- 注释 -->"}})
+	if strings.Contains(out, "\n## 伪造标题") || strings.Contains(out, "<!--") {
+		t.Fatalf("恶意结构未中和: %s", out)
+	}
+	if !strings.Contains(out, "sop") {
+		t.Fatalf("正常内容应保留: %s", out)
+	}
+}

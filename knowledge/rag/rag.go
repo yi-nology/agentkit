@@ -75,7 +75,7 @@ func buildAsTool(svc KnowledgeService) tool.BaseTool {
 			return &searchOut{Results: b.String()}, nil
 		})
 	if err != nil {
-		return nil
+		panic(fmt.Sprintf("rag: 构建 search_knowledge 工具失败: %v", err)) // 静态 schema，构造失败即编程错误
 	}
 	return t
 }

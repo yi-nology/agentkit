@@ -40,6 +40,15 @@ func New(trip int, cooldown time.Duration) *Breaker {
 	return &Breaker{trip: trip, cooldown: cooldown, probeTimeout: DefaultProbeTimeout}
 }
 
+// WithProbeTimeout 构建期配置半开探测时限（链式；与 Breakers.WithProbeTimeout
+// 对齐——独立使用 Breaker 的调用方不再被钉死在 DefaultProbeTimeout）。
+func (b *Breaker) WithProbeTimeout(d time.Duration) *Breaker {
+	if d > 0 {
+		b.probeTimeout = d
+	}
+	return b
+}
+
 // Allow 返回是否放行；半开时仅放行一个探测请求。
 // 调用契约：返回 true 后必须恰好配对一次 Success、Failure 或 Abandon（探测
 // 失联超过 DefaultProbeTimeout 后本方法会放行新探测，不再无限等待旧探测）。
@@ -180,5 +189,14 @@ func (bs *Breakers) Failure(name string) { bs.get(name).Failure(bs.Now()) }
 // Abandon 按 key 放弃在途半开探测（取消/终止语义，不计失败）。
 func (bs *Breakers) Abandon(name string) { bs.get(name).Abandon() }
 
-// Opened 按 key 判定是否熔断中。
-func (bs *Breakers) Opened(name string) bool { return bs.get(name).Opened(bs.Now()) }
+// Opened 按 key 判定是否熔断中。只读——未登记的 key 返回 false，不为查询
+// 创建状态条目（监控轮询不该撑大内部 map；Allow/Success/Failure 才是登记时机）。
+func (bs *Breakers) Opened(name string) bool {
+	bs.mu.Lock()
+	b, ok := bs.breakers[name]
+	bs.mu.Unlock()
+	if !ok {
+		return false
+	}
+	return b.Opened(bs.Now())
+}

@@ -8,6 +8,8 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
 	"github.com/cloudwego/eino/schema"
+
+	"git.enjoye.top/enjoydream/agentkit/fence"
 )
 
 // ---------- 决策使用：use_skill 工具（渐进披露） ----------
@@ -74,9 +76,9 @@ func AsSkillTool(p Provider, allowed []string) (tool.BaseTool, error) {
 }
 
 // ListPrompt 渲染可用 skill 清单（注入提示词的决策依据，不含正文）。
-// 注意：Name/Title/Description 来自仓库内 markdown，属半可信内容——
-// 恶意描述可夹带提示词注入指令；skill 目录来源不可控时，调用方应先经
-// safejson.EscapeUntrusted 处理（或收敛目录写权限）。
+// Description 经 fence.EscapeUntrusted 中和（markdown 结构/HTML 注释边界）——
+// Name/Title/Description 来自仓库内 markdown，属半可信内容，恶意描述可夹带
+// 提示词注入指令；消毒在出口统一兜底，不依赖调用方自觉（目录写权限仍应收敛）。
 // 无 skill 返回空串；有则渲染为 markdown 列表。
 // 加载名（Name）作为加粗主词——模型回填 use_skill 的名称必须与它一致；
 // 展示名（Title，frontmatter name）仅作括注。
@@ -87,7 +89,7 @@ func ListPrompt(metas []Meta) string {
 	var b strings.Builder
 	b.WriteString("可用 skill 清单（如任务相关，用 use_skill 工具加载全文）：\n")
 	for _, m := range metas {
-		desc := m.Description
+		desc := fence.EscapeUntrusted(m.Description)
 		if desc == "" {
 			desc = "（无描述）"
 		}

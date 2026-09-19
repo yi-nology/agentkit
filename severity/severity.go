@@ -1,12 +1,10 @@
-// Package severity 严重级别归一化、指纹、glob 匹配等通用工具函数。零外部依赖。
+// Package severity 严重级别词表与归一：high/medium/low 词表 + 外部审查专家
+// 常用别名（P0/fatal/nit…）折叠。零外部依赖。
+// （v0.10.9 职责收敛：GlobMatch 迁 textutil、Fingerprint/NormalizeComment 迁
+// sampling——本包只回答「严重级别是什么、多严重」。）
 package severity
 
-import (
-	"crypto/sha256"
-	"encoding/hex"
-	"strings"
-	"unicode"
-)
+import "strings"
 
 // 严重级别词表。
 const (
@@ -73,24 +71,4 @@ func Higher(a, b string) string {
 // Valid 是否属于钉死词表。
 func Valid(s string) bool {
 	return s == High || s == Medium || s == Low
-}
-
-// Fingerprint 精确指纹：规范化评论文本哈希 + file。
-// 行号不入指纹（±2 容差仅作匹配辅助）；同一指纹跨轮次即"同一问题"。
-func Fingerprint(file, comment string) string {
-	sum := sha256.Sum256([]byte(file + "\x1f" + NormalizeComment(comment)))
-	return hex.EncodeToString(sum[:16])
-}
-
-// NormalizeComment 规范化：全小写、去所有空白与标点/符号差异。
-func NormalizeComment(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range strings.ToLower(s) {
-		if unicode.IsSpace(r) || unicode.IsPunct(r) || unicode.IsSymbol(r) {
-			continue
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
 }

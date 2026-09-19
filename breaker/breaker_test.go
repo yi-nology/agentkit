@@ -226,3 +226,29 @@ func TestWithProbeTimeout(t *testing.T) {
 		t.Fatal("NewBreakers 必须注入缺省时钟源")
 	}
 }
+
+func TestBreakersOpenedReadOnly(t *testing.T) {
+	// 查询不带副作用（v0.10.9）：Opened 对未登记 key 不创建状态条目，
+	// 监控轮询不撑大内部 map。
+	bs := NewBreakers(2, time.Minute)
+	if bs.Opened("never-used") {
+		t.Fatal("未登记 key 应返回 false")
+	}
+	bs.mu.Lock()
+	_, exists := bs.breakers["never-used"]
+	bs.mu.Unlock()
+	if exists {
+		t.Fatal("Opened 查询不得登记新条目")
+	}
+}
+
+func TestBreakerWithProbeTimeout(t *testing.T) {
+	// 独立 Breaker 的探测时限可配（v0.10.9，与 Breakers.WithProbeTimeout 对齐）。
+	b := New(2, time.Minute).WithProbeTimeout(7 * time.Second)
+	if b.probeTimeout != 7*time.Second {
+		t.Fatalf("probeTimeout = %v, want 7s", b.probeTimeout)
+	}
+	if New(2, time.Minute).WithProbeTimeout(0).probeTimeout != DefaultProbeTimeout {
+		t.Fatal("非正时限应保持缺省")
+	}
+}

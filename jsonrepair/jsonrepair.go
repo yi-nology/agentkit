@@ -9,22 +9,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"git.enjoye.top/enjoydream/agentkit/textutil"
 )
 
 var (
-	fenceRe         = regexp.MustCompile("(?s)```(?:json)?\\s*(.*?)\\s*```")
 	invalidEscapeRe = regexp.MustCompile(`\\([^"\\/bfnrtu])`)
 	trailingCommaRe = regexp.MustCompile(`,\s*([}\]])`)
 )
-
-// StripFence 剥离 ```json 栅栏；无栅栏原样 TrimSpace 返回。
-func StripFence(s string) string {
-	trimmed := strings.TrimSpace(s)
-	if m := fenceRe.FindStringSubmatch(trimmed); m != nil {
-		return strings.TrimSpace(m[1])
-	}
-	return trimmed
-}
 
 // ExtractObject 提取文本中第一个平衡的 JSON 对象（字符串字面量感知；
 // 未闭合则返回剩余文本由 Repair 补全括号）。无对象返回 ""。
@@ -175,21 +167,18 @@ func walkNormalize(m map[string]any, schema *Schema) {
 				m[k] = flat
 			}
 		case schema.ListKeys[k]:
-			if _, isArr := v.([]any); !isArr {
-				if s, ok := coerceString(v); ok {
-					if s != "" {
-						m[k] = []any{s}
-					} else {
-						m[k] = []any{}
-					}
-				}
-				continue
-			}
-			if arr, ok := v.([]any); ok {
+			if arr, isArr := v.([]any); isArr {
 				for i, item := range arr {
 					if s, ok := coerceString(item); ok {
 						arr[i] = s
 					}
+				}
+			} else if s, ok := coerceString(v); ok {
+				// 标量 → 单元素数组（schema 声明 array 而模型给单值的高频形态）
+				if s != "" {
+					m[k] = []any{s}
+				} else {
+					m[k] = []any{}
 				}
 			}
 		}
@@ -212,7 +201,7 @@ func walkNormalize(m map[string]any, schema *Schema) {
 
 // ParseLenient 栅栏剥离 → 直接解析 → Repair 重试 → ExtractObject+Repair 重试。
 func ParseLenient(raw string, v any, schema *Schema) error {
-	candidate := StripFence(raw)
+	candidate := textutil.StripFence(raw)
 	if candidate == "" {
 		return fmt.Errorf("jsonrepair: 空输入")
 	}

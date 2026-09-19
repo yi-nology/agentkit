@@ -493,3 +493,68 @@ func TestGeneratorInterface(t *testing.T) {
 	g = r
 	_ = g
 }
+
+func TestRawModelWithFailover(t *testing.T) {
+	// v0.10.9 组合点回归：RawModel/RawModelWithFailover 返回包住整条链的
+	// failover 装饰器——裸模型路径（ReAct）首模型失败自动切下一个，不再
+	// 静默丢弃降级链。
+	primary := &fakeChatModel{script: []fakeResp{{err: errors.New("primary down")}}}
+	fallback := &fakeChatModel{script: []fakeResp{{content: "from-fallback"}}}
+	chain := &FallbackChain{Providers: []Provider{
+		&fakeProvider{name: "p1", model: primary, ctxTokens: 128_000, maxOut: 4096},
+		&fakeProvider{name: "p2", model: fallback, ctxTokens: 128_000, maxOut: 4096},
+	}}
+	r, err := NewResilient(chain, ResilientConfig{BaseDelay: time.Millisecond, MaxDelay: 2 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var switches []string
+	r.OnFallback = func(from, to, stage, reason string) { switches = append(switches, from+"->"+to) }
+
+	m := r.RawModelWithFailover()
+	out, err := m.Generate(context.Background(), []*schema.Message{schema.UserMessage("hi")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Content != "from-fallback" {
+		t.Fatalf("应从备选模型取得结果: %q", out.Content)
+	}
+	if len(switches) != 1 || switches[0] != "p1-model->p2-model" {
+		t.Fatalf("切换观测不符: %v", switches)
+	}
+	// RawModel 等价（不再是未装饰的主模型）。
+	if _, err := r.RawModel().Generate(context.Background(),
+		[]*schema.Message{schema.UserMessage("hi")}); err != nil {
+		t.Fatalf("RawModel 也应带链式降级: %v", err)
+	}
+}
+
+func TestChainFailoverModel(t *testing.T) {
+	// NewChainFailoverModel N 模型按序降级；全败上抛末模型错误，切换逐级回调。
+	m1 := &fakeChatModel{script: []fakeResp{{err: errors.New("m1 down")}}}
+	m2 := &fakeChatModel{script: []fakeResp{{err: errors.New("m2 down")}}}
+	m3 := &fakeChatModel{script: []fakeResp{{content: "m3-ok"}}}
+	fm := NewChainFailoverModel(
+		[]model.BaseChatModel{m1, m2, m3},
+		[]string{"m1", "m2", "m3"})
+	var pairs []string
+	fm.OnFailover = func(from, to, _ string) { pairs = append(pairs, from+"->"+to) }
+
+	out, err := fm.Generate(context.Background(), []*schema.Message{schema.UserMessage("q")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Content != "m3-ok" || len(pairs) != 2 || pairs[1] != "m2->m3" {
+		t.Fatalf("链式降级不符: %q %v", out.Content, pairs)
+	}
+	// 全败：上抛末模型错误。
+	fm2 := NewChainFailoverModel(
+		[]model.BaseChatModel{m1, m2},
+		[]string{"m1", "m2"})
+	if _, err := fm2.Generate(context.Background(),
+		[]*schema.Message{schema.UserMessage("q")}); err == nil ||
+		!strings.Contains(err.Error(), "m2 down") {
+		t.Fatalf("全败应上抛末模型错误: %v", err)
+	}
+}

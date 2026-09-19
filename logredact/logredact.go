@@ -1,5 +1,5 @@
 // Package logredact 日志/审计载荷凭据脱敏：连接串/URL/头中的凭据在落日志前模式化打码。
-// 与 safejson 正交——safejson 防 Markdown/HTML 注入，本包打码凭据。
+// 与 fence（Markdown/HTML 注入卫生）正交——本包打码凭据。
 package logredact
 
 import (

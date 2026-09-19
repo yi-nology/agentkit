@@ -1,4 +1,4 @@
-package safejson
+package fence
 
 import (
 	"strings"

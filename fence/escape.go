@@ -1,11 +1,11 @@
-// Package safejson Markdown/HTML 反注入工具。
-// 用于中和不可信文本（LLM 产出、用户输入）中的 markdown 结构与 HTML 注释边界，
-// 防止攻击者通过 diff/PR 描述注入伪造报告标题、列表条目等。
-package safejson
+package fence
 
 import "strings"
 
-// EscapeUntrusted 中和不可信文本中的 markdown 结构与 HTML 注释边界。
+// EscapeUntrusted 中和不可信文本（LLM 产出、用户输入）中的 markdown 结构与
+// HTML 注释边界，防止攻击者借 diff/PR 描述注入伪造报告标题、列表条目等。
+// 与 Data（数据区围栏）同属本包的注入卫生面：Data 圈住不可信内容的边界、
+// EscapeUntrusted 中和不可信内容自身的 markdown 语义。
 // 策略：HTML 注释开/闭序列实体化；行首标题/引用/代码围栏/列表标记/水平线/
 // 表格行/引用定义前插零宽空格；反引号替换为同类引号防打断代码段。
 // 前提：下游渲染器仍需自行 sanitize 裸 HTML（本包不处理 <img>/<script> 等标签）。

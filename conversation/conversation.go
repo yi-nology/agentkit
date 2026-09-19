@@ -59,8 +59,8 @@ func Combine(summary string, recent []Turn) string {
 
 func truncateLine(s string, n int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
-	if rc := len([]rune(s)); rc > n {
-		t, _ := textutil.TruncRunes(s, n)
+	t, tr := textutil.TruncRunes(s, n)
+	if tr {
 		return t + "…"
 	}
 	return s

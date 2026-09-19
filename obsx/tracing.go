@@ -15,6 +15,7 @@ import (
 	"context"
 	"time"
 
+	"git.enjoye.top/enjoydream/agentkit/textutil"
 	"git.enjoye.top/enjoydream/ekit/observability/logx"
 	"github.com/cloudwego/eino/callbacks"
 	"github.com/cloudwego/eino/components/model"
@@ -35,6 +36,23 @@ func StageFromContext(ctx context.Context) string {
 	return v
 }
 
+// clientAccountingCtxKey 标记「本次模型调用的 token 记账由 llm.Client 侧负责」
+// （Client.OnUsage/Budget 已配置）：TracingHandler 检测到标记跳过 Options.OnUsage
+// ——同一物理调用的 Generate 路径与 callbacks 路径只记一次账（v0.10.9 防重护栏）。
+type clientAccountingCtxKey struct{}
+
+// WithClientAccounting 标记本次调用链由 Client 侧自行记账（llm 包内部使用；
+// TracingHandler 跳过 callbacks 侧 OnUsage）。
+func WithClientAccounting(ctx context.Context) context.Context {
+	return context.WithValue(ctx, clientAccountingCtxKey{}, true)
+}
+
+// ClientAccounted 读取 Client 侧记账标记。
+func ClientAccounted(ctx context.Context) bool {
+	v, _ := ctx.Value(clientAccountingCtxKey{}).(bool)
+	return v
+}
+
 // Options TracingHandler 配置。
 type Options struct {
 	// SlowThreshold 慢调用阈值：超过以 Warn 级落日志（默认 30s；0 = 不告警）。
@@ -46,6 +64,8 @@ type Options struct {
 	// ReAct 工具链原始调用为空串）。RawModel 旁路场景的成本/预算记账入口——
 	// llm.Client.OnUsage 只覆盖 Generate 路径，ReAct agent 直用 BaseChatModel
 	// 时经这里回收真实 usage。nil 安全。
+	// 防重：llm.Client 自身配置了 OnUsage/Budget 时（Client 记账标记已在 ctx），
+	// 本回调对同一次物理调用自动跳过——两侧不会双倍记账，可同时启用。
 	OnUsage func(component, model, stage string, prompt, completion int)
 }
 
@@ -96,7 +116,7 @@ func (h *TracingHandler) onEnd(ctx context.Context, info *callbacks.RunInfo,
 				"completion_tokens", out.TokenUsage.CompletionTokens,
 				"total_tokens", out.TokenUsage.TotalTokens,
 				"reasoning_tokens", out.TokenUsage.CompletionTokensDetails.ReasoningTokens)
-			if h.opt.OnUsage != nil {
+			if h.opt.OnUsage != nil && !ClientAccounted(ctx) {
 				h.opt.OnUsage(compOf(info), modelOf(info), StageFromContext(ctx),
 					out.TokenUsage.PromptTokens, out.TokenUsage.CompletionTokens)
 			}
@@ -171,10 +191,7 @@ func nMessages(input callbacks.CallbackInput) int {
 	return 0
 }
 
+// preview 内容预览（textutil.TruncEllipsis 单源）。
 func preview(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n]) + "…"
+	return textutil.TruncEllipsis(s, n)
 }

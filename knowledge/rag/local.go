@@ -394,7 +394,7 @@ func sqrtF(x float64) float64 {
 	if x <= 0 {
 		return 1
 	}
-	return math.Sqrt(x) // 手写牛顿迭代只迭代 4 次，大 x 误差可达 60%+
+	return math.Sqrt(x)
 }
 
 func matchFilter(meta map[string]string, filter Filter) bool {

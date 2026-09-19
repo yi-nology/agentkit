@@ -93,8 +93,9 @@ func (c *Client) account(stage string, in []*schema.Message, out *schema.Message
 }
 
 // Generate 带重试的普通生成（指数退避 + jitter）。
-// 确定性失败（鉴权/权限/上下文超限）不重试。
-// stage 同时注入 ctx（obsx.WithStage）——eino callbacks handler 可读到业务阶段。
+// 确定性失败（鉴权/权限/上下文超限）不重试；429 退避下限提高后值得等
+// （单客户端无备选可切）。stage 同时注入 ctx（obsx.WithStage）——eino
+// callbacks handler 可读到业务阶段。
 func (c *Client) Generate(ctx context.Context, stage string, msgs []*schema.Message) (*schema.Message, error) {
 	ctx = obsx.WithStage(ctx, stage)
 	msgs = copyMsgs(msgs) // fitInput 原地替换元素，不能污染调用方的切片
@@ -111,16 +112,57 @@ func (c *Client) Generate(ctx context.Context, stage string, msgs []*schema.Mess
 	if ceil <= 0 {
 		ceil = 30 * time.Second
 	}
+	out, err := c.generateRetry(ctx, stage, msgs, retryPolicy{
+		maxAttempts:   maxRetries,
+		base:          base,
+		ceil:          ceil,
+		chainFallback: false, // 单客户端无备选模型，429 值得退避等待
+	})
+	if err != nil {
+		return nil, fmt.Errorf("llm: %s 调用失败（已重试 %d 次）: %w", stage, maxRetries-1, err)
+	}
+	return out, nil
+}
 
+// retryPolicy 单模型重试策略（Client.Generate 与 Resilient.tryOneProvider 共用
+// 骨架的参数——重试核心只有一份实现，文案/策略不再漂移）。
+type retryPolicy struct {
+	maxAttempts int // 总尝试次数（含首次）
+	base, ceil  time.Duration
+	// chainFallback true=429 与确定性失败直接跳出（上层降级链有备选模型可切）；
+	// false=仅确定性失败跳出，429 值得退避等待（单客户端无备选）。
+	chainFallback bool
+	// attemptTimeout 单次尝试独立限时（0=不限）。不能覆盖整个重试循环——
+	// 首次尝试耗满 deadline 后重试全部形同虚设。
+	attemptTimeout time.Duration
+}
+
+// generateRetry 单模型重试核心（全包唯一实现）：限速 → 截断后提升 MaxTokens
+// （一次）→ Generate → finish_reason=length 转错误并记账 → 按 ClassifyLLMError
+// 决定重试。ctx 取消原样上抛。
+func (c *Client) generateRetry(ctx context.Context, stage string, msgs []*schema.Message, pol retryPolicy) (*schema.Message, error) {
+	// Client 侧已配置记账（OnUsage/Budget）时打标记：obsx TracingHandler 检测到
+	// 标记跳过 callbacks 侧 OnUsage——同一次物理调用不双倍记账
+	if c.OnUsage != nil || c.Budget != nil {
+		ctx = obsx.WithClientAccounting(ctx)
+	}
 	var lastErr error
 	truncatedBoosted := false
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	for attempt := 0; attempt < pol.maxAttempts; attempt++ {
 		if attempt > 0 {
-			delay := backoffDelay(attempt, base, ceil, lastErr)
+			if pol.chainFallback {
+				// 同模型重试仅限"值得在同模型上重试"的错误：
+				// 429（限速池独立）与 context 超限/401（确定性失败）直接跳出，切换下一模型
+				if !sameModelRetryable(lastErr) {
+					break
+				}
+			} else if !ClassifyLLMError(lastErr).Retryable {
+				break
+			}
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(delay):
+			case <-time.After(backoffDelay(attempt, pol.base, pol.ceil, lastErr)):
 			}
 		}
 		if c.Limiter != nil {
@@ -128,13 +170,18 @@ func (c *Client) Generate(ctx context.Context, stage string, msgs []*schema.Mess
 				return nil, fmt.Errorf("llm: %s 限速等待取消: %w", stage, err)
 			}
 		}
+		attemptCtx := ctx
+		if pol.attemptTimeout > 0 {
+			var cancel context.CancelFunc
+			attemptCtx, cancel = context.WithTimeout(ctx, pol.attemptTimeout)
+			defer cancel()
+		}
 		var opts []model.Option
 		if IsTruncatedError(lastErr) && c.MaxOutputTokens > 0 && !truncatedBoosted {
-			boosted := c.MaxOutputTokens * 3 / 2
-			opts = append(opts, model.WithMaxTokens(boosted))
+			opts = append(opts, model.WithMaxTokens(c.MaxOutputTokens*3/2))
 			truncatedBoosted = true
 		}
-		out, err := c.Model.Generate(ctx, msgs, opts...)
+		out, err := c.Model.Generate(attemptCtx, msgs, opts...)
 		if err == nil {
 			if out.ResponseMeta != nil && out.ResponseMeta.FinishReason == "length" {
 				c.account(stage, msgs, out)
@@ -151,12 +198,8 @@ func (c *Client) Generate(ctx context.Context, stage string, msgs []*schema.Mess
 			}
 		}
 		lastErr = err
-		hint := ClassifyLLMError(err)
-		if !hint.Retryable {
-			break
-		}
 	}
-	return nil, fmt.Errorf("llm: %s 调用失败（已重试 %d 次）: %w", stage, maxRetries-1, lastErr)
+	return nil, lastErr
 }
 
 // backoffDelay 指数退避 + jitter（Client 与 Resilient 共用）；429 下限 5s，

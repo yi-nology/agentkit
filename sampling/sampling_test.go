@@ -66,3 +66,31 @@ func TestAggregate_Empty(t *testing.T) {
 		t.Fatalf("空输入应空输出: %+v", groups)
 	}
 }
+
+func TestFingerprint(t *testing.T) {
+	fp1 := Fingerprint("main.go", "未处理错误返回值")
+	fp2 := Fingerprint("main.go", "未处理错误返回值")
+	fp3 := Fingerprint("main.go", "未处理错误返回值！")
+	fp4 := Fingerprint("other.go", "未处理错误返回值")
+	if fp1 != fp2 {
+		t.Error("同输入应产生同指纹")
+	}
+	if fp1 != fp3 {
+		t.Error("标点差异不应影响指纹")
+	}
+	if fp1 == fp4 {
+		t.Error("不同文件应产生不同指纹")
+	}
+	if len(fp1) != 32 {
+		t.Errorf("指纹长度应为 32（SHA256 前 16 字节 hex），得到 %d", len(fp1))
+	}
+}
+
+func TestNormalizeComment(t *testing.T) {
+	if NormalizeComment("Hello World!") != NormalizeComment("hello world") {
+		t.Error("大小写和标点不应影响归一化")
+	}
+	if NormalizeComment("  spaces  ") != NormalizeComment("spaces") {
+		t.Error("空白不应影响归一化")
+	}
+}

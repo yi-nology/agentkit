@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"git.enjoye.top/enjoydream/agentkit/textutil"
 )
 
 // Client Langfuse 只读客户端。
@@ -160,9 +162,7 @@ func (c *Client) get(ctx context.Context, u string, out any) error {
 	return nil
 }
 
+// truncateStr 按 rune 截断（textutil.TruncEllipsis 单源——此前按字节切会腰斩 UTF-8）。
 func truncateStr(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
+	return textutil.TruncEllipsis(s, n)
 }
