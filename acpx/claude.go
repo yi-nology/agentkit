@@ -107,7 +107,13 @@ func (c *ClaudeCode) Run(ctx context.Context, req RunRequest) (*RunResult, error
 			}
 			result = r
 			if req.OnEvent != nil {
-				req.OnEvent(Event{Type: EventResult, Text: ev.Result, Raw: json.RawMessage(line)})
+				// is_error result 全量转发（transcript 可排障）；成功/失败判定不动——
+				// 非 0 退出已有"result 优先"策略，0 退出 + is_error 的处置归消费方
+				typ := EventResult
+				if ev.IsError {
+					typ = EventError
+				}
+				req.OnEvent(Event{Type: typ, Text: ev.Result, Raw: json.RawMessage(line)})
 			}
 		}
 	}

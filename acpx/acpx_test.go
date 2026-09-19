@@ -510,3 +510,43 @@ func TestRunProcess(t *testing.T) {
 		t.Fatalf("超时应 errors.Is ErrTimeout: %v", err)
 	}
 }
+
+func TestCodexErrorEventExitZero(t *testing.T) {
+	// 实弹回归：codex error 事件此前不转发、exit=0 纯错误跑被当成功——
+	// 现全量转发 + 如实报错（与 mimo 同纪律）。
+	bin := fakeCLI(t, `echo '{"type":"error","message":"quota exceeded"}'; echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`)
+	c := NewCodex()
+	c.Bin = bin
+
+	var events []Event
+	_, err := c.Run(context.Background(), RunRequest{Prompt: "x", OnEvent: func(e Event) { events = append(events, e) }})
+	if err == nil || !strings.Contains(err.Error(), "quota exceeded") {
+		t.Fatalf("exit=0 纯错误跑应如实报错: %v", err)
+	}
+	if len(events) == 0 || events[0].Type != EventError {
+		t.Fatalf("error 事件应转发: %v", events)
+	}
+}
+
+func TestClaudeIsErrorResultForwarded(t *testing.T) {
+	// result.is_error → EventError 转发（transcript 可排障）；0 退出时成功/失败
+	// 判定不动（result 优先策略为既有契约，处置归消费方）。
+	bin := fakeCLI(t, `cat <<'JSONL'
+{"type":"result","result":"任务失败：权限不足","is_error":true}
+JSONL
+`)
+	c := NewClaudeCode()
+	c.Bin = bin
+
+	var events []Event
+	res, err := c.Run(context.Background(), RunRequest{Prompt: "x", OnEvent: func(e Event) { events = append(events, e) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Text != "任务失败：权限不足" {
+		t.Fatalf("Text = %q", res.Text)
+	}
+	if len(events) != 1 || events[0].Type != EventError {
+		t.Fatalf("is_error result 应以 EventError 转发: %v", events)
+	}
+}

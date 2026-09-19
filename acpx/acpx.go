@@ -123,6 +123,10 @@ const (
 )
 
 // Event 流式事件。
+// 各适配器转发覆盖（v0.10.10 起错误事件全量转发——此前只转 text，纯错误跑的
+// transcript 为空、排障断链）：mimo=error/text/result(step_finish)；codex=
+// error/text；claude=text/thinking/tool_call/result(is_error 以 error 型转发)；
+// kimi=text；gemini/opencode 非流式（错误走 Run 返回值，无流式事件）。
 type Event struct {
 	Type string // text | thinking | tool_call | tool_result | error | result
 	Text string

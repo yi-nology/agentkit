@@ -2,6 +2,8 @@ package acpx
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 )
 
 // 编译期断言。
@@ -79,8 +81,18 @@ func (g *Gemini) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	}
 
 	var out geminiOut
-	if err := parseJSONOut(stdout, &out); err != nil || out.Response == "" {
+	if err := parseJSONOut(stdout, &out); err != nil || (out.Response == "" && out.Error == nil) {
 		// 非 JSON 输出：全文兜底
+		return fallbackResult(stdout, code), nil
+	}
+	// 运行期错误如实上抛（部分错误形态 exit 仍为 0，只能从信封识别——与 mimo 同纪律）
+	if out.Error != nil && out.Error.Message != "" {
+		if req.OnEvent != nil {
+			req.OnEvent(Event{Type: EventError, Text: out.Error.Message, Raw: json.RawMessage(stdout)})
+		}
+		return nil, fmt.Errorf("acpx: gemini 运行错误: %s", out.Error.Message)
+	}
+	if out.Response == "" {
 		return fallbackResult(stdout, code), nil
 	}
 	r := &RunResult{Text: out.Response, ExitCode: code, Raw: []byte(stdout)}

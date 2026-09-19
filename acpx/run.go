@@ -40,3 +40,12 @@ func emitText(req RunRequest, text, line string) {
 		req.OnEvent(Event{Type: EventText, Text: text, Raw: json.RawMessage(line)})
 	}
 }
+
+// emitError 流式错误事件的 nil 安全发送——与 emitText 同纪律：回调在 stdout
+// 读取 goroutine 中同步执行，不得阻塞/panic。各适配器对运行期 error 事件
+// 全量转发（transcript 可排障——此前只转 text，纯错误跑 transcript 0 字节）。
+func emitError(req RunRequest, text, line string) {
+	if req.OnEvent != nil {
+		req.OnEvent(Event{Type: EventError, Text: text, Raw: json.RawMessage(line)})
+	}
+}

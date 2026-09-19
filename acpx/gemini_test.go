@@ -65,3 +65,19 @@ func TestGeminiNonJSONFallback(t *testing.T) {
 		t.Fatalf("Text = %q", res.Text)
 	}
 }
+
+func TestGeminiErrorEnvelope(t *testing.T) {
+	// 实弹回归（与 mimo 同病）：error 信封此前解析但未检查——错误被吞成空响应。
+	bin := fakeCLI(t, `echo '{"error":{"message":"API key not valid"},"response":""}'`)
+	g := NewGemini()
+	g.Bin = bin
+
+	var events []Event
+	_, err := g.Run(context.Background(), RunRequest{Prompt: "x", OnEvent: func(e Event) { events = append(events, e) }})
+	if err == nil || !strings.Contains(err.Error(), "API key not valid") {
+		t.Fatalf("error 信封应如实报错: %v", err)
+	}
+	if len(events) != 1 || events[0].Type != EventError {
+		t.Fatalf("应转发 EventError: %v", events)
+	}
+}

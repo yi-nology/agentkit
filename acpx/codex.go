@@ -3,6 +3,7 @@ package acpx
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -53,12 +54,20 @@ func (c *Codex) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 
 	var lastText string
 	var usage Usage
+	var errMsg string
 	onLine := func(line string) {
 		var ev codexEvent
 		if err := json.Unmarshal([]byte(line), &ev); err != nil {
 			return
 		}
 		switch ev.Type {
+		case "error":
+			// 运行期错误全量转发（transcript 可排障）并记录——codex 部分错误形态
+			// exit 仍为 0，结束时如实报错（与 mimo/gemini 同纪律）
+			if ev.Message != "" {
+				errMsg = ev.Message
+				emitError(req, ev.Message, line)
+			}
 		case "item.completed":
 			if ev.Item != nil && ev.Item.ItemType == "assistant_message" && ev.Item.Text != "" {
 				lastText = ev.Item.Text
@@ -82,6 +91,9 @@ func (c *Codex) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		}
 		return nil, err
 	}
+	if errMsg != "" && lastText == "" {
+		return nil, fmt.Errorf("acpx: codex 运行错误: %s", errMsg)
+	}
 	text := strings.TrimSpace(readFileTrim(lastMsg))
 	if text == "" {
 		text = lastText
@@ -90,8 +102,9 @@ func (c *Codex) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 }
 
 type codexEvent struct {
-	Type string `json:"type"`
-	Item *struct {
+	Type    string `json:"type"`
+	Message string `json:"message"` // error 事件详情
+	Item    *struct {
 		ItemType string `json:"item_type"`
 		Text     string `json:"text"`
 	} `json:"item"`
