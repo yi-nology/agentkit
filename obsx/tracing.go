@@ -71,7 +71,7 @@ type Options struct {
 
 // TokenUsageOf 模型回调输出的真实 token 用量提取（全仓单源）：
 // 优先 out.TokenUsage；compose 图节点对裸 ChatModel 只透传 Message 时回退读
-// ResponseMeta.Usage（缺该回退会静默漏采——v0.10.10 前仅 llm/usage 侧有，
+// ResponseMeta.Usage（缺该回退会静默漏采——v0.10.11 前仅 llm/usage 侧有，
 // obsx 侧漏采已修）。llm.NewUsageHandler 与 TracingHandler 共用本函数。
 func TokenUsageOf(out *model.CallbackOutput) *model.TokenUsage {
 	if out == nil {

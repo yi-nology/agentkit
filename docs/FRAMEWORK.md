@@ -1,6 +1,6 @@
 # agentkit 框架完整文档
 
-> 版本：v0.10.10 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
+> 版本：v0.10.11 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
 > 配套文档：[架构模式支持矩阵](patterns.md)（七架构何时用/何时不用）· [README](../README.md)（快速上手）
 
 > 文中架构图使用 Mermaid：Forgejo/GitHub 等端原生渲染；不支持渲染的查看端，
@@ -95,7 +95,7 @@
 | `dispatch` | 通用派发守卫：allow 矩阵 + 深度上限 + 自派发拒绝（EdgeSource 拓扑注入，DenyError 结构化拒绝） | 无 | v0.9.5 |
 | `policy` | 操作审计门：四模式统一操作裁决（例外规则→矩阵→fail-safe 兜底 + Arbiter 灰区仲裁 + WithAuditGate 工具装饰器） | eino, yaml | v0.9.6 |
 | `clarify` | 澄清/标准化词表内核：term_map 模型/加载/内在校验 + OrdinalIndex 序数指代 + ResolveAnswer 回答消解 | yaml | v0.9.7 |
-| `acpx` | 9 家 CLI 编码 agent 统一调用（执行纪律经 procx） | eino | v0.1.0 后（v0.10.10 进程托管迁 procx） |
+| `acpx` | 9 家 CLI 编码 agent 统一调用（执行纪律经 procx） | eino | v0.1.0 后（v0.10.11 进程托管迁 procx） |
 | `mcp` | MCP server 工具池（lazy 建连/env 白名单/工具白名单）+ UnwrapMCPText | eino, eino-ext tool/mcp, mcp-go | v0.5.0（v0.9.0 unwrap） |
 | `workcopy` | Git 工作副本沙箱（singleflight + 引用计数 + 保留复用/增量刷新 + TTL 兜底回收） | ekit, x/sync | v0.1.0（v0.10.6 保留复用+增量刷新） |
 | `knowledge/rag` | 双后端 RAG：Local TF-IDF + Milvus 向量 | eino, milvus-sdk-go | v0.1.0 |
@@ -107,11 +107,11 @@
 | `hotplug` | 插拔视图 Plugboard + 泛型原子快照 Holder | 无 | v0.9.0 |
 | `logredact` | 日志/审计凭据脱敏（URL/token/Bearer）+ Redact 高敏感打码 + Masker/Restore 拓扑标识令牌化 | 无 | v0.9.0（v0.10.2 Redact/Masker） |
 | `jsonrepair` | LLM 宽容 JSON 修复（栅栏/尾逗号/全角/散文 + 标量归一） | 无 | v0.9.0 |
-| `procx` | 子进程托管纪律单源：进程组执行/超时整组终止/限容采集/环境白名单（acpx/mcp/workcopy 共用） | 无 | v0.10.10（自 acpx 进程层迁出） |
-| `httpx` | HTTP+JSON 调用纪律单源：限容读体 + rune 安全错误摘要（langfuse/rag/websearch 共用） | 无 | v0.10.10 |
+| `procx` | 子进程托管纪律单源：进程组执行/超时整组终止/限容采集/环境白名单（acpx/mcp/workcopy 共用） | 无 | v0.10.11（自 acpx 进程层迁出） |
+| `httpx` | HTTP+JSON 调用纪律单源：限容读体 + rune 安全错误摘要（langfuse/rag/websearch 共用） | 无 | v0.10.11 |
 | `obsx` | eino callbacks 追踪（结构化日志 + 真实 usage 回流） | eino, ekit | v0.4.0 |
 | `langfuse` | Langfuse Public API 只读客户端（FetchBatch 分页/GetTrace/Query 选择口径 + Trace/Observation 契约，UsageTokens/UsageCost 新旧口径兜底） | 无 | v0.10.0 |
-| `reportutil` | 评审/评测报告后处理：严重度归一 + best-of-N 聚簇 + Wilson/McNemar 统计 | 无 | v0.10.10（severity/sampling/stats 三包合并） |
+| `reportutil` | 评审/评测报告后处理：严重度归一 + best-of-N 聚簇 + Wilson/McNemar 统计 | 无 | v0.10.11（severity/sampling/stats 三包合并） |
 | `audit` | 审计日志 | ekit | v0.1.0 |
 
 | `fence` | 提示词数据区围栏：不可信内容显式包裹 + 逃逸序列中和（返回中和计数作注入特征信号） | 无 | v0.10.5 |
@@ -239,7 +239,7 @@ sr.Use("qa", fastGen)                 // 精确路由
 ```go
 fm := llm.NewFailoverModel(
     llm.ChainLink{Model: primaryModel, Name: "deepseek-v3"},
-    llm.ChainLink{Model: backupModel, Name: "glm-4.7"}) // v0.10.10 起链节式
+    llm.ChainLink{Model: backupModel, Name: "glm-4.7"}) // v0.10.11 起链节式
 fm.OnFailover = func(from, to, reason string) { /* metrics */ }
 ```
 
@@ -370,7 +370,7 @@ res, err := reflection.Refine(ctx, &reflection.Config{
     Rubric: "1. 处理空切片 2. 无 data race",   // 必填：全部价值在 Rubric 质量
     MaxIterations: 3,
 })
-// res.Text 末稿（v0.10.10 起自 Output 改名）；res.Converged 是否过审；res.Rounds 每稿+批判留痕
+// res.Text 末稿（v0.10.11 起自 Output 改名）；res.Converged 是否过审；res.Rounds 每稿+批判留痕
 ```
 
 生成 → Critic 结构化评审（`{pass, issues}`）→ 带全量 issues 修订 → 收敛或达上限。
@@ -576,7 +576,7 @@ FileProvider 假定单根且缓存不变；平台「文件管定义、页面管�
 lib, err := skill.LoadFromFS(fsys) // 重名 fail-fast；_shared 缺省 frozen
 lib.Get(name) / Body / Has / Describe / Names
 lib.Resolve(ctx, skill.Ref{Name: "oom-diag"}) // 实现 Provider（无缓存，读当前实例）
-lib.ListSkills(ctx) / CanonicalName(ctx, "展示名")  // Lister + AliasResolver（v0.10.10 起签名带 ctx）
+lib.ListSkills(ctx) / CanonicalName(ctx, "展示名")  // Lister + AliasResolver（v0.10.11 起签名带 ctx）
 ```
 
 `LibMeta` 承载技能版本化契约（v0.9.2）：mode/maturity/version/requires_mcp
@@ -638,7 +638,7 @@ MaxTurns/AllowedTools/Sandbox 五字段支持声明，编译期强制）；`Regi
 （历史教训：kimi 收到 Sandbox=readonly 实则全自主裸跑）。GenericAgent 的能力由
 argv 模板占位符推导。
 
-**procx**（v0.7.1 acpx.RunProcess，v0.10.10 迁出为独立包）：只要进程组托管
+**procx**（v0.7.1 acpx.RunProcess，v0.10.11 迁出为独立包）：只要进程组托管
 纪律、不需要 Agent 解析层的调用方（workcopy 跑 git / mcp spawn stdio server /
 包装外部 cli 审查器）共用同一出口——纪律只有一份：
 
@@ -735,7 +735,7 @@ SearXNG 自建实例（`formats: [html, json]`），零 API key。HTTP 非 200 /
 `SanitizeFileStem`（外部标识拼文件名前消毒路径分隔/引用语法字符，v0.10.5）、
 `NumberLines`（4 位宽行号前缀——无行号会逼模型编造 file:line 证据，v0.10.5）、
 `StripCodeFence`（markdown 代码围栏剥离的单一事实源——jsonrepair 解析链共用，
-多围栏块取第一块；v0.10.9 引入名 StripFence，v0.10.10 消歧改现名）、
+多围栏块取第一块；v0.10.9 引入名 StripFence，v0.10.11 消歧改现名）、
 `GlobMatch`（.gitignore 语义极简 glob：`**` 跨目录/`*` `?` 单段，`?` 按 rune，
 v0.10.9 自 severity 迁入）。
 
@@ -875,12 +875,12 @@ err := jsonrepair.ParseLenient(raw, &v, schema)
 ```
 
 ### jsonrepair.Unmarshal —— 模型输出 JSON 宽容解析出口（v0.9.8 llmjson；
-v0.10.10 并入本包）
+v0.10.11 并入本包）
 
 宿主不拼装：一次调用走完 ExtractJSON 快路径 → 语法修复 → 全链宽容三级尝试，
 半损坏产出（全角结构标点/尾逗号/非法转义/截断未闭合）不再整轮判死。领域
 schema 校验（字段语义/枚举约束）仍归调用方。（沉自 argus/internal/llmjson；
-v0.10.10 原 llmjson 包删除——其唯一依赖 llm.ExtractJSON 一并迁入 jsonrepair，
+v0.10.11 原 llmjson 包删除——其唯一依赖 llm.ExtractJSON 一并迁入 jsonrepair，
 解析原语不再依赖 LLM 客户端栈。）
 
 ```go
@@ -966,7 +966,7 @@ safe := fence.EscapeUntrusted(llmOutput) // 中和标题/列表/围栏/水平线
 用于把不可信文本（LLM 产出/PR 描述）渲染进报告前中和结构伪造。前提：下游渲染器
 仍需自行 sanitize 裸 HTML 标签。
 
-### reportutil —— 评审/评测报告后处理（v0.10.10 severity/sampling/stats 合并）
+### reportutil —— 评审/评测报告后处理（v0.10.11 severity/sampling/stats 合并）
 
 同一消费链的三段原语合一（归一严重度 → 聚簇去重 → 置信区间/检验），零依赖：
 
@@ -1233,7 +1233,7 @@ flowchart TD
   如实报错【行为变化】+ error/step 事件全量转发（transcript 排障）+ DefaultModel
   配置化（-m 须 xiaomi/ 全名）；gemini error 信封/codex error 事件/claude
   is_error result 同纪律横向补齐【行为变化：gemini 错误信封现报错】
-- **v0.10.10 续（第四轮包收敛，包数 34→33）【破坏性，无兼容层】**：
+- **v0.10.11 续（第四轮包收敛，包数 34→33）【破坏性，无兼容层】**：
   新包 procx（acpx 进程执行纪律迁出——acpx/mcp/workcopy 共用，acpx 不再兼
   「CLI agent 适配」与「全仓进程托管」两角）；新包 reportutil（severity/
   sampling/stats 合一）；新包 httpx（langfuse/rag/websearch 三份 HTTP+JSON

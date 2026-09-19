@@ -1,7 +1,7 @@
 # agentkit
 
 AI Agent 开发工具箱 —— 从生产项目提炼的通用组件库：代码审查平台 **Argus** + 智能运维多智能体平台 **bianque** + LLM 评测/观测平台 **heimdallr**。
-当前版本 **v0.10.10** · Go ≥ 1.26 · 33 个包。
+当前版本 **v0.10.11** · Go ≥ 1.26 · 33 个包。
 
 > 📖 **完整框架文档**：[docs/FRAMEWORK.md](docs/FRAMEWORK.md) —— 设计原则、六层架构、
 > 各包逐一详解（API/示例/边界契约）、横向能力专题（可靠性/成本/多副本/安全）、
@@ -124,7 +124,7 @@ reg.Run(ctx, "claude", acpx.RunRequest{
 // 包成 eino 工具挂进 ReAct agent（LLM 自主决定调哪个 agent）
 tool := reg.AsTool() // run_coding_agent(agent, prompt, work_dir)
 
-// procx：只要进程组托管纪律、不需要 Agent 解析层时（v0.10.10 自 acpx 迁出）
+// procx：只要进程组托管纪律、不需要 Agent 解析层时（v0.10.11 自 acpx 迁出）
 import "git.enjoye.top/enjoydream/agentkit/procx"
 
 stdout, stderr, code, err := procx.Run(ctx, procx.RunRequest{
@@ -285,7 +285,7 @@ res, err := agentrun.PlanAndExecute(ctx, agentrun.PlanExecuteConfig{
     Tools:    tools,
     MaxSteps: 10,
 }, goal)
-fmt.Println(res.Text) // v0.10.10 起自 Answer 改名（产出字段词表统一 Text）
+fmt.Println(res.Text) // v0.10.11 起自 Answer 改名（产出字段词表统一 Text）
 ```
 
 姊妹原语（v0.8.0）：
@@ -296,7 +296,7 @@ res, _ := reflection.Refine(ctx, &reflection.Config{
     Model: chatModel, Task: "实现函数", Input: 需求,
     Rubric: "1. 处理空切片 2. 无 data race", MaxIterations: 3,
 })
-// res.Text / res.Converged / res.Rounds（v0.10.10 起自 Output 改名）
+// res.Text / res.Converged / res.Rounds（v0.10.11 起自 Output 改名）
 
 // Router：LLM 意图分类→选路→分发（入口意图可枚举场景）
 r, _ := router.New(&router.Config{Model: fastModel, Routes: []router.Route{
@@ -731,17 +731,17 @@ Argus 内部包改为 import agentkit：
 | `argus/internal/mcp`（如适用） | `agentkit/mcp` |
 | `argus/internal/obs`（如适用） | `agentkit/obsx` |
 | `argus/internal/plugin.Breaker/Breakers` | `agentkit/breaker` |
-| `argus/internal/plugin.SeverityRank/Normalize...` | `agentkit/reportutil`（v0.10.10 起自 severity 并入） |
+| `argus/internal/plugin.SeverityRank/Normalize...` | `agentkit/reportutil`（v0.10.11 起自 severity 并入） |
 | `argus/internal/plugin.TokenBudget` | `agentkit/llm.TokenAccountant` 接口 |
 | `argus/internal/plugin.GlobMatch` | `agentkit/textutil.GlobMatch`（v0.10.9 迁入） |
-| `argus/internal/plugin.Fingerprint` | `agentkit/reportutil.Fingerprint`（v0.10.9 迁 sampling，v0.10.10 并入） |
+| `argus/internal/plugin.Fingerprint` | `agentkit/reportutil.Fingerprint`（v0.10.9 迁 sampling，v0.10.11 并入） |
 | `argus/internal/reportview.EscapeUntrusted` | `agentkit/fence.EscapeUntrusted`（v0.10.9 起，原 safejson） |
 
 ### argus（v0.9.8）
 
 | argus 旧路径 | agentkit 新路径 |
 |---|---|
-| `argus/internal/llmjson` | `agentkit/jsonrepair.Unmarshal`（v0.10.10 起自 llmjson 并入） |
+| `argus/internal/llmjson` | `agentkit/jsonrepair.Unmarshal`（v0.10.11 起自 llmjson 并入） |
 
 ### bianque（v0.9.0）
 
@@ -806,5 +806,5 @@ Argus 内部包改为 import agentkit：
 | heimdallr 旧路径 | agentkit 新路径 |
 |---|---|
 | `heimdallr/internal/mine/dedup.go` bigramSet/jaccard | `agentkit/textutil`（BigramSet/Jaccard/Similarity/NearDuplicate；InstructionBigrams 留宿主） |
-| `heimdallr/internal/report` WilsonCI/McNemarExact | `agentkit/reportutil`（v0.10.10 起自 stats 并入，comb 转私有） |
+| `heimdallr/internal/report` WilsonCI/McNemarExact | `agentkit/reportutil`（v0.10.11 起自 stats 并入，comb 转私有） |
 | `heimdallr/internal/observe/client.go` + Trace/Observation 契约类型 | `agentkit/langfuse`（错误前缀 langfuse:；UsageTokens/UsageCost 导出；MapTrace 留宿主） |

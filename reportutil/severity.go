@@ -9,7 +9,7 @@
 //     检验——「两个版本的差异是否显著」。
 //
 // 三段原为 severity/sampling/stats 三包，消费者画像相同且边界已漂移过一轮
-// （v0.10.9 severity→sampling 指纹迁移），v0.10.10 合并为单包。零外部依赖。
+// （v0.10.9 severity→sampling 指纹迁移），v0.10.11 合并为单包。零外部依赖。
 package reportutil
 
 import "strings"
