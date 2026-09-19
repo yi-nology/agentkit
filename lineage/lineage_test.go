@@ -124,8 +124,10 @@ func TestDiff(t *testing.T) {
 		t.Fatalf("工具面 impact 错误: %+v", tc)
 	}
 	rc := byType["refs_changed"]
+	// v0.10.14：refs_changed 只填 Skills*（旧 tools_* 同步填充已按无兼容层纪律删除）。
 	if len(rc) != 1 || rc[0].Expert != "specialists/sec" ||
-		len(rc[0].ToolsAdded) != 0 || !slices.Equal(rc[0].ToolsRemoved, []string{"sop"}) {
+		len(rc[0].ToolsAdded) != 0 || len(rc[0].ToolsRemoved) != 0 ||
+		!slices.Equal(rc[0].SkillsRemoved, []string{"sop"}) {
 		t.Fatalf("引用边 impact 错误: %+v", rc)
 	}
 	if got := Diff(prev, prev); len(got) != 0 {

@@ -271,10 +271,10 @@ func intToStr(f float64) string {
 }
 
 func TestServerConfigTimeoutOr(t *testing.T) {
-	if (&ServerConfig{}).timeoutOr(9 * time.Second) != 9*time.Second {
+	if (&ServerConfig{}).timeoutOr(9*time.Second) != 9*time.Second {
 		t.Fatal("零值应回退缺省")
 	}
-	if (&ServerConfig{Timeout: 3 * time.Second}).timeoutOr(9 * time.Second) != 3*time.Second {
+	if (&ServerConfig{Timeout: 3 * time.Second}).timeoutOr(9*time.Second) != 3*time.Second {
 		t.Fatal("显式值应保留")
 	}
 }

@@ -168,18 +168,19 @@ func Build(experts []Expert, skills []Skill, manifests map[string]*pack.ToolMani
 
 // Impact reload 前后的结构化影响项（进 reload 响应；warnings 仍保留人读摘要）。
 type Impact struct {
-	Type         string   `json:"type"` // skill_version_changed|skill_maturity_changed|deprecation|tools_changed|refs_changed
-	Skill        string   `json:"skill,omitempty"`
-	Expert       string   `json:"expert,omitempty"`
-	Server       string   `json:"server,omitempty"`
-	From         string   `json:"from,omitempty"`
-	To           string   `json:"to,omitempty"`
-	UsedBy       []string `json:"used_by,omitempty"`
+	Type   string   `json:"type"` // skill_version_changed|skill_maturity_changed|deprecation|tools_changed|refs_changed
+	Skill  string   `json:"skill,omitempty"`
+	Expert string   `json:"expert,omitempty"`
+	Server string   `json:"server,omitempty"`
+	From   string   `json:"from,omitempty"`
+	To     string   `json:"to,omitempty"`
+	UsedBy []string `json:"used_by,omitempty"`
+	// ToolsAdded/ToolsRemoved 仅 tools_changed（MCP 工具面）填充。
 	ToolsAdded   []string `json:"tools_added,omitempty"`
 	ToolsRemoved []string `json:"tools_removed,omitempty"`
-	// SkillsAdded/SkillsRemoved refs_changed 时的技能名集合。
-	// 历史包袱：refs_changed 曾把技能名装进 tools_added/tools_removed（字段名撒谎），
-	// 新消费方应读本字段；旧字段仍同步填充，待消费方迁移完毕后下线。
+	// SkillsAdded/SkillsRemoved 仅 refs_changed（技能引用边）填充。
+	//（历史上 refs_changed 曾把技能名错装进 tools_* 字段——v0.10.14 起按
+	// 仓库"无兼容层"纪律删除旧填充，消费方读本字段。）
 	SkillsAdded   []string `json:"skills_added,omitempty"`
 	SkillsRemoved []string `json:"skills_removed,omitempty"`
 }
@@ -291,7 +292,6 @@ func Diff(prev, cur *Lineage) []Impact {
 			sort.Strings(added)
 			sort.Strings(removed)
 			out = append(out, Impact{Type: "refs_changed", Expert: slug,
-				ToolsAdded: added, ToolsRemoved: removed, // 兼容旧消费方（实为技能名）
 				SkillsAdded: added, SkillsRemoved: removed})
 		}
 	}
