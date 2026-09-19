@@ -1,7 +1,7 @@
 # agentkit
 
 AI Agent 开发工具箱 —— 从生产项目提炼的通用组件库：代码审查平台 **Argus** + 智能运维多智能体平台 **bianque** + LLM 评测/观测平台 **heimdallr**。
-当前版本 **v0.10.8** · Go ≥ 1.26 · 35 个包。
+当前版本 **v0.10.9** · Go ≥ 1.26 · 34 个包。
 
 > 📖 **完整框架文档**：[docs/FRAMEWORK.md](docs/FRAMEWORK.md) —— 设计原则、六层架构、
 > 各包逐一详解（API/示例/边界契约）、横向能力专题（可靠性/成本/多副本/安全）、
@@ -93,7 +93,6 @@ git.enjoye.top/enjoydream/agentkit
 | `llmjson` | 模型输出 JSON 统一解析入口（ExtractJSON 快路径 → 语法修复 → 全链宽容三级尝试） | llm, jsonrepair |
 | `severity` | 严重级别归一化 + 指纹 + glob 匹配 | 无 |
 | `stats` | 评测/对比统计（Wilson 置信区间 + McNemar 精确检验） | 无 |
-| `safejson` | Markdown/HTML 反注入 | 无 |
 | `audit` | 审计日志 | ekit |
 | `textutil` | rune 安全截断 + 等分块 + TruncEllipsis + 近重复检测（bigram 集合 + Jaccard） | 无 |
 | `workcopy` | Git 工作副本沙箱（singleflight + 引用计数 + TTL 回收） | ekit, x/sync |
@@ -443,10 +442,10 @@ docker compose -f docker-compose.milvus-test.yml down -v  # 用完清理
 ### 安全工具
 
 ```go
-import "git.enjoye.top/enjoydream/agentkit/safejson"
+import "git.enjoye.top/enjoydream/agentkit/fence"
 
 // 中和不可信文本中的 markdown 注入（标题/列表/围栏/水平线/表格行/引用定义/HTML 注释）
-safe := safejson.EscapeUntrusted(llmOutput)
+safe := fence.EscapeUntrusted(llmOutput)
 
 import "git.enjoye.top/enjoydream/agentkit/severity"
 
@@ -632,7 +631,7 @@ focus, _ := lin.Focus("skill-x", 2)                 // 焦点邻接子图（dept
   对每个 map 触发（v0.9.1 更名自 `Mutate` 并改时机——旧 API 已删，领域钩子现在
   看得到已规范化的嵌套结构）。
 - logredact：只打码三类——URL 内嵌账号口令 / token·secret·password·api_key
-  键值对 / Authorization·Bearer 头；与 safejson（反注入）正交，一个管密钥一个管注入。
+  键值对 / Authorization·Bearer 头；与 fence（注入卫生）正交，一个管密钥一个管注入。
 - hotplug：`NewPlugboard(all, disabled)` 传 nil = 全启用；`Holder.Store` 原子换
   整体、读无锁——在途请求继续用旧快照跑完，新请求即时用新快照。
 
@@ -694,7 +693,7 @@ agentkit/progress       ← 事件总线
 agentkit/obsx           ← eino 调用追踪
 agentkit/langfuse       ← Langfuse trace 读回（只读客户端）
 agentkit/stats          ← 评测/对比统计（Wilson CI + McNemar）
-agentkit/safejson · severity · audit · textutil · workcopy  ← 安全/审计/文本/副本沙箱
+agentkit/fence · severity · audit · textutil · workcopy  ← 安全/审计/文本/副本沙箱
     │
     ▼
   eino / eino-ext / mcp-go / milvus-sdk-go / ekit / x/time / x/sync / semver / yaml.v3
@@ -724,7 +723,7 @@ Argus 内部包改为 import agentkit：
 | `argus/internal/plugin.TokenBudget` | `agentkit/llm.TokenAccountant` 接口 |
 | `argus/internal/plugin.GlobMatch` | `agentkit/severity.GlobMatch` |
 | `argus/internal/plugin.Fingerprint` | `agentkit/severity.Fingerprint` |
-| `argus/internal/reportview.EscapeUntrusted` | `agentkit/safejson.EscapeUntrusted` |
+| `argus/internal/reportview.EscapeUntrusted` | `agentkit/fence.EscapeUntrusted`（v0.10.9 起，原 safejson） |
 
 ### argus（v0.9.8）
 

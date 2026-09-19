@@ -1,5 +1,51 @@
 # Changelog
 
+## v0.10.9 (2026-09-19)
+
+### Changed
+
+- **包结构调整（破坏性）**：`safejson` 包删除——`EscapeUntrusted` 归入 fence
+  （包名与内容不符，且与数据区围栏同属注入卫生）；`severity` 职责收敛——
+  `Fingerprint`/`NormalizeComment` 迁 sampling（聚簇签名的自然归属）、
+  `GlobMatch` 迁 textutil，severity 只留级别归一。
+- **llm**：Client.Generate 与 Resilient.tryOneProvider 的重试核心收敛为单实现
+  `generateRetry`（截断错误文案已漂移——Resilient 路径现携带 completion_tokens）；
+  `FailoverModel` 由主备二元泛化为 N 模型链（`NewChainFailoverModel`），全败上抛
+  末模型错误；`Resilient.RawModel()` 改为返回包住整条链的 failover 装饰器
+  （`RawModelWithFailover`）——ReAct 裸模型路径不再静默丢弃降级链【行为变化】；
+  `NewStageRouter` 对 nil def 构造期 panic（fail-fast）。
+- **llm/obsx**：token 记账防重护栏——Client 配置 OnUsage/Budget 时打 ctx 标记，
+  TracingHandler 检测到标记跳过 callbacks 侧 OnUsage，同一物理调用不双倍记账
+  （此前两侧同时配置会双倍计）。
+- **acpx/mcp**：环境白名单单源化——`acpx.ChildEnv` 导出为全仓库子进程环境纪律
+  （基础集取并集，含 LOGNAME/SHELL），mcp 删除漂移实现 whitelistEnv；MCP stdio
+  server 环境新增 GIT_TERMINAL_PROMPT=0/CI=1 与代理/CA 白名单项。
+- **rag/websearch**：内置工具错误契约统一——执行失败返回模型可读文本（agent 可
+  自行降级，不中止整个运行），构造失败 panic（编程错误 fail-fast；rag 原吞错
+  返回 nil tool）。
+- **router**：`KeywordPostNegated` 改多处扫描——任一处紧随否定单字即作废
+  （与其余守门「任一处」语义对齐）【行为变化】。
+- **acpx**：GenericAgent 的 flag+占位符为条件单元——{model}/{session} 缺值时
+  连带移除紧邻 flag，不再产生吞掉 prompt 的悬空 flag【行为变化】；ClaudeCode/
+  Gemini 注册身份由构造器填充 name 字段（Bin 推导兜底）。
+- **breaker**：`Breakers.Opened` 改只读（未登记 key 返回 false 不创建条目——
+  监控轮询不再撑大内部 map）；独立 Breaker 新增 `WithProbeTimeout`。
+- **blackboard**：Convene 构建期对专家名查重/非空 fail-fast（观察游标按名键控）。
+- **杂项**：jsonrepair walkNormalize 死代码清理；langfuse truncateStr 修 UTF-8
+  腰斩（经 textutil.TruncEllipsis 单源）；obsx preview/conversation truncateLine
+  截断单源化；hotplug.Disabled() 字典序稳定输出；rag sqrtF 陈旧注释修正。
+
+### Added
+
+- **textutil**：`StripFence`（markdown 围栏剥离单一事实源——jsonrepair 与
+  llm.ExtractJSON 共用，多围栏块取第一块）；`GlobMatch`（自 severity 迁入）。
+- **sampling**：`Fingerprint`/`NormalizeComment`（自 severity 迁入）；Aggregate
+  签名函数每 item 只调用一次（防非纯签名注册/匹配不一致）。
+- **fence**：`EscapeUntrusted`（自 safejson 迁入）；skill.ListPrompt 出口默认对
+  Description 消毒（安全约定从文档落到代码）。
+- **llm**：`NewChainFailoverModel`（N 模型链）、`Resilient.RawModelWithFailover`。
+- **mcp**：`UnwrapMCPText` 补 structuredContent 信封支持（content[].text 优先）。
+
 ## v0.10.8 (2026-09-19)
 
 ### Changed
