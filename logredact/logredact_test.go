@@ -102,3 +102,23 @@ func TestRedactValue(t *testing.T) {
 		t.Errorf("无凭据字段不应改动: %v", out["ok"])
 	}
 }
+
+func TestRedactSecrets(t *testing.T) {
+	// 精确串抹除（高敏感已知名单——与模式化 Redact 互补，与 Masker 相反不回填）。
+	got := RedactSecrets("clone https://oauth2:tok123@host/r.git 失败: tok123", "tok123")
+	if strings.Contains(got, "tok123") {
+		t.Fatalf("秘密未抹除: %s", got)
+	}
+	if !strings.Contains(got, "oauth2:***@") {
+		t.Fatalf("URL 形态应保持可读: %s", got)
+	}
+	// 长秘密优先：短串是长串前缀时，先替短串会留下尾段泄漏。
+	got = RedactSecrets("k=abcdef k2=abc", "abc", "abcdef")
+	if strings.Contains(got, "def") || strings.Contains(got, "abc") {
+		t.Fatalf("长串优先替换防尾段泄漏: %s", got)
+	}
+	// 空串忽略、无命中原样返回。
+	if got := RedactSecrets("plain", "", "nohit"); got != "plain" {
+		t.Fatalf("无命中应原样返回: %s", got)
+	}
+}

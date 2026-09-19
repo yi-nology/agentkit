@@ -30,6 +30,11 @@ func (c *ClaudeCode) Name() string {
 	return "claude"
 }
 
+// Capabilities 全量支持：--model / --resume / --max-turns / --allowedTools / --permission-mode。
+func (c *ClaudeCode) Capabilities() Capability {
+	return Capability{Model: true, Session: true, MaxTurns: true, AllowedTools: true, Sandbox: true}
+}
+
 // Run 执行 headless 任务（stream-json NDJSON 事件流解析）。
 func (c *ClaudeCode) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	argv := []string{c.Bin, "-p", promptArg(req.Prompt), "--output-format", "stream-json", "--verbose"}

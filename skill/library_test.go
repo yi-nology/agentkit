@@ -2,6 +2,10 @@ package skill
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"os"
+	"path/filepath"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -132,5 +136,45 @@ func TestDeprecationExpired(t *testing.T) {
 	m2 := LibMeta{Maturity: MaturityStable}
 	if m2.DeprecationExpired(after) {
 		t.Fatal("非 deprecated 应 false")
+	}
+}
+
+func TestChecksumConsistentAcrossProviders(t *testing.T) {
+	// canonical 口径回归：同一份 SKILL.md 经 FileProvider 与 Library 解析，
+	// Checksum 必须一致（绑定正文，与 Provider 无关）；Version 取 frontmatter 声明。
+	content := "---\nname: 展示名\nversion: 1.2.3\ndescription: d\n---\n\n正文内容 A。\n"
+	body := "正文内容 A。"
+
+	fp := NewFileProvider(t.TempDir())
+	if err := os.MkdirAll(filepath.Join(fp.Root, "sop"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fp.Root, "sop", "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s1, err := fp.Resolve(context.Background(), Ref{Name: "sop", Version: "9.9.9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lib, err := LoadFromFS(fstest.MapFS{"_shared/skills/sop/SKILL.md": &fstest.MapFile{Data: []byte(content)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2, err := lib.Resolve(context.Background(), Ref{Name: "sop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if s1.Checksum != s2.Checksum {
+		t.Fatalf("两 Provider Checksum 应一致: %q vs %q", s1.Checksum, s2.Checksum)
+	}
+	sum := sha256.Sum256([]byte(body))
+	if want := hex.EncodeToString(sum[:])[:16]; s1.Checksum != want {
+		t.Fatalf("Checksum 应为 sha256(正文)[:16]=%s，实际 %s", want, s1.Checksum)
+	}
+	// Version 取 frontmatter 声明，不再回显请求约束。
+	if s1.Version != "1.2.3" || s2.Version != "1.2.3" {
+		t.Fatalf("Version 应为 frontmatter 声明 1.2.3: %q / %q", s1.Version, s2.Version)
 	}
 }

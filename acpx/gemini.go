@@ -32,6 +32,11 @@ func (g *Gemini) Name() string {
 	return "gemini"
 }
 
+// Capabilities 支持 Model/Sandbox（-m / --approval-mode）；非交互模式无续聊、轮数与工具白名单无对应参数。
+func (g *Gemini) Capabilities() Capability {
+	return Capability{Model: true, Sandbox: true}
+}
+
 // geminiOut --output-format json 结构（容错解析：只取需要的字段）。
 type geminiOut struct {
 	Response string `json:"response"`

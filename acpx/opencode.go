@@ -19,6 +19,11 @@ func NewOpenCode() *OpenCode { return &OpenCode{Bin: "opencode"} }
 
 func (c *OpenCode) Name() string { return "opencode" }
 
+// Capabilities 支持 Model/Session（-m / --session）；沙箱/轮数/工具白名单无对应参数。
+func (c *OpenCode) Capabilities() Capability {
+	return Capability{Model: true, Session: true}
+}
+
 // Run 执行 opencode run 任务（--session 续聊、-m provider/model）。
 func (c *OpenCode) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	argv := []string{c.Bin, "run", promptArg(req.Prompt), "--json"}

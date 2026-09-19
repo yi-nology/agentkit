@@ -26,6 +26,12 @@ func NewKimi() *Kimi { return &Kimi{Bin: "kimi"} }
 
 func (k *Kimi) Name() string { return "kimi" }
 
+// Capabilities 支持 Model/Session（--model / --session）；沙箱/轮数/工具白名单无对应参数
+// （非交互模式本身即全自主——传 Sandbox 会被拒绝而非裸跑）。
+func (k *Kimi) Capabilities() Capability {
+	return Capability{Model: true, Session: true}
+}
+
 // Run 执行 Kimi print 模式任务。
 func (k *Kimi) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	argv := []string{k.Bin, "-p", promptArg(req.Prompt), "--output-format", "stream-json"}

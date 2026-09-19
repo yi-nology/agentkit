@@ -334,6 +334,7 @@ func (s *stubAgent) Name() string { return s.name }
 func (s *stubAgent) Run(_ context.Context, _ RunRequest) (*RunResult, error) {
 	return nil, errors.New("stub")
 }
+func (s *stubAgent) Capabilities() Capability { return Capability{Model: true} }
 
 func TestLastLineWithoutNewlineFlushed(t *testing.T) {
 	// 回归：流末尾无换行符的事件不能丢（mimo error JSON 恰在流尾的真实场景）

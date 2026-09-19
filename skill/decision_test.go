@@ -55,7 +55,7 @@ func TestFrontmatterParsed(t *testing.T) {
 	if !strings.Contains(s.Content, "安全漏洞") {
 		t.Fatalf("正文缺失: %q", s.Content)
 	}
-	// checksum 对全文（含 frontmatter）计算——存在即可
+	// checksum 对正文计算（canonical 口径）——存在即可
 	if s.Checksum == "" {
 		t.Fatal("缺 checksum")
 	}
@@ -237,7 +237,7 @@ func TestFormatFString(t *testing.T) {
 
 func TestFrontmatterQuotePairTrim(t *testing.T) {
 	// 值整体被引号包裹才剥除；内部合法引号保留
-	name, desc, _ := parseFrontmatter("---\nname: \"ocr\"\ndescription: 他说 \"hello\" 结尾\n---\n正文")
+	name, desc, _, _ := parseFrontmatter("---\nname: \"ocr\"\ndescription: 他说 \"hello\" 结尾\n---\n正文")
 	if name != "ocr" {
 		t.Fatalf("成对引号应剥除: %q", name)
 	}

@@ -28,10 +28,19 @@ type Ref struct {
 // description 服务于发现与决策使用（渐进披露），正文才是消费主体。
 type Skill struct {
 	Name        string
-	Version     string
+	Version     string // frontmatter 声明（未声明为空串）；ref.Version 是请求约束/缓存键，不回显
 	Description string // frontmatter description（无则空）
 	Content     string // frontmatter 之后的正文
-	Checksum    string // sha256(content) 前 16 位
+	// Checksum 内容校验和，canonical 口径：sha256(正文) 前 16 位 hex——绑定
+	// 实际注入提示词的内容（frontmatter 是元数据，不进 prompt）。
+	// FileProvider 与 Library 两个 Provider 一致，观测守卫的比对基准不随 Provider 漂移。
+	Checksum string
+}
+
+// contentChecksum canonical 校验和（sha256 hex 前 16 位），两个 Provider 共用单源。
+func contentChecksum(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:])[:16]
 }
 
 // Meta skill 元数据（不含正文——渐进披露：提示词只注入这一层）。
@@ -111,19 +120,18 @@ func (p *FileProvider) Resolve(_ context.Context, ref Ref) (*Skill, error) {
 	if data == nil {
 		return nil, fmt.Errorf("skill: 未找到 %s（尝试 %v）", ref.Name, candidates)
 	}
-	// frontmatter 元数据剥离（正文不含围栏；checksum 对全文计算防漂移）
-	fmName, fmDesc, body := parseFrontmatter(string(data))
-	sum := sha256.Sum256(data)
+	// frontmatter 元数据剥离；checksum 对正文计算（canonical 口径，见 Skill.Checksum）
+	fmName, fmDesc, fmVer, body := parseFrontmatter(string(data))
 	displayName := ref.Name
 	if fmName != "" {
 		displayName = fmName
 	}
 	s := &Skill{
 		Name:        displayName,
-		Version:     ref.Version,
+		Version:     fmVer,
 		Description: fmDesc,
 		Content:     body,
-		Checksum:    hex.EncodeToString(sum[:8]),
+		Checksum:    contentChecksum(body),
 	}
 	p.mu.Lock()
 	p.cache[key] = s

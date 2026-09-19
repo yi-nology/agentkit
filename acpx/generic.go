@@ -38,6 +38,21 @@ func (g *GenericAgent) Name() string {
 	return "generic"
 }
 
+// Capabilities 由 argv 模板推导：含 {model} 占位 → 支持 Model，含 {session} →
+// 支持 Session；模板机制无法表达轮数/工具白名单/沙箱，一律不支持。
+func (g *GenericAgent) Capabilities() Capability {
+	var caps Capability
+	for _, a := range g.Argv {
+		switch a {
+		case "{model}":
+			caps.Model = true
+		case "{session}":
+			caps.Session = true
+		}
+	}
+	return caps
+}
+
 // Run 执行通用 CLI agent。
 func (g *GenericAgent) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	var argv []string

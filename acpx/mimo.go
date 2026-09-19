@@ -29,6 +29,11 @@ func NewMimo() *Mimo { return &Mimo{Bin: "mimo"} }
 
 func (m *Mimo) Name() string { return "mimo" }
 
+// Capabilities 支持 Model/Session（-m / -s）；沙箱/轮数/工具白名单无对应参数。
+func (m *Mimo) Capabilities() Capability {
+	return Capability{Model: true, Session: true}
+}
+
 type mimoEvent struct {
 	Type      string `json:"type"`
 	SessionID string `json:"sessionID"`

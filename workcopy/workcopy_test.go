@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"git.enjoye.top/enjoydream/agentkit/logredact"
 	"git.enjoye.top/enjoydream/ekit/observability/logx"
 )
 
@@ -255,8 +256,10 @@ func TestPrRefspec(t *testing.T) {
 }
 
 func TestScrub(t *testing.T) {
+	// 脱敏机制已归 logredact.RedactSecrets（单一事实源），此处钉 workcopy 错误
+	// 路径的实际载体形态：git 错误里的 clone URL 含 token，必须被抹除。
 	msg := "fatal: unable to access 'https://oauth2:secret123@host/repo.git/'"
-	out := scrub(msg, "secret123")
+	out := logredact.RedactSecrets(msg, "secret123")
 	if containsStr(out, "secret123") {
 		t.Fatalf("token 未脱敏: %s", out)
 	}

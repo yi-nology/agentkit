@@ -2,7 +2,11 @@
 // 与 safejson 正交——safejson 防 Markdown/HTML 注入，本包打码凭据。
 package logredact
 
-import "regexp"
+import (
+	"regexp"
+	"sort"
+	"strings"
+)
 
 type rule struct {
 	re   *regexp.Regexp
@@ -27,6 +31,22 @@ var rules = []rule{
 func Redact(s string) string {
 	for _, r := range rules {
 		s = r.re.ReplaceAllString(s, r.repl)
+	}
+	return s
+}
+
+// RedactSecrets 抹除调用方已知的确切秘密（clone URL 内嵌 token、动态签发的临时
+// 凭据等）：与模式化 Redact 互补——Redact 靠规则打码未知形态的凭据，本函数抹除
+// 已知值。与 Masker 相反，高敏感秘密不做令牌、不回填（Masker 只收低敏感拓扑标识）。
+// 长秘密优先替换（防短串是长串前缀时留下尾段泄漏），空串忽略。
+func RedactSecrets(s string, secrets ...string) string {
+	sorted := append([]string(nil), secrets...)
+	sort.Slice(sorted, func(i, j int) bool { return len(sorted[i]) > len(sorted[j]) })
+	for _, sec := range sorted {
+		if sec == "" {
+			continue
+		}
+		s = strings.ReplaceAll(s, sec, "***")
 	}
 	return s
 }

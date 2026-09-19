@@ -21,6 +21,11 @@ func NewCodex() *Codex { return &Codex{Bin: "codex"} }
 
 func (c *Codex) Name() string { return "codex" }
 
+// Capabilities 支持 Model/Sandbox（-m / --sandbox）；exec 无续聊、轮数与工具白名单无对应参数。
+func (c *Codex) Capabilities() Capability {
+	return Capability{Model: true, Sandbox: true}
+}
+
 // Run 执行 Codex exec 任务。
 // 最终文本优先取 --output-last-message 文件（官方保证的最终消息），事件流兜底。
 func (c *Codex) Run(ctx context.Context, req RunRequest) (*RunResult, error) {

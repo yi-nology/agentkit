@@ -31,6 +31,63 @@ type Agent interface {
 	Name() string
 	// Run 执行一次任务（headless 模式）。
 	Run(ctx context.Context, req RunRequest) (*RunResult, error)
+	// Capabilities 声明对 RunRequest 控制面字段的支持度。能力声明是接口契约的
+	// 一部分（编译期强制，不给实现者"忘记声明"的余地）：Registry.Run 对请求中
+	// 声明不支持的非零字段 fail-fast——静默丢弃已证伪（kimi 收到 Sandbox=readonly
+	// 实则全自主裸跑，安全语义静默降级不可接受）。
+	Capabilities() Capability
+}
+
+// Capability agent 对 RunRequest 控制面字段的支持声明（五字段独立判定）。
+type Capability struct {
+	Model        bool // 响应 Model 覆盖
+	Session      bool // 响应 SessionID 续聊
+	MaxTurns     bool // 响应 MaxTurns 轮数上限
+	AllowedTools bool // 响应 AllowedTools 工具白名单
+	Sandbox      bool // 响应 Sandbox 沙箱级别
+}
+
+// unsupportedFields 返回 req 中非零但 agent 声明不支持的控制面字段名（字段声明序）。
+func unsupportedFields(a Agent, req RunRequest) []string {
+	caps := a.Capabilities()
+	var out []string
+	if req.Model != "" && !caps.Model {
+		out = append(out, "Model")
+	}
+	if req.SessionID != "" && !caps.Session {
+		out = append(out, "SessionID")
+	}
+	if req.MaxTurns > 0 && !caps.MaxTurns {
+		out = append(out, "MaxTurns")
+	}
+	if len(req.AllowedTools) > 0 && !caps.AllowedTools {
+		out = append(out, "AllowedTools")
+	}
+	if req.Sandbox != "" && !caps.Sandbox {
+		out = append(out, "Sandbox")
+	}
+	return out
+}
+
+// capsString 能力的人类可读形态（固定字段序，错误信息用）。
+func capsString(c Capability) string {
+	fields := []struct {
+		name string
+		on   bool
+	}{
+		{"model", c.Model}, {"session", c.Session}, {"max_turns", c.MaxTurns},
+		{"allowed_tools", c.AllowedTools}, {"sandbox", c.Sandbox},
+	}
+	var names []string
+	for _, f := range fields {
+		if f.on {
+			names = append(names, f.name)
+		}
+	}
+	if len(names) == 0 {
+		return "（无控制面字段支持）"
+	}
+	return strings.Join(names, ",")
 }
 
 // RunRequest 统一运行请求。

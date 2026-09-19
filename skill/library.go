@@ -2,8 +2,6 @@ package skill
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"path"
@@ -278,7 +276,8 @@ func (l *Library) Names() []string {
 	return out
 }
 
-// Resolve 实现 Provider（决策式加载：剥 frontmatter 正文 + checksum）。
+// Resolve 实现 Provider（决策式加载：剥 frontmatter 正文 + canonical checksum——
+// 口径与 FileProvider 一致，见 Skill.Checksum）。
 func (l *Library) Resolve(_ context.Context, ref Ref) (*Skill, error) {
 	if l == nil {
 		return nil, fmt.Errorf("skill: 技能库未装配")
@@ -287,13 +286,12 @@ func (l *Library) Resolve(_ context.Context, ref Ref) (*Skill, error) {
 	if !ok {
 		return nil, fmt.Errorf("skill: 技能 %q 不存在", ref.Name)
 	}
-	sum := sha256.Sum256([]byte(e.Body))
 	return &Skill{
 		Name:        ref.Name,
 		Version:     e.Meta.Version,
 		Description: e.Meta.Description,
 		Content:     e.Body,
-		Checksum:    hex.EncodeToString(sum[:])[:16],
+		Checksum:    contentChecksum(e.Body),
 	}, nil
 }
 

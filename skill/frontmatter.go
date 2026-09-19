@@ -39,24 +39,26 @@ func findClosingFence(rest string) (blockEnd, bodyStart int, ok bool) {
 }
 
 // parseFrontmatter 解析 SKILL.md 的 YAML frontmatter（Agent Skills 开放标准的
-// 最小子集：--- 围栏内的 name/description 行）。零依赖：不引 yaml 解析器，
+// 最小子集：--- 围栏内的 name/description/version 行）。零依赖：不引 yaml 解析器，
 // 不认识的键忽略——skill 正文才是消费主体，元数据只服务发现与决策。
-func parseFrontmatter(content string) (name, desc, body string) {
+func parseFrontmatter(content string) (name, desc, ver, body string) {
 	trimmed := strings.TrimLeft(content, " \t\r\n")
 	if !strings.HasPrefix(trimmed, "---") {
-		return "", "", content
+		return "", "", "", content
 	}
 	// 定位首个 ---（起始）与结束 ---
 	rest := trimmed[3:]
 	if !strings.HasPrefix(rest, "\n") {
-		return "", "", content
+		return "", "", "", content
 	}
 	blockEnd, bodyStart, ok := findClosingFence(rest)
 	if !ok {
-		return "", "", content
+		return "", "", "", content
 	}
 	block := rest[:blockEnd]
-	body = rest[bodyStart:]
+	// canonical 正文：剥壳后去首尾空白——与 ParseRichFrontmatter 同一口径，
+	// 两个 Provider 的 Content（及其 Checksum）才逐字节一致。
+	body = strings.TrimSpace(rest[bodyStart:])
 
 	for _, line := range strings.Split(block, "\n") {
 		line = strings.TrimSpace(line)
@@ -73,9 +75,11 @@ func parseFrontmatter(content string) (name, desc, body string) {
 			name = val
 		case "description":
 			desc = val
+		case "version":
+			ver = val
 		}
 	}
-	return name, desc, body
+	return name, desc, ver, body
 }
 
 // trimQuoted 仅当值整体被成对引号包裹时剥除——值内部以引号结尾的合法内容

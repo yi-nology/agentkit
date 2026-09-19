@@ -51,11 +51,17 @@ func (r *Registry) Names() []string {
 	return append([]string(nil), r.order...)
 }
 
-// Run 按名执行（结束后发 RunEvent）。
+// Run 按名执行。入口先做能力校验：请求中 agent 声明不支持的非零字段 →
+// fail-fast 报错（请求了即须兑现，拒绝静默降级——直连 Agent.Run 的调用方
+// 应自行经 Capabilities 判断）。执行结束后发 RunEvent。
 func (r *Registry) Run(ctx context.Context, name string, req RunRequest) (*RunResult, error) {
 	a, ok := r.agents[name]
 	if !ok {
 		return nil, fmt.Errorf("acpx: 未注册的 agent %q（可用: %s）", name, strings.Join(r.order, ","))
+	}
+	if ignored := unsupportedFields(a, req); len(ignored) > 0 {
+		return nil, fmt.Errorf("acpx: agent %q 不支持请求字段 %s（能力: %s）——请求了即须兑现，拒绝静默降级",
+			name, strings.Join(ignored, ","), capsString(a.Capabilities()))
 	}
 	start := time.Now()
 	res, err := a.Run(ctx, req)

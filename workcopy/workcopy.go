@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"git.enjoye.top/enjoydream/agentkit/acpx"
+	"git.enjoye.top/enjoydream/agentkit/logredact"
 	"git.enjoye.top/enjoydream/ekit/observability/logx"
 	"golang.org/x/sync/singleflight"
 )
@@ -269,7 +270,7 @@ func (p *Pool) prepare(ctx context.Context, key WorktreeKey, baseURL, token stri
 			// msg 为脱敏载体，token 必须作为 secret 传入（此前参数顺序传反，
 			// git 失败详情整体丢失、脱敏形同虚设）
 			return "", fmt.Errorf("workcopy: %s#%s 准备失败: %s",
-				key.Owner, key.Repo, scrub(err.Error(), token))
+				key.Owner, key.Repo, logredact.RedactSecrets(err.Error(), token))
 		}
 	}
 	p.Log.Info("agentkit.workcopy.ready", "dir", dir, "pr", key.Owner+"/"+key.Repo+"#"+key.Number)
@@ -290,22 +291,11 @@ func (p *Pool) refresh(ctx context.Context, dir string, key WorktreeKey, token s
 	for _, args := range steps {
 		if err := runGit(ctx, args, insecureTLS); err != nil {
 			return fmt.Errorf("workcopy: %s#%s 增量刷新失败: %s",
-				key.Owner, key.Repo, scrub(err.Error(), token))
+				key.Owner, key.Repo, logredact.RedactSecrets(err.Error(), token))
 		}
 	}
 	p.Log.Info("agentkit.workcopy.refreshed", "dir", filepath.Base(dir), "pr", key.Owner+"/"+key.Repo+"#"+key.Number)
 	return nil
-}
-
-func scrub(msg string, secrets ...string) string {
-	for _, s := range secrets {
-		if s == "" {
-			continue
-		}
-		msg = strings.ReplaceAll(msg, "oauth2:"+s+"@", "***@")
-		msg = strings.ReplaceAll(msg, s, "***")
-	}
-	return msg
 }
 
 // gitExecTimeout 单步 git 命令超时（clone/fetch/checkout 各自独立计时）。
