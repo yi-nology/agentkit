@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.10.14 (2026-09-20)
+
+### Changed
+
+- **lineage**【破坏性】：`Impact` 的 refs_changed 分支不再向
+  `ToolsAdded/ToolsRemoved` 双写技能名（v0.10.7 引入 `SkillsAdded/
+  SkillsRemoved` 时保留的"兼容旧消费方"填充——按仓库无兼容层纪律删除，
+  该字段此前对 refs_changed 语义撒谎）。`Tools*` 字段现仅 tools_changed
+  （MCP 工具面）填充，refs_changed 只读 `Skills*`。
+- **废弃代码全仓清理结论**：孤儿符号扫描（导出 func/type/const/方法 ×
+  仓内引用 × 测试 × 文档承诺面四重判据）确认除上述双写填充外无废弃残留
+  ——`go.mod` 零未用依赖（tidy 无 diff）、无 Deprecated 标记、scripts 全部
+  活跃；三个近似候选（`llm.CostTracker.Records`/`Resilient.PrimaryModel`/
+  `skill.Decl.UnmarshalYAML`）分别属观测配套面、v0.10.9 承诺的迁移目标、
+  yaml 接口回调，均保留。
+
 ## v0.10.13 (2026-09-20)
 
 ### Fixed
