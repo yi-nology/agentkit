@@ -271,3 +271,47 @@ func TestTaskPanicDoesNotKillWorker(t *testing.T) {
 		t.Fatalf("panic 后 worker 应继续消费后续任务: %v", done)
 	}
 }
+
+// panicQueue 队列方法直接 panic——锁死 guardedCall 的隔离纪律：
+// Queue 是调用方实现（GORM 等），panic 若穿透会杀死心跳 goroutine →
+// 本实例全部在途任务心跳停止 → 90s 后被对端复位重跑（静默双跑）。
+type panicQueue struct{ mockQueue }
+
+func (q *panicQueue) TouchRunningHeartbeats(_ context.Context) error {
+	panic("queue backend exploded")
+}
+
+func (q *panicQueue) ResetRunningToPending(_ context.Context, _ time.Duration) (int64, error) {
+	panic("reset exploded")
+}
+
+func TestGuardedCallIsolatesQueuePanic(t *testing.T) {
+	p := &Pool{Queue: &panicQueue{}, Log: logx.NewSlogLogger("test")}
+
+	// panic 被隔离为 error，不穿透调用方
+	if err := p.guardedCall("test.panic", "test.fail",
+		func(context.Context) error { panic("fn exploded") }); err == nil ||
+		!strings.Contains(err.Error(), "panic") {
+		t.Fatalf("panic 应转为 error: %v", err)
+	}
+	// 队列方法 panic 同样被骨架隔离（heartbeat/resetStale 无返回值——
+	// 不 panic 即为隔离成功）
+	p.heartbeat()
+	p.resetStale()
+}
+
+// errQueue 队列返回错误——guardedCall 透传错误（不吞）。
+type errQueue struct{ mockQueue }
+
+func (q *errQueue) TouchRunningHeartbeats(_ context.Context) error {
+	return context.DeadlineExceeded
+}
+
+func TestGuardedCallPropagatesError(t *testing.T) {
+	p := &Pool{Queue: &errQueue{}, Log: logx.NewSlogLogger("test")}
+	err := p.guardedCall("test.panic", "test.fail",
+		func(context.Context) error { return context.DeadlineExceeded })
+	if err == nil || !strings.Contains(err.Error(), "deadline") {
+		t.Fatalf("队列错误应透传: %v", err)
+	}
+}

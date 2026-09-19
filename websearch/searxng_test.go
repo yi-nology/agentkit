@@ -2,10 +2,14 @@ package websearch
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/cloudwego/eino/components/tool"
 )
 
 func searxngJSON(results string) string {
@@ -122,5 +126,52 @@ func TestSearxngAsTool(t *testing.T) {
 	info, err := tl.Info(context.Background())
 	if err != nil || info == nil || info.Name != "web_search" {
 		t.Fatalf("AsTool Info 不符: info=%+v err=%v", info, err)
+	}
+}
+
+func TestAsToolErrorContract(t *testing.T) {
+	// 执行失败=模型可读文本（agent 可自行降级），不上抛框架错误通道——
+	// 与 rag.AsTool 同一契约（此前该分支覆盖 23%）。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	s := NewSearxng(srv.URL, time.Second)
+	it, ok := s.AsTool().(tool.InvokableTool)
+	if !ok {
+		t.Fatal("AsTool 应产出 InvokableTool")
+	}
+	out, err := it.InvokableRun(context.Background(), `{"query":"oom 排查"}`)
+	if err != nil {
+		t.Fatalf("执行失败不得上抛 error（契约）: %v", err)
+	}
+	txt := fmt.Sprint(out)
+	if !strings.Contains(txt, "检索失败") || !strings.Contains(txt, "502") {
+		t.Fatalf("错误文本应含原因与状态码: %q", txt)
+	}
+}
+
+func TestAsToolHappyPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("format") != "json" {
+			t.Errorf("format=json 缺失")
+		}
+		_, _ = w.Write([]byte(`{"results":[{"title":"OOM 指南","url":"https://x.dev/oom","content":"排查步骤"}]}`))
+	}))
+	defer srv.Close()
+
+	s := NewSearxng(srv.URL, time.Second)
+	s.DefaultTopK = 5
+	it, ok := s.AsTool().(tool.InvokableTool)
+	if !ok {
+		t.Fatal("AsTool 应产出 InvokableTool")
+	}
+	out, err := it.InvokableRun(context.Background(), `{"query":"oom 排查"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if txt := fmt.Sprint(out); !strings.Contains(txt, "OOM 指南") || !strings.Contains(txt, "https://x.dev/oom") {
+		t.Fatalf("结果文本应含标题与 URL: %q", txt)
 	}
 }

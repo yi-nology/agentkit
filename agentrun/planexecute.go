@@ -10,6 +10,7 @@ package agentrun
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/cloudwego/eino/adk"
@@ -25,6 +26,10 @@ type PlanExecuteConfig struct {
 	// Planner 规划模型（须支持 tool calling——eino-ext openai ChatModel 均满足）。
 	// 计划结构经默认 Plan ToolInfo 以 tool-calling 形态强制产出。
 	Planner model.ToolCallingChatModel
+	// Replanner 重规划/完成判定模型（须支持 tool calling；空 = 复用 Planner
+	// 模型——eino planexecute.Config 的 Replanner 是必填项，agentrun 在此
+	// 兜底装配。生产可配更便宜的模型跑判定）。
+	Replanner model.ToolCallingChatModel
 	// Executor 执行模型（带工具时同样须支持 tool calling）。
 	Executor model.ToolCallingChatModel
 	// Tools 执行器可用工具（nil = 纯推理执行）。
@@ -72,9 +77,24 @@ func PlanAndExecute(ctx context.Context, cfg PlanExecuteConfig, goal string) (*P
 		return nil, fmt.Errorf("agentrun: 构造 Executor 失败: %w", err)
 	}
 
+	// eino planexecute.Config 的 Replanner 必填（无默认构造）——agentrun 兜底
+	// 装配：未显式配置时复用 Planner 模型（v0.10.13 前此处漏传 Replanner，
+	// v0.8.0 起该 API 实际不可用，零测试掩盖）。
+	replannerModel := cfg.Replanner
+	if replannerModel == nil {
+		replannerModel = cfg.Planner
+	}
+	replanner, err := planexecute.NewReplanner(ctx, &planexecute.ReplannerConfig{
+		ChatModel: replannerModel,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("agentrun: 构造 Replanner 失败: %w", err)
+	}
+
 	pe, err := planexecute.New(ctx, &planexecute.Config{
 		Planner:       planner,
 		Executor:      executor,
+		Replanner:     replanner,
 		MaxIterations: maxSteps,
 	})
 	if err != nil {
@@ -86,10 +106,15 @@ func PlanAndExecute(ctx context.Context, cfg PlanExecuteConfig, goal string) (*P
 
 	var answer string
 	err = drainEvents(iter, "plan-execute", func(mv *adk.MessageVariant) error {
-		// Replanner 判定完成时输出最终答复（assistant 无 tool_calls）
+		// 最终答复只认 Replanner 的 respond 出口（其 Content 恒为
+		// {"response":"..."} tool-call arguments 信封）——executor 的步骤输出
+		// 也是无 tool_calls 的 assistant 文本，事件流无 agent 来源标识，
+		// 信封命中即完成信号；否则 MaxSteps 耗尽时中间步骤会被当最终答复。
 		if mv.Role == schema.Assistant && mv.Message != nil &&
 			len(mv.Message.ToolCalls) == 0 && mv.Message.Content != "" {
-			answer = mv.Message.Content
+			if unwrapped := unwrapRespond(mv.Message.Content); unwrapped != mv.Message.Content {
+				answer = unwrapped
+			}
 		}
 		return nil
 	})
@@ -97,9 +122,21 @@ func PlanAndExecute(ctx context.Context, cfg PlanExecuteConfig, goal string) (*P
 		return nil, err
 	}
 	if answer == "" {
-		return nil, fmt.Errorf("agentrun: plan-execute 未产出最终答复（max_steps=%d）", maxSteps)
+		return nil, fmt.Errorf("agentrun: plan-execute 未产出最终答复（max_steps=%d，replanner 未判定完成）", maxSteps)
 	}
 	return &PlanExecuteResult{Text: answer}, nil
+}
+
+// unwrapRespond 解包 eino respond 工具调用的 {"response":"..."} 信封；
+// 非该形态原样返回（信封未命中 = 调用方据此区分步骤输出与最终答复）。
+func unwrapRespond(s string) string {
+	var probe struct {
+		Response string `json:"response"`
+	}
+	if err := json.Unmarshal([]byte(s), &probe); err == nil && probe.Response != "" {
+		return probe.Response
+	}
+	return s
 }
 
 func maxStepsOr(n int) int {

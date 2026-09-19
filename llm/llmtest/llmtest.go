@@ -5,7 +5,6 @@ package llmtest
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -14,7 +13,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-// Resp 单次 Generate 调用的脚本条目。
+// Resp 单次调用的脚本条目（Generate 与 Stream 共按序消费）。
 type Resp struct {
 	Content      string // 响应文本（Err 非空时忽略）
 	Err          error  // 非空时本次调用返回该错误
@@ -22,6 +21,18 @@ type Resp struct {
 	// Prompt/Completion 非零时填入 ResponseMeta.Usage（真实 usage 记账断言用）。
 	Prompt     int
 	Completion int
+	// ToolCalls 附带的工具调用（tool-calling 协议桩：adk planexecute 的
+	// plan/respond 工具调用形态）。
+	ToolCalls []schema.ToolCall
+}
+
+// ToolCall 便捷构造单工具调用条目（name/arguments JSON）。
+func ToolCall(name, arguments string) []schema.ToolCall {
+	return []schema.ToolCall{{
+		ID:       "call_" + name,
+		Type:     "function",
+		Function: schema.FunctionCall{Name: name, Arguments: arguments},
+	}}
 }
 
 // Model 脚本化 BaseChatModel 测试桩（并发安全）。
@@ -64,7 +75,7 @@ func (m *Model) Generate(_ context.Context, in []*schema.Message, _ ...model.Opt
 	if resp.Err != nil {
 		return nil, resp.Err
 	}
-	out := &schema.Message{Role: schema.Assistant, Content: resp.Content}
+	out := &schema.Message{Role: schema.Assistant, Content: resp.Content, ToolCalls: resp.ToolCalls}
 	if resp.FinishReason != "" || resp.Prompt > 0 {
 		out.ResponseMeta = &schema.ResponseMeta{}
 		if resp.FinishReason != "" {
@@ -80,18 +91,33 @@ func (m *Model) Generate(_ context.Context, in []*schema.Message, _ ...model.Opt
 	return out, nil
 }
 
-// Stream 返回 StreamContent 的单块流；未配置则报错。
+// Stream 按同一脚本响应（Generate/Stream 共享调用序）：条目带 ToolCalls 时
+// 发带工具调用的消息，否则发 Content。StreamContent 非空时优先恒定内容
+// （简洁的单内容流场景）。
 func (m *Model) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.Calls++
-	if m.StreamContent == "" {
-		return nil, errors.New("llmtest: 桩不支持流式")
+	if m.StreamContent != "" {
+		m.Calls++
+		return singleMsgStream(m.StreamContent, nil), nil
 	}
+	resp, err := m.next()
+	if err != nil {
+		return nil, err
+	}
+	m.Calls++
+	if resp.Err != nil {
+		return nil, resp.Err
+	}
+	return singleMsgStream(resp.Content, resp.ToolCalls), nil
+}
+
+// singleMsgStream 单块消息流。
+func singleMsgStream(content string, toolCalls []schema.ToolCall) *schema.StreamReader[*schema.Message] {
 	sr, sw := schema.Pipe[*schema.Message](1)
-	sw.Send(&schema.Message{Role: schema.Assistant, Content: m.StreamContent}, nil)
+	sw.Send(&schema.Message{Role: schema.Assistant, Content: content, ToolCalls: toolCalls}, nil)
 	sw.Close()
-	return sr, nil
+	return sr
 }
 
 // next 取下一条脚本（内部已持锁）。

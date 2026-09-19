@@ -184,6 +184,11 @@ func TestDialRejectsOptionCommand(t *testing.T) {
 	if _, err := dial(context.Background(), ServerConfig{Name: "x", Command: []string{""}}); err == nil {
 		t.Fatal("空 command[0] 应被拒绝")
 	}
+	// 均 nil/空切片：落到"stdio 与 http 均未配置"分支
+	if _, err := dial(context.Background(), ServerConfig{Name: "x"}); err == nil ||
+		!strings.Contains(err.Error(), "均未配置") {
+		t.Fatalf("无 command 无 url 应报配置错误: %v", err)
+	}
 }
 
 func TestPoolClose(t *testing.T) {
@@ -263,4 +268,13 @@ func TestWhitelistEnvRealSubprocess(t *testing.T) {
 
 func intToStr(f float64) string {
 	return strconv.FormatFloat(f, 'f', -1, 64) // 整数值场景输出 "5"
+}
+
+func TestServerConfigTimeoutOr(t *testing.T) {
+	if (&ServerConfig{}).timeoutOr(9 * time.Second) != 9*time.Second {
+		t.Fatal("零值应回退缺省")
+	}
+	if (&ServerConfig{Timeout: 3 * time.Second}).timeoutOr(9 * time.Second) != 3*time.Second {
+		t.Fatal("显式值应保留")
+	}
 }
