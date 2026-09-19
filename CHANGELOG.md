@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.10.8 (2026-09-19)
+
+### Changed
+
+- **acpx**【行为变化】：`Agent` 接口新增 `Capabilities() Capability`（Model/Session/
+  MaxTurns/AllowedTools/Sandbox 五字段支持声明，编译期强制，实现者无法"忘记声明"）；
+  `Registry.Run` 对请求中声明不支持的非零字段 **fail-fast 报错**，不再静默丢弃——
+  此前给 kimi/mimo/opencode/generic 传 `Sandbox=readonly` 实则全自主裸跑（安全语义
+  静默降级）。`Registry.Run` 新增能力校验错误路径；直连 `Agent.Run` 的调用方应自行
+  经 `Capabilities` 判断。GenericAgent 能力由 argv 模板占位符推导。
+- **skill**【行为变化】：Checksum/Version/Content 口径两 Provider 统一——
+  `Skill.Checksum` canonical 定义为 **sha256(正文) 前 16 位**（FileProvider 原对
+  全文含 frontmatter 计算，现与 Library 一致——绑定实际注入提示词的内容，观测守卫
+  比对基准不再随 Provider 漂移）；`Skill.Version` 取 frontmatter 声明（FileProvider
+  原回显请求的 ref.Version；ref.Version 回归请求约束/缓存键本职）；FileProvider 的
+  Content 剥壳后去首尾空白（与 Library 同一口径，同文件两 Provider 逐字节一致）。
+
+### Added
+
+- **logredact**：`RedactSecrets(s, secrets...)`——抹除调用方已知的确切秘密
+  （clone URL 内嵌 token、动态签发临时凭据），长秘密优先替换防前缀截断泄漏；
+  与模式化 `Redact`（未知形态）互补、与 `Masker`（低敏感可回填）相反。
+- **workcopy**：脱敏机制切换至 `logredact.RedactSecrets`（单一事实源），
+  包内 `scrub` 私有实现删除。
+
 ## v0.10.7 (2026-09-19)
 
 ### Changed

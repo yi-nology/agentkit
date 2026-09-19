@@ -1,7 +1,7 @@
 # agentkit
 
 AI Agent 开发工具箱 —— 从生产项目提炼的通用组件库：代码审查平台 **Argus** + 智能运维多智能体平台 **bianque** + LLM 评测/观测平台 **heimdallr**。
-当前版本 **v0.10.7** · Go ≥ 1.26 · 35 个包。
+当前版本 **v0.10.8** · Go ≥ 1.26 · 35 个包。
 
 > 📖 **完整框架文档**：[docs/FRAMEWORK.md](docs/FRAMEWORK.md) —— 设计原则、六层架构、
 > 各包逐一详解（API/示例/边界契约）、横向能力专题（可靠性/成本/多副本/安全）、
@@ -138,14 +138,16 @@ stdout, stderr, code, err := acpx.RunProcess(ctx, acpx.ProcessRequest{
 |---|---|---|
 | claude / zcode | `-p <prompt> --output-format stream-json` | ✅ permission-mode 映射 |
 | codex | `exec <prompt> --json --output-last-message` | ✅ `--sandbox` 原生 |
-| opencode | `run <prompt> --json` | ❌ 忽略（静默） |
-| kimi | `-p <prompt> --output-format stream-json` | ❌ 忽略（静默） |
+| opencode | `run <prompt> --json` | ❌ 不支持 |
+| kimi | `-p <prompt> --output-format stream-json` | ❌ 不支持 |
 | gemini / qwen | `-p <prompt> --output-format json` | ✅ `--approval-mode` 映射 |
-| mimo | `run <prompt> --format json`（专用事件流：tokens/cost/sessionID） | ❌ 忽略（静默） |
-| minimax | GenericAgent 模板（CLI 协议待官方稳定） | ❌ 忽略（静默） |
+| mimo | `run <prompt> --format json`（专用事件流：tokens/cost/sessionID） | ❌ 不支持 |
+| minimax | GenericAgent 模板（CLI 协议待官方稳定） | ❌ 不支持 |
 
-> 未标注 ✅ 的 agent 传入 `Sandbox` 会被静默忽略——安全敏感场景请选择支持沙箱的 agent，
-> 或用 `AllowedTools`/`MaxTurns`（claude/codex 支持）自行收敧行为。
+> **能力契约（v0.10.8）**：`Agent` 接口含 `Capabilities()` 声明（Model/Session/
+> MaxTurns/AllowedTools/Sandbox），`Registry.Run` 对请求中声明不支持的非零字段
+> **fail-fast 报错**——请求了即须兑现，不存在静默忽略。安全敏感场景请选择支持
+> 沙箱的 agent，或用 `AllowedTools`/`MaxTurns`（claude 支持）自行收敧行为。
 >
 > 安全防线：prompt 以 `-` 开头时自动前置换行（防 CLI flag 注入）；子进程环境走
 > 白名单（绝不继承密钥）；进程组执行，超时/取消 TERM → 3s 宽限 → KILL；
@@ -574,8 +576,8 @@ focus, _ := lin.Focus("skill-x", 2)                 // 焦点邻接子图（dept
 - mimo 运行期错误 **exit code 仍为 0**，只能从 error 事件识别；codex 的 usage 是
   逐轮累加口径；kimi 新版 `-p` 直跑（无 `--print`，不可与 `--auto` 组合）。
 - `OnEvent` 回调在 stdout 读取 goroutine 中同步执行——不得阻塞、不得 panic。
-- `Registry` 构建期注册、运行期只读；`AsTool` 丢弃 Model/Sandbox 等字段（只传
-  Prompt/WorkDir）——需要沙箱约束时自行构造 RunRequest 而非走 AsTool。
+- `Registry` 构建期注册、运行期只读；`AsTool` 只传 Prompt/WorkDir（控制面字段
+  全零，不触发能力校验）——需要沙箱约束时自行构造 RunRequest 而非走 AsTool。
 
 **mcp**
 - Timeout 覆盖连接 + Initialize（30s 缺省），不含子进程 spawn 阶段。

@@ -1,6 +1,6 @@
 # agentkit 框架完整文档
 
-> 版本：v0.10.7 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
+> 版本：v0.10.8 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
 > 配套文档：[架构模式支持矩阵](patterns.md)（七架构何时用/何时不用）· [README](../README.md)（快速上手）
 
 > 文中架构图使用 Mermaid：Forgejo/GitHub 等端原生渲染；不支持渲染的查看端，
@@ -544,7 +544,7 @@ flowchart TD
 ### skill —— SKILL.md 渐进披露
 
 Agent Skills 标准最小实现：目录约定 `root/<name>/SKILL.md`，frontmatter（`---` 围栏
-name/description）+ 正文；checksum 防漂移；路径遍历防护。
+name/description/version）+ 正文；canonical checksum=sha256(正文)[:16]（两 Provider\n统一口径，观测守卫比对基准不随 Provider 漂移）；路径遍历防护。
 
 两种用法：
 
@@ -623,6 +623,12 @@ tool := reg.AsTool() // run_coding_agent：包成 eino 工具给 ReAct agent 自
 环境白名单（绝不继承密钥）；stdout 8MB + 单行 1MB 限容；prompt 以 `-` 开头自动
 前置换行（防 CLI flag/沙箱旁路注入）；`errors.Is(err, acpx.ErrTimeout/ErrCanceled)`
 程序化区分超时与取消。各家的 Sandbox 支持矩阵与协议细节见 README。
+
+**能力契约（v0.10.8）**：`Agent` 接口含 `Capabilities() Capability`（Model/Session/
+MaxTurns/AllowedTools/Sandbox 五字段支持声明，编译期强制）；`Registry.Run` 对请求中
+声明不支持的非零字段 **fail-fast 报错**——请求了即须兑现，拒绝静默降级
+（历史教训：kimi 收到 Sandbox=readonly 实则全自主裸跑）。GenericAgent 的能力由
+argv 模板占位符推导。
 
 **RunProcess**（v0.7.1）：只要进程组托管纪律、不需要 Agent 解析层时的导出出口：
 
@@ -816,9 +822,12 @@ closed → open（连续失败达阈值）→ half-open（冷却后放行一个�
 ```go
 logredact.Redact("nats://ops:s3cret@host:4222") // nats://ops:****@host:4222
 logredact.RedactValue(payload) // 递归脱敏 map/slice 中的字符串
+logredact.RedactSecrets(msg, token) // 抹除调用方已知确切秘密（长串优先，不回填）
 ```
 
 规则：URL 内嵌账号口令、token/secret/password/api_key 键值对、Authorization/Bearer 头。
+三机制分工：Redact=未知形态模式化打码；RedactSecrets=已知值精确抹除（v0.10.8）；
+Masker=低敏感拓扑标识令牌化（可 Restore 回填）——高敏感秘密不走 Masker。
 
 ### hotplug —— 插拔与热替换（v0.9.0）
 
@@ -1198,3 +1207,8 @@ flowchart TD
   acpx.RunProcess）；skill frontmatter schema 与围栏语义单源化；pack.LayoutDirs
   布局约定单源；lineage SkillFromMeta + Impact.SkillsAdded/Removed；dispatch
   拒绝原因常量
+- **v0.10.8**：acpx 能力契约【行为变化】——Agent 接口新增 Capabilities（编译期
+  强制），Registry.Run 对不支持字段 fail-fast（拒绝 Sandbox 类安全语义静默降级）；
+  skill Checksum/Version/Content 两 Provider 口径统一【行为变化】——checksum=
+  sha256(正文)[:16]、version 取 frontmatter 声明；logredact.RedactSecrets
+  （已知秘密精确抹除），workcopy 脱敏切换至该单源
