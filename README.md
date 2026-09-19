@@ -572,8 +572,19 @@ focus, _ := lin.Focus("skill-x", 2)                 // 焦点邻接子图（dept
 - 缺省超时 10 分钟；stdout 8MB / 单行 1MB 上限；stderr 只留尾部 400 字节进错误。
 - 子进程环境 = 基础集（PATH/HOME/TMPDIR/代理/CA/XDG 等）+ `Env` 按名透传；
   额外注入 `GIT_TERMINAL_PROMPT=0`、`CI=1`。
-- mimo 运行期错误 **exit code 仍为 0**，只能从 error 事件识别；codex 的 usage 是
-  逐轮累加口径；kimi 新版 `-p` 直跑（无 `--print`，不可与 `--auto` 组合）。
+- mimo 运行期错误 **exit code 仍为 0**，只能从 error 事件识别——错误详情在
+  `error.data.message`（顶层 `error.message` 为兼容回退），acpx 对 error 事件
+  **如实上抛**并全量转发（gemini error 信封、codex error 事件、claude is_error
+  result 同纪律）；transcript 消费方据此可排障。
+- mimo `-m` 须 `xiaomi/` 全名前缀（短名被服务端拒绝）；本机 CLI 缺省模型可能被
+  服务端下线（ultraspeed 前车之鉴）——生产装配显式配置：
+  `reg.Register(&acpx.Mimo{Bin: "mimo", DefaultModel: "xiaomi/mimo-v2.5-pro"})`
+  （Register 重名覆盖语义）。`RunRequest.Model` 显式指定时优先。
+- **探活/健康判定（probe）以 `Run` 返回的 `err != nil` 为失败门槛**——上述
+  exit=0 错误形态已如实报错，勿用"有输出即通过"判定（纯错误跑曾以 stdout
+  兜底成"成功"把排障带偏）。
+- codex 的 usage 是逐轮累加口径；kimi 新版 `-p` 直跑（无 `--print`，不可与
+  `--auto` 组合）。
 - `OnEvent` 回调在 stdout 读取 goroutine 中同步执行——不得阻塞、不得 panic。
 - `Registry` 构建期注册、运行期只读；`AsTool` 只传 Prompt/WorkDir（控制面字段
   全零，不触发能力校验）——需要沙箱约束时自行构造 RunRequest 而非走 AsTool。

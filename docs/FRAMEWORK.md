@@ -1,6 +1,6 @@
 # agentkit 框架完整文档
 
-> 版本：v0.10.9 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
+> 版本：v0.10.10 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
 > 配套文档：[架构模式支持矩阵](patterns.md)（七架构何时用/何时不用）· [README](../README.md)（快速上手）
 
 > 文中架构图使用 Mermaid：Forgejo/GitHub 等端原生渲染；不支持渲染的查看端，
@@ -623,6 +623,12 @@ tool := reg.AsTool() // run_coding_agent：包成 eino 工具给 ReAct agent 自
 前置换行（防 CLI flag/沙箱旁路注入）；`errors.Is(err, acpx.ErrTimeout/ErrCanceled)`
 程序化区分超时与取消。各家的 Sandbox 支持矩阵与协议细节见 README。
 
+**错误纪律与事件转发（v0.10.10）**：exit=0 错误形态（mimo error 事件
+`error.data.message`、gemini error 信封、codex error 事件）**如实上抛**，不因
+部分文本而掩盖；error/step 类事件全量经 OnEvent 转发（transcript 可排障）。
+探活判定以 `Run` 的 `err != nil` 为门槛。mimo `-m` 须 `xiaomi/` 全名前缀，
+`Mimo.DefaultModel` 支持配置化缺省模型（本机缺省可能被服务端下线）。
+
 **能力契约（v0.10.8）**：`Agent` 接口含 `Capabilities() Capability`（Model/Session/
 MaxTurns/AllowedTools/Sandbox 五字段支持声明，编译期强制）；`Registry.Run` 对请求中
 声明不支持的非零字段 **fail-fast 报错**——请求了即须兑现，拒绝静默降级
@@ -1228,3 +1234,7 @@ flowchart TD
   EscapeUntrusted——第 34 包；severity 指纹迁 sampling、glob 迁 textutil；
   围栏单源 textutil.StripFence；环境白名单单源 acpx.ChildEnv；rag/websearch
   工具错误契约统一；obsx 记账防重护栏；breaker/mcp/progress 杂项收敛）
+- **v0.10.10**：mimo 实弹修复——错误详情路径修正（error.data.message）+ 纯错误跑
+  如实报错【行为变化】+ error/step 事件全量转发（transcript 排障）+ DefaultModel
+  配置化（-m 须 xiaomi/ 全名）；gemini error 信封/codex error 事件/claude
+  is_error result 同纪律横向补齐【行为变化：gemini 错误信封现报错】

@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.10.10 (2026-09-19)
+
+### Changed
+
+- **acpx/mimo**【行为变化】：错误详情路径修正——mimo 实际发 `error.data.message`，
+  此前只读顶层 `error.message` 导致错误被静默吞掉；叠加 mimo 错误事件 exit=0，
+  纯错误跑以 stdout 全文兜底成"成功"返回（huginn probe 误判通过、排障被带偏）。
+  现 error 事件**如实上抛**（不因恰好有部分文本而掩盖），并修正解析路径
+  （data.message 优先、顶层兼容回退）。
+- **acpx**：error/step 类事件全量经 `OnEvent` 转发——此前 emitText 是多数适配器
+  唯一触发点，纯错误跑 transcript 0 字节、102 类故障排障断链。覆盖：mimo
+  error/result(step_finish)；codex error（exit=0 纯错误跑现报错）；claude
+  result.is_error 以 EventError 型转发（成功/失败判定不动——result 优先策略
+  为既有契约）。
+- **acpx/gemini**【行为变化】：error 信封此前解析但从未检查——现如实报错
+  （与 mimo 同纪律）。
+- **acpx/mimo**：缺省模型配置化——`Mimo.DefaultModel` 字段（请求未指定 Model 时
+  的 `-m` 缺省）。`-m` 须 `xiaomi/` 全名前缀（短名被服务端拒绝）；本机 CLI 缺省
+  模型可能被服务端下线（ultraspeed 前车之鉴），生产装配建议
+  `reg.Register(&acpx.Mimo{Bin: "mimo", DefaultModel: "xiaomi/..."})` 显式配置。
+- **探活指导**：probe/健康判定以 `Run` 返回的 `err != nil` 为失败门槛——上述
+  exit=0 错误形态已如实报错；勿用"有输出即通过"判定。
+
 ## v0.10.9 (2026-09-19)
 
 ### Changed
