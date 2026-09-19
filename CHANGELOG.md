@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.10.7 (2026-09-19)
+
+### Changed
+
+- **全面重构（高内聚低耦合）**：纯内部重构 + 纯增量新增，导出 API 签名全部不变，
+  `make check`（build/vet/golangci-lint/test/govulncheck）全绿。要点：
+  - **llm**：`generateWithTrace`/`generateJSONWithTrace` 双份降级链循环收敛为
+    `walkChain` 骨架；Client/Resilient 双份退避统一为包级 `backoffDelay`；
+    `ExtractJSON` 迁出 errors.go（extract.go）。
+  - **acpx**：7 个适配器逐字重复的 validate→childEnv→timeout→execCLI 骨架下沉
+    `runCLI`（run.go），另下沉 `fallbackResult`/`parseJSONOut`/`emitText`；JSON
+    容错提取改用 jsonrepair 括号配平（删 util.go 第三份弱化实现）；默认超时提为
+    `defaultTimeout` 常量；process.go 拆 env.go/linewriter.go，registry.go 拆
+    tool.go/observe.go。
+  - **agentrun**：`RunWithRetry` 委托 `RunWithEventsAndRetry`；run 与
+    PlanAndExecute 的事件流 drain 骨架统一为 `drainEvents`（消出口判定分叉隐患）。
+  - **worker**：heartbeat/resetStale 收敛 `guardedCall`；tick/yield 让位收敛
+    `releaseLease`；5s 硬编码提为 `queueCallTimeout`/`releaseTimeout`。
+  - **workcopy**：`Ensure` 拆为 hitExisting/claimStale/refreshClaim/buildAndRegister；
+    `runGit` 复用 acpx.RunProcess——进程组 TERM/SIGKILL 纪律 + 环境白名单
+    （clone URL 内嵌 token 场景不再全量透传宿主环境）。
+  - **skill**：frontmatter schema 三处声明收敛为 LibMeta 唯一事实源；`---` 围栏
+    定位语义统一为 `findClosingFence`/`isFenceLine`（`---x` 伪围栏不再被
+    FileProvider 路径吞成半个围栏）；Validate 归位 library.go、
+    ParseRichFrontmatter 归位 frontmatter.go。
+  - **router/policy/toolprior**：关键词四入口收敛 `hitScan` 骨架；Normalize/
+    ValidMode 共用 modes 集合；Ordered/StrategyPrompt 共用 sortedEntries 排序
+    视图（修 Info 失败时提示词序与工具表序矛盾）。
+  - **blackboard**：文档声明 Specialist.Name 唯一性约束（观察游标按名键控）。
+
+### Added
+
+- **pack**：`LayoutDirs` + `LayoutBaseline`——领域包布局约定（`_shared` 基线 +
+  非 `_` 前缀包目录）的单一事实源，LoadToolManifests 与 skill.LoadFromFS 共用。
+- **lineage**：`SkillFromMeta`（LibMeta→Skill 投影的唯一事实源）；
+  `Impact.SkillsAdded/SkillsRemoved`——refs_changed 类型历史上把技能名装进
+  tools_added/tools_removed（字段名撒谎），新字段如实命名，旧字段同步填充保兼容。
+- **dispatch**：拒绝原因常量 `ReasonNotAllowed`/`ReasonDepthExceeded`/
+  `ReasonSelfDispatch`（DenyError.Reason 词表，审计消费方按常量比对）。
+
 ## v0.10.6 (2026-09-18)
 
 ### Changed

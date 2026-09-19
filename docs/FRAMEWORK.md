@@ -1,6 +1,6 @@
 # agentkit 框架完整文档
 
-> 版本：v0.10.6 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
+> 版本：v0.10.7 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
 > 配套文档：[架构模式支持矩阵](patterns.md)（七架构何时用/何时不用）· [README](../README.md)（快速上手）
 
 > 文中架构图使用 Mermaid：Forgejo/GitHub 等端原生渲染；不支持渲染的查看端，
@@ -1193,3 +1193,8 @@ flowchart TD
   （P0/fatal/urgent→high、P1/major→medium、P2/P3/trivial→low，原词表行为不变）
 - **v0.10.6**：workcopy 沙箱保留复用【行为变化】——Release 引用归零不再立即删目录，
   同 PR 换 head 增量刷新（只 fetch 新 PR refspec，省整轮重克隆），TTL 交 Sweep 兜底
+- **v0.10.7**：高内聚低耦合全面重构（导出 API 零变化）——llm/acpx/agentrun/worker/
+  workcopy 重复骨架下沉（walkChain/runCLI/drainEvents/guardedCall/runGit 复用
+  acpx.RunProcess）；skill frontmatter schema 与围栏语义单源化；pack.LayoutDirs
+  布局约定单源；lineage SkillFromMeta + Impact.SkillsAdded/Removed；dispatch
+  拒绝原因常量
