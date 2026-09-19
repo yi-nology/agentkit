@@ -1,7 +1,7 @@
 # agentkit
 
 AI Agent 开发工具箱 —— 从生产项目提炼的通用组件库：代码审查平台 **Argus** + 智能运维多智能体平台 **bianque** + LLM 评测/观测平台 **heimdallr**。
-当前版本 **v0.10.12** · Go ≥ 1.26 · 34 个包。
+当前版本 **v0.10.13** · Go ≥ 1.26 · 34 个包。
 
 > 📖 **完整框架文档**：[docs/FRAMEWORK.md](docs/FRAMEWORK.md) —— 设计原则、六层架构、
 > 各包逐一详解（API/示例/边界契约）、横向能力专题（可靠性/成本/多副本/安全）、
@@ -152,7 +152,7 @@ stdout, stderr, code, err := procx.Run(ctx, procx.RunRequest{
 >
 > 安全防线：prompt 以 `-` 开头时自动前置换行（防 CLI flag 注入）；子进程环境走
 > 白名单（绝不继承密钥）；进程组执行，超时/取消 TERM → 3s 宽限 → KILL；
-> stdout 8MB 限容 + 单行 1MB 上限。超时/取消可程序化区分：`errors.Is(err, acpx.ErrTimeout)`。
+> stdout 8MB 限容 + 单行 1MB 上限。超时/取消可程序化区分：`errors.Is(err, procx.ErrTimeout)`。
 
 ### LLM 客户端
 
@@ -281,6 +281,7 @@ out, err = agentrun.RunWithEventsAndRetry(ctx, cfg, query, retryQuery, onEvent)
 ```go
 res, err := agentrun.PlanAndExecute(ctx, agentrun.PlanExecuteConfig{
     Planner:  plannerModel,  // 须支持 tool calling（计划结构强制产出）
+    Replanner: replannerModel, // 可选：完成判定模型（空 = 复用 Planner；v0.10.13 起支持）
     Executor: executorModel,
     Tools:    tools,
     MaxSteps: 10,
@@ -545,7 +546,7 @@ focus, _ := lin.Focus("skill-x", 2)                 // 焦点邻接子图（dept
 
 - **context 传播**：所有 eino 工具包装（acpx.AsTool / rag.AsTool / skill.AsSkillTool /
   mcp 池）都透传调用方 ctx——上层取消/超时会真正终止子进程与网络调用。
-- **哨兵错误**：`errors.Is(err, acpx.ErrTimeout / ErrCanceled)` 区分 CLI 超时与取消；
+- **哨兵错误**：`errors.Is(err, procx.ErrTimeout / procx.ErrCanceled)` 区分 CLI 超时与取消；
   llm 全链失败返回 `*llm.AttemptError`（含每次尝试的 Provider/Model/Err/Duration）；
   其余包错误均 `%w` wrap，可逐层解包。
 - **并发模型**：llm/agentrun/mcp.Pool/breaker/progress/blackboard.Board/worker.Pool

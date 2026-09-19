@@ -139,6 +139,7 @@ flowchart TD
 ```go
 res, err := agentrun.PlanAndExecute(ctx, agentrun.PlanExecuteConfig{
     Planner:  plannerModel,     // 须支持 tool calling（计划结构以 tool-calling 强制产出）
+    Replanner: replannerModel, // 可选：完成判定模型（空 = 复用 Planner；v0.10.13 起支持）
     Executor: executorModel,
     Tools:    tools,
     MaxSteps: 10,
@@ -367,7 +368,7 @@ eino 编排**。
 | 步骤不可预知，边做边看 | ReAct（`agentrun`） |
 | 步骤可预规划、需可审计 | Plan-and-Execute（`agentrun.PlanAndExecute`） |
 | 有硬质量标准，可自评 | Reflection（`reflection.Refine`） |
-| 意图可枚举、处理链差异大 | Router（`router.Do`） |
+| 意图可枚举、处理链差异大 | Router（`router.Run`） |
 | 意图由领域文档定义、数量大 | Skill 渐进披露（`skill.AsSkillTool`） |
 | 多视角无中心协作 | Blackboard（`blackboard.Convene`） |
 | 有中心指派的多 agent | Supervisor（eino adk prebuilt） |

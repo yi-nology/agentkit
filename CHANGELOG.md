@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.10.13 (2026-09-20)
+
+### Fixed
+
+- **agentrun**【行为变化：修复】：`PlanAndExecute` 自 v0.8.0 起漏传 eino
+  `planexecute.Config` 必填的 `Replanner`（无默认构造）——该导出 API 实际
+  不可用，零测试掩盖六个版本。现 agentrun 兜底装配：`PlanExecuteConfig`
+  新增可选 `Replanner` 字段（空 = 复用 Planner 模型；生产可配更便宜的模型
+  跑完成判定）。
+
+### Changed
+
+- **agentrun**【行为变化】：最终答复只认 Replanner 的 respond 信封
+  （`{"response":...}`，解包为纯文本）——此前 executor 步骤输出（同为无
+  tool_calls 的 assistant 文本）会被当最终答复，MaxSteps 耗尽时尤甚；现
+  耗尽场景如实报错"未产出最终答复"。
+- **llm/llmtest**：桩支持 ToolCalls 脚本与 Stream 按脚本响应（eino adk
+  planexecute 的 plan/respond tool-calling 协议可桩化）；新增 `ToolCall`
+  便捷构造。
+- **测试盲区收编**：worker guardedCall panic 隔离/错误透传（队列 panic 若
+  穿透会杀死心跳 goroutine → 静默双跑，此前 0% 覆盖）；websearch AsTool
+  错误契约（执行失败=模型可读文本）与正常路径；mcp dial 配置错误分支
+  （无 command 无 url）。
+- **门禁**：`make check` 纳入 race（`go test -race ./...` 全绿后收编）。
+- **文档**：符号核对修漂移——README/FRAMEWORK 的 `acpx.ErrTimeout` →
+  `procx.ErrTimeout`（哨兵 v0.10.11 随迁后遗留）、架构矩阵 `router.Do` →
+  `router.Run`、P&E 示例补 Replanner 字段。
+
 ## v0.10.12 (2026-09-20)
 
 ### Changed

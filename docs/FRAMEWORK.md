@@ -1,6 +1,6 @@
 # agentkit 框架完整文档
 
-> 版本：v0.10.12 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
+> 版本：v0.10.13 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
 > 配套文档：[架构模式支持矩阵](patterns.md)（七架构何时用/何时不用）· [README](../README.md)（快速上手）
 
 > 文中架构图使用 Mermaid：Forgejo/GitHub 等端原生渲染；不支持渲染的查看端，
@@ -355,6 +355,7 @@ sequenceDiagram
 ```go
 res, err := agentrun.PlanAndExecute(ctx, agentrun.PlanExecuteConfig{
     Planner:  plannerModel,  // 须支持 tool calling（计划结构以 ToolInfo 强制产出）
+    Replanner: replannerModel, // 可选：完成判定模型（空 = 复用 Planner；v0.10.13 起支持）
     Executor: executorModel,
     Tools:    tools,
     MaxSteps: 10,
@@ -626,7 +627,7 @@ tool := reg.AsTool() // run_coding_agent：包成 eino 工具给 ReAct agent 自
 
 内建生产纪律：进程组执行（Setpgid → 超时/取消 TERM 整组 → 3s 宽限 → KILL）；
 环境白名单（绝不继承密钥）；stdout 8MB + 单行 1MB 限容；prompt 以 `-` 开头自动
-前置换行（防 CLI flag/沙箱旁路注入）；`errors.Is(err, acpx.ErrTimeout/ErrCanceled)`
+前置换行（防 CLI flag/沙箱旁路注入）；`errors.Is(err, procx.ErrTimeout/ErrCanceled)`
 程序化区分超时与取消。各家的 Sandbox 支持矩阵与协议细节见 README。
 
 **错误纪律与事件转发（v0.10.10）**：exit=0 错误形态（mimo error 事件
@@ -1043,7 +1044,7 @@ langfuse（v0.10.0，沉淀自 heimdallr）——Langfuse Public API 只读客�
 | 2 | ReAct | `agentrun` + `toolprior` |
 | 3 | Plan-and-Execute | `agentrun.PlanAndExecute` |
 | 4 | Reflection | `reflection.Refine` |
-| 5 | Router+Skill | `router.Do` + `skill.AsSkillTool` |
+| 5 | Router+Skill | `router.Run` + `skill.AsSkillTool` |
 | 6 | Blackboard | `blackboard.Convene` |
 | 7 | Graph Workflow | eino `compose.Graph`/Branch + adk Sequential/Parallel/Loop/Supervisor（原生，agentkit 包作节点构件） |
 
