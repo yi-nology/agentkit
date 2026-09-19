@@ -144,3 +144,17 @@ func TestKeywordPostNegated(t *testing.T) {
 		}
 	}
 }
+
+func TestKeywordPostNegatedMultiOccurrence(t *testing.T) {
+	// 多处扫描语义（v0.10.9 起）：任一处紧随否定单字即 true——
+	// 首处未被否定不遮挡后续处的否定形态（与其余守门「任一处」对齐）。
+	if !KeywordPostNegated("磁盘有问题，磁盘不满", "磁盘") {
+		t.Fatal("第二处「磁盘不满」被否定应判 true")
+	}
+	if KeywordPostNegated("磁盘不满，再看下磁盘", "磁盘") == false {
+		t.Fatal("首处被否定应判 true")
+	}
+	if KeywordPostNegated("磁盘正常，磁盘稳定", "磁盘") {
+		t.Fatal("两处均未紧随否定单字应判 false")
+	}
+}

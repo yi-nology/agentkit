@@ -170,7 +170,7 @@ func RunProcess(ctx context.Context, req ProcessRequest) (stdout, stderr string,
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
-	return execCLI(ctx, req.Dir, req.Argv, childEnv(req.Env), timeout, req.OnLine, req.MaxStdout)
+	return execCLI(ctx, req.Dir, req.Argv, ChildEnv(req.Env), timeout, req.OnLine, req.MaxStdout)
 }
 
 // exitStatus 从 Wait 错误提取退出码。

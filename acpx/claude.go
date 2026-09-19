@@ -15,15 +15,20 @@ var _ Agent = (*ClaudeCode)(nil)
 // ClaudeCode Claude Code 适配器（headless：`claude -p --output-format stream-json`）。
 type ClaudeCode struct {
 	Bin string // 默认 "claude"
+
+	name string // 注册身份（构造器填充）；空 = 按 Bin 推导兜底
 }
 
 // NewClaudeCode 创建 Claude Code 适配器。
-func NewClaudeCode() *ClaudeCode { return &ClaudeCode{Bin: "claude"} }
+func NewClaudeCode() *ClaudeCode { return &ClaudeCode{Bin: "claude", name: "claude"} }
 
 // NewZCode 创建 ZCode 适配器（CLI 参数协议与 Claude Code 同族）。
-func NewZCode() *ClaudeCode { return &ClaudeCode{Bin: "zcode"} }
+func NewZCode() *ClaudeCode { return &ClaudeCode{Bin: "zcode", name: "zcode"} }
 
 func (c *ClaudeCode) Name() string {
+	if c.name != "" {
+		return c.name
+	}
 	if c.Bin == "zcode" {
 		return "zcode"
 	}

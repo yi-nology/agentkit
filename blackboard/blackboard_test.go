@@ -2,6 +2,7 @@ package blackboard
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -100,5 +101,21 @@ func TestConveneSpecialistError(t *testing.T) {
 	}}
 	if _, err := Convene(context.Background(), b, []Specialist{bad}, nil); err == nil {
 		t.Fatal("专家错误应上抛")
+	}
+}
+
+func TestConveneRejectsDuplicateNames(t *testing.T) {
+	// 观察游标按名键控：重名/空名构建期 fail-fast（v0.10.9 起）。
+	b := NewBoard()
+	if _, err := Convene(context.Background(), b, []Specialist{
+		{Name: "a", Act: func(context.Context, *Board, int64) (bool, error) { return false, nil }},
+		{Name: "a", Act: func(context.Context, *Board, int64) (bool, error) { return false, nil }},
+	}, nil); err == nil || !strings.Contains(err.Error(), "重复") {
+		t.Fatalf("重名专家应 fail-fast: %v", err)
+	}
+	if _, err := Convene(context.Background(), b, []Specialist{
+		{Name: "", Act: nil},
+	}, nil); err == nil || !strings.Contains(err.Error(), "不能为空") {
+		t.Fatalf("空名专家应 fail-fast: %v", err)
 	}
 }

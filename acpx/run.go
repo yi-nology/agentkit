@@ -8,13 +8,13 @@ import (
 	"git.enjoye.top/enjoydream/agentkit/jsonrepair"
 )
 
-// runCLI 适配器统一执行骨架：validate → childEnv 白名单 → timeout → 进程组执行。
+// runCLI 适配器统一执行骨架：validate → ChildEnv 白名单 → timeout → 进程组执行。
 // stdout 走缺省限容（maxChildStdout），各适配器只负责 argv 构造与事件流解析。
 func runCLI(ctx context.Context, req RunRequest, argv []string, onLine func(string)) (stdout string, code int, err error) {
 	if err := req.validate(); err != nil {
 		return "", -1, err
 	}
-	stdout, _, code, err = execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), onLine, 0)
+	stdout, _, code, err = execCLI(ctx, req.WorkDir, argv, ChildEnv(req.Env), req.timeout(), onLine, 0)
 	return stdout, code, err
 }
 

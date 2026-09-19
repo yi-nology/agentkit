@@ -17,15 +17,20 @@ var _ Agent = (*Gemini)(nil)
 //   - `-m/--model`；`--approval-mode default|auto_edit|yolo`（沙箱映射）
 type Gemini struct {
 	Bin string // 默认 "gemini"
+
+	name string // 注册身份（构造器填充）；空 = 按 Bin 推导兜底
 }
 
 // NewGemini 创建 Gemini CLI 适配器。
-func NewGemini() *Gemini { return &Gemini{Bin: "gemini"} }
+func NewGemini() *Gemini { return &Gemini{Bin: "gemini", name: "gemini"} }
 
 // NewQwen 创建 Qwen Code 适配器（gemini-cli fork，参数同族）。
-func NewQwen() *Gemini { return &Gemini{Bin: "qwen"} }
+func NewQwen() *Gemini { return &Gemini{Bin: "qwen", name: "qwen"} }
 
 func (g *Gemini) Name() string {
+	if g.name != "" {
+		return g.name
+	}
 	if g.Bin == "qwen" {
 		return "qwen"
 	}

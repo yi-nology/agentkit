@@ -303,7 +303,7 @@ const gitExecTimeout = 5 * time.Minute
 
 // runGit 经 acpx 进程组纪律执行 git：Setpgid 建组 + 超时 TERM 整组（ssh/askpass
 // 孙进程不泄漏）、环境白名单（clone URL 内嵌 token——全量继承会把宿主凭证透传给
-// 子进程）、stderr 截尾随错误返回。GIT_TERMINAL_PROMPT=0 禁交互由 childEnv 统一注入。
+// 子进程）、stderr 截尾随错误返回。GIT_TERMINAL_PROMPT=0 禁交互由 acpx.ChildEnv 统一注入。
 func runGit(ctx context.Context, args []string, insecureTLS bool) error {
 	var env []string
 	if insecureTLS {

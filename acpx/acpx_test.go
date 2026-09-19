@@ -317,7 +317,7 @@ func TestRequestValidation(t *testing.T) {
 func TestEnvAllowlist(t *testing.T) {
 	t.Setenv("SECRET_TOKEN", "leak-me")
 
-	env := childEnv(nil)
+	env := ChildEnv(nil)
 	joined := strings.Join(env, "\n")
 	if strings.Contains(joined, "SECRET_TOKEN") {
 		t.Fatal("SECRET_TOKEN 不应透传给子进程")

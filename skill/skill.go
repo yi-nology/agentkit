@@ -1,8 +1,8 @@
-// Package skill 内容/方法论解析器。
-// 从目录加载命名内容文件（SKILL.md、prompt 模板、方法论文档），
-// 带路径遍历保护（`..` 段拒绝；注意 symlink 不在防护范围——root 应为可信目录）
-// + 进程内缓存（无淘汰，skill 内容假定进程生命周期内不变）+ checksum。
-// 文件解析部分零外部依赖；决策使用（decision.go）依赖 eino。
+// Package skill 技能内容与元数据：SKILL.md 解析（frontmatter 围栏 + canonical
+// checksum）、进程内技能库（多根扫描、热替换）、版本区间约束（decl/version）、
+// 决策式按需加载（decision.go 的 use_skill 渐进披露）。
+// 内容文件解析带路径遍历保护（`..` 段拒绝；注意 symlink 不在防护范围——root
+// 应为可信目录）；文件解析部分零外部依赖，决策使用依赖 eino。
 package skill
 
 import (

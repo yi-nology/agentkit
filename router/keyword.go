@@ -123,24 +123,29 @@ func maskedAt(lower string, pos, kwLen int, masks []string) bool {
 // （「负载不高」）的专属形态。
 var postNegChars = []string{"不", "没", "无", "非"}
 
-// KeywordPostNegated 后置否定守门：关键词命中处**紧后方**紧跟否定单字（不/没/无/非）
-// 即视为否定陈述——「负载不高」「磁盘不满」里命中词是被否定的谓词对象；紧随复合否定
-// （「磁盘没有问题」）同命中。与否定前置守门（negatedAt）对偶：那边中文否定习惯前置、
-// 按窗口回看，这边紧贴即判、无需窗口。判定从严：宁可作废误归一，不放过反向表述。
-// 返回 true 表示该处命中应作废。输入应已小写（关键词内部 ToLower 兜底）。
+// KeywordPostNegated 后置否定守门：关键词**任一处**命中后紧随否定单字（不/没/无/非）
+// 即视为否定陈述——「负载不高」「磁盘不满」里命中词是被否定的谓词对象；多处出现时
+// 逐一扫描（与其余守门「任一处」语义对齐：「磁盘没问题，再看下磁盘」不会因首处未被
+// 否定而漏判第二处的否定形态）。紧随复合否定（「磁盘没有问题」）同命中。与否定前置
+// 守门（negatedAt）对偶：那边中文否定习惯前置、按窗口回看，这边紧贴即判、无需窗口。
+// 判定从严：宁可作废误归一，不放过反向表述。返回 true 表示该关键词应作废。
+// 输入应已小写（关键词内部 ToLower 兜底）。
 func KeywordPostNegated(lowerInput, keyword string) bool {
 	kw := strings.ToLower(keyword)
-	i := strings.Index(lowerInput, kw)
-	if i < 0 {
-		return false
-	}
-	rest := lowerInput[i+len(kw):]
-	for _, n := range postNegChars {
-		if strings.HasPrefix(rest, n) {
-			return true
+	for start := 0; ; {
+		i := strings.Index(lowerInput[start:], kw)
+		if i < 0 {
+			return false
 		}
+		pos := start + i
+		rest := lowerInput[pos+len(kw):]
+		for _, n := range postNegChars {
+			if strings.HasPrefix(rest, n) {
+				return true
+			}
+		}
+		start = pos + len(kw)
 	}
-	return false
 }
 
 // negatedAt 判断 lower[pos:] 处的关键词命中是否被紧前方窗口内的否定短语作废。

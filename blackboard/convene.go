@@ -29,14 +29,24 @@ type ConveneResult struct {
 
 // Convene 召集专家轮转协作：每轮按序让每位专家观察增量并可写入；
 // 一整轮无人贡献（共识达成）或达 MaxRounds 停止。
-// 注意：Specialist.Name 须全局唯一——观察游标按 Name 键控，重名会共享游标
-// （后执行者读到被同名者推进的 since，跳过的增量永不重看）。
+// Specialist.Name 须非空且全局唯一（构建期 fail-fast）：观察游标按 Name 键控，
+// 重名会共享游标（后执行者读到被同名者推进的 since，跳过的增量永不重看）。
 func Convene(ctx context.Context, b *Board, specialists []Specialist, opts *ConveneOptions) (*ConveneResult, error) {
 	if b == nil {
 		return nil, fmt.Errorf("blackboard: Board 不能为空")
 	}
 	if len(specialists) == 0 {
 		return nil, fmt.Errorf("blackboard: specialists 不能为空")
+	}
+	seen := make(map[string]bool, len(specialists))
+	for _, sp := range specialists {
+		if sp.Name == "" {
+			return nil, fmt.Errorf("blackboard: 专家名不能为空")
+		}
+		if seen[sp.Name] {
+			return nil, fmt.Errorf("blackboard: 专家名重复: %s（观察游标按名键控，重名会互吞增量）", sp.Name)
+		}
+		seen[sp.Name] = true
 	}
 	maxRounds := 3
 	if opts != nil && opts.MaxRounds > 0 {

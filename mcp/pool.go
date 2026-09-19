@@ -14,15 +14,14 @@
 //	defer pool.Close()
 //	tools, err := pool.Tools(ctx, []mcp.ToolSpec{{Server: "docs", Allow: []string{"search_docs"}}})
 //
-// 安全模型：stdio 子进程环境走白名单透传（绝不继承密钥，见 whitelistEnv）；
-// 工具白名单按 spec 收敛（未声明的 server/工具不暴露给 agent）。
+// 安全模型：stdio 子进程环境走白名单透传（绝不继承密钥，经 acpx.ChildEnv
+// 单一纪律）；工具白名单按 spec 收敛（未声明的 server/工具不暴露给 agent）。
 package mcp
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -34,6 +33,8 @@ import (
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
+
+	"git.enjoye.top/enjoydream/agentkit/acpx"
 )
 
 // DefaultTimeout 连接与初始化的缺省超时。
@@ -48,7 +49,7 @@ type ServerConfig struct {
 	Command []string
 	// Env stdio 子进程环境白名单：条目为纯变量名（如 "GITHUB_TOKEN"）时按名从
 	// 当前进程透传；含 "=" 时按 KEY=VALUE 字面透传。未列出的变量一律不继承
-	// （仅保留 whitelistEnv 的基础集），防止本进程密钥泄漏给外部 MCP server。
+	// （基础集见 acpx.ChildEnv），防止本进程密钥泄漏给外部 MCP server。
 	Env []string
 	// URL HTTP 传输（streamable http）。
 	URL string
@@ -222,57 +223,25 @@ func dial(ctx context.Context, cfg ServerConfig) (client.MCPClient, error) {
 		if cfg.Command[0] == "" || strings.HasPrefix(cfg.Command[0], "-") {
 			return nil, fmt.Errorf("mcp: server %s 非法 command %q", cfg.Name, cfg.Command[0])
 		}
-		// 经 CommandFunc 接管 exec.Cmd：环境只给白名单，绝不继承全量 os.Environ()
+		// 经 CommandFunc 接管 exec.Cmd：环境只给白名单（acpx.ChildEnv，
+		// 全仓库子进程环境纪律单一事实源），绝不继承全量 os.Environ()
 		return client.NewStdioMCPClientWithOptions(cfg.Command[0], cfg.Env, cfg.Command[1:],
 			transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
 				cmd := exec.CommandContext(ctx, command, args...)
-				cmd.Env = whitelistEnv(env)
+				cmd.Env = acpx.ChildEnv(env)
 				return cmd, nil
 			}))
 	case cfg.URL != "":
 		return client.NewStreamableHttpClient(cfg.URL,
 			transport.WithHTTPHeaders(cfg.Headers),
-			transport.WithHTTPTimeout(cfg.TimeoutOr(DefaultTimeout)))
+			transport.WithHTTPTimeout(cfg.timeoutOr(DefaultTimeout)))
 	default:
 		return nil, fmt.Errorf("stdio（command）与 http（url）均未配置")
 	}
 }
 
-// baseEnvNames stdio 子进程保留的基础变量集（PATH/HOME 等运行必需，不含密钥类）。
-var baseEnvNames = []string{"PATH", "HOME", "TMPDIR", "USER", "LOGNAME", "SHELL", "LANG"}
-
-// whitelistEnv 构造子进程环境：基础集 + 白名单条目。
-// 条目为纯变量名时按名从当前进程透传（不存在则跳过）；含 "=" 时按 KEY=VALUE 字面透传。
-func whitelistEnv(extra []string) []string {
-	out := make([]string, 0, len(baseEnvNames)+len(extra))
-	seen := map[string]bool{}
-	for _, n := range baseEnvNames {
-		if v, ok := os.LookupEnv(n); ok {
-			out = append(out, n+"="+v)
-			seen[n] = true
-		}
-	}
-	for _, e := range extra {
-		name := e
-		if i := strings.IndexByte(e, '='); i > 0 {
-			name = e[:i]
-		} else {
-			v, ok := os.LookupEnv(e)
-			if !ok {
-				continue
-			}
-			e = name + "=" + v
-		}
-		if !seen[name] {
-			out = append(out, e)
-			seen[name] = true
-		}
-	}
-	return out
-}
-
-// TimeoutOr cfg.Timeout 的非零回退。
-func (c ServerConfig) TimeoutOr(d time.Duration) time.Duration {
+// timeoutOr cfg.Timeout 的非零回退。
+func (c ServerConfig) timeoutOr(d time.Duration) time.Duration {
 	if c.Timeout > 0 {
 		return c.Timeout
 	}

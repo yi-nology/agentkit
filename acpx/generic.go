@@ -2,6 +2,7 @@ package acpx
 
 import (
 	"context"
+	"strings"
 )
 
 // 编译期断言。
@@ -11,6 +12,9 @@ var _ Agent = (*GenericAgent)(nil)
 
 // GenericAgent 通用 CLI agent：以显式 argv 模板驱动任意 agent。
 // 模板占位符：{prompt}（原样单参传入，无 shell 注入面）、{model}、{session}。
+// flag+占位符是**条件单元**：{model}/{session} 缺值时整体移除——连带移除紧邻的
+// 前一个以 "-" 开头的参数（如 ["run","--model","{model}"] 在无 Model 时展开为
+// ["run"]，绝不产生吞掉后续位置参数的悬空 flag）。
 // IsJSON=true 时按 {"text","sessionID","tokens":{"input","output"}} 解析输出。
 //
 // 用途：CLI 参数协议未稳定（MiniMax）或私有 agent 的快速接入；
@@ -61,13 +65,17 @@ func (g *GenericAgent) Run(ctx context.Context, req RunRequest) (*RunResult, err
 		case "{prompt}":
 			argv = append(argv, promptArg(req.Prompt))
 		case "{model}":
-			if req.Model != "" {
-				argv = append(argv, req.Model)
+			if req.Model == "" {
+				argv = dropFlagPair(argv)
+				continue
 			}
+			argv = append(argv, req.Model)
 		case "{session}":
-			if req.SessionID != "" {
-				argv = append(argv, req.SessionID)
+			if req.SessionID == "" {
+				argv = dropFlagPair(argv)
+				continue
 			}
+			argv = append(argv, req.SessionID)
 		default:
 			argv = append(argv, a)
 		}
@@ -88,4 +96,13 @@ func (g *GenericAgent) Run(ctx context.Context, req RunRequest) (*RunResult, err
 		r.Usage = Usage{InputTokens: out.Tokens.Input, OutputTokens: out.Tokens.Output}
 	}
 	return r, nil
+}
+
+// dropFlagPair 占位符缺值时连带移除紧邻的 flag 参数：模板中 "--model {model}"
+// 是一对条件单元，只删值留 flag 会产生悬空 flag 吞掉后续位置参数（prompt）。
+func dropFlagPair(argv []string) []string {
+	if len(argv) > 0 && strings.HasPrefix(argv[len(argv)-1], "-") {
+		return argv[:len(argv)-1]
+	}
+	return argv
 }
