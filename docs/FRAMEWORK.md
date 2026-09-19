@@ -16,7 +16,7 @@
 4. [L2 编排层 —— agentrun / reflection / router / blackboard / dispatch / policy / clarify](#四l2-编排层--agentrun--reflection--router--blackboard--dispatch--policy--clarify)
 5. [L3 决策层 —— toolprior / skill](#五l3-决策层--toolprior--skill)
 6. [L4 工具与上下文层 —— acpx / mcp / workcopy / knowledge/rag / textutil](#六l4-工具与上下文层)
-7. [L5 运行时基础设施 —— breaker / worker / progress / severity / audit](#七l5-运行时基础设施)
+7. [L5 运行时基础设施 —— breaker / worker / progress / reportutil / audit](#七l5-运行时基础设施)
 8. [L6 可观测层 —— obsx / langfuse](#八l6-可观测层--obsx--langfuse)
 9. [七架构模式支持](#九七架构模式支持)
 10. [横向能力专题](#十横向能力专题)
@@ -67,12 +67,13 @@
 │                 knowledge/rag(双后端检索)  websearch  textutil   │
 │                 pack(包契约清单)  lineage(装配血缘图)             │
 │                 fence(数据区围栏)  conversation(会话窗口)          │
+│                 procx(子进程纪律)  httpx(HTTP+JSON纪律)           │
 ├──────────────────────────────────────────────────────────────┤
 │ L5 运行时  breaker(熔断)  worker+pglease(队列+选主+PG租约)      │
 │            progress(总线)  hotplug(插拔/热替换)                 │
-│            logredact(脱敏)  jsonrepair(宽容JSON) llmjson(解析) │
-│            fence(注入卫生) severity(级别) audit(审计) stats(统计) │
-│            sampling(best-of-N确定性聚簇)                        │
+│            logredact(脱敏)  jsonrepair(宽容JSON+解析链)          │
+│            fence(注入卫生) reportutil(严重度/聚簇/统计)           │
+│            audit(审计)                                           │
 ├──────────────────────────────────────────────────────────────┤
 │ L6 可观测  obsx(eino callbacks 追踪/真实 usage 回流)             │
 │            langfuse(Public API 只读客户端/trace 读回)             │
@@ -94,7 +95,7 @@
 | `dispatch` | 通用派发守卫：allow 矩阵 + 深度上限 + 自派发拒绝（EdgeSource 拓扑注入，DenyError 结构化拒绝） | 无 | v0.9.5 |
 | `policy` | 操作审计门：四模式统一操作裁决（例外规则→矩阵→fail-safe 兜底 + Arbiter 灰区仲裁 + WithAuditGate 工具装饰器） | eino, yaml | v0.9.6 |
 | `clarify` | 澄清/标准化词表内核：term_map 模型/加载/内在校验 + OrdinalIndex 序数指代 + ResolveAnswer 回答消解 | yaml | v0.9.7 |
-| `acpx` | 9 家 CLI 编码 agent 统一调用 + RunProcess 进程托管 | eino | v0.1.0 后（v0.7.1 导出 RunProcess） |
+| `acpx` | 9 家 CLI 编码 agent 统一调用（执行纪律经 procx） | eino | v0.1.0 后（v0.10.10 进程托管迁 procx） |
 | `mcp` | MCP server 工具池（lazy 建连/env 白名单/工具白名单）+ UnwrapMCPText | eino, eino-ext tool/mcp, mcp-go | v0.5.0（v0.9.0 unwrap） |
 | `workcopy` | Git 工作副本沙箱（singleflight + 引用计数 + 保留复用/增量刷新 + TTL 兜底回收） | ekit, x/sync | v0.1.0（v0.10.6 保留复用+增量刷新） |
 | `knowledge/rag` | 双后端 RAG：Local TF-IDF + Milvus 向量 | eino, milvus-sdk-go | v0.1.0 |
@@ -106,13 +107,13 @@
 | `hotplug` | 插拔视图 Plugboard + 泛型原子快照 Holder | 无 | v0.9.0 |
 | `logredact` | 日志/审计凭据脱敏（URL/token/Bearer）+ Redact 高敏感打码 + Masker/Restore 拓扑标识令牌化 | 无 | v0.9.0（v0.10.2 Redact/Masker） |
 | `jsonrepair` | LLM 宽容 JSON 修复（栅栏/尾逗号/全角/散文 + 标量归一） | 无 | v0.9.0 |
-| `llmjson` | 模型输出 JSON 统一解析入口：ExtractJSON 快路径 → 语法修复 → 全链宽容，错误携带两路原因 | llm, jsonrepair | v0.9.8 |
+| `procx` | 子进程托管纪律单源：进程组执行/超时整组终止/限容采集/环境白名单（acpx/mcp/workcopy 共用） | 无 | v0.10.10（自 acpx 进程层迁出） |
+| `httpx` | HTTP+JSON 调用纪律单源：限容读体 + rune 安全错误摘要（langfuse/rag/websearch 共用） | 无 | v0.10.10 |
 | `obsx` | eino callbacks 追踪（结构化日志 + 真实 usage 回流） | eino, ekit | v0.4.0 |
 | `langfuse` | Langfuse Public API 只读客户端（FetchBatch 分页/GetTrace/Query 选择口径 + Trace/Observation 契约，UsageTokens/UsageCost 新旧口径兜底） | 无 | v0.10.0 |
-| `severity` | 严重级别归一化（含外部专家别名折叠）| 无 | v0.1.0（v0.10.5 别名折叠；v0.10.9 指纹/glob 迁出） |
+| `reportutil` | 评审/评测报告后处理：严重度归一 + best-of-N 聚簇 + Wilson/McNemar 统计 | 无 | v0.10.10（severity/sampling/stats 三包合并） |
 | `audit` | 审计日志 | ekit | v0.1.0 |
-| `stats` | 评测/对比统计原语（WilsonCI 得分区间 + McNemarExact 配对精确检验） | 无 | v0.10.0 |
-| `sampling` | best-of-N 确定性聚簇：多通道签名快速定位 + eq 对比簇代表（链式漂移不成簇），复现计数不经任何模型 | 无 | v0.10.5 |
+
 | `fence` | 提示词数据区围栏：不可信内容显式包裹 + 逃逸序列中和（返回中和计数作注入特征信号） | 无 | v0.10.5 |
 | `conversation` | 多轮会话历史原语：Turn / Split 滚动窗口切分 / Render 截断渲染 / Combine 摘要拼装（确定性，摘要生成归调用方） | textutil | v0.10.5 |
 | `textutil` | rune 安全截断/等分块/TruncEllipsis + 近重复检测（bigram Jaccard） | 无 | v0.1.0（v0.9.0 Ellipsis，v0.10.0 近重复） |
@@ -236,7 +237,9 @@ sr.Use("qa", fastGen)                 // 精确路由
 ### FailoverModel —— 主备模型降级装饰器（v0.9.4）
 
 ```go
-fm := llm.NewFailoverModel(primaryModel, backupModel, "deepseek-v3", "glm-4.7")
+fm := llm.NewFailoverModel(
+    llm.ChainLink{Model: primaryModel, Name: "deepseek-v3"},
+    llm.ChainLink{Model: backupModel, Name: "glm-4.7"}) // v0.10.10 起链节式
 fm.OnFailover = func(from, to, reason string) { /* metrics */ }
 ```
 
@@ -367,7 +370,7 @@ res, err := reflection.Refine(ctx, &reflection.Config{
     Rubric: "1. 处理空切片 2. 无 data race",   // 必填：全部价值在 Rubric 质量
     MaxIterations: 3,
 })
-// res.Output 末稿；res.Converged 是否过审；res.Rounds 每稿+批判留痕
+// res.Text 末稿（v0.10.10 起自 Output 改名）；res.Converged 是否过审；res.Rounds 每稿+批判留痕
 ```
 
 生成 → Critic 结构化评审（`{pass, issues}`）→ 带全量 issues 修订 → 收敛或达上限。
@@ -385,7 +388,7 @@ r, _ := router.New(&router.Config{
     MinConfidence: 0.6,
     Fallback: func(ctx context.Context, input, reason string) (string, error) { ... },
 })
-d, out, _ := r.Do(ctx, userInput) // d.Route/d.Confidence/d.Reason 全可观测
+d, out, _ := r.Run(ctx, userInput) // d.Route/d.Confidence/d.Reason 全可观测
 ```
 
 与 skill 的分工：意图可枚举（≤10）用 router（一次分类调用，各类链任意编排）；
@@ -573,7 +576,7 @@ FileProvider 假定单根且缓存不变；平台「文件管定义、页面管�
 lib, err := skill.LoadFromFS(fsys) // 重名 fail-fast；_shared 缺省 frozen
 lib.Get(name) / Body / Has / Describe / Names
 lib.Resolve(ctx, skill.Ref{Name: "oom-diag"}) // 实现 Provider（无缓存，读当前实例）
-lib.ListSkills(ctx) / CanonicalName("展示名")  // Lister + AliasResolver
+lib.ListSkills(ctx) / CanonicalName(ctx, "展示名")  // Lister + AliasResolver（v0.10.10 起签名带 ctx）
 ```
 
 `LibMeta` 承载技能版本化契约（v0.9.2）：mode/maturity/version/requires_mcp
@@ -635,13 +638,18 @@ MaxTurns/AllowedTools/Sandbox 五字段支持声明，编译期强制）；`Regi
 （历史教训：kimi 收到 Sandbox=readonly 实则全自主裸跑）。GenericAgent 的能力由
 argv 模板占位符推导。
 
-**RunProcess**（v0.7.1）：只要进程组托管纪律、不需要 Agent 解析层时的导出出口：
+**procx**（v0.7.1 acpx.RunProcess，v0.10.10 迁出为独立包）：只要进程组托管
+纪律、不需要 Agent 解析层的调用方（workcopy 跑 git / mcp spawn stdio server /
+包装外部 cli 审查器）共用同一出口——纪律只有一份：
 
 ```go
-stdout, stderr, code, err := acpx.RunProcess(ctx, acpx.ProcessRequest{
+stdout, stderr, code, err := procx.Run(ctx, procx.RunRequest{
     Argv: []string{"cli", "run"}, Dir: dir, Env: []string{"NEEDED_VAR"},
     Timeout: 5 * time.Minute, MaxStdout: 1 << 20,
 })
+// 进程组执行（Setpgid → 超时/取消 TERM 整组 → 宽限 SIGKILL）+ 环境白名单
+//（procx.ChildEnv——mcp 自行 spawn 子进程时共用）+ stdout/单行双限容 +
+// errors.Is(err, procx.ErrTimeout/ErrCanceled) 程序化分类
 ```
 
 ### mcp —— MCP 工具池
@@ -726,8 +734,8 @@ SearXNG 自建实例（`formats: [html, json]`），零 API key。HTTP 非 200 /
 `TruncEllipsis(s, n)`（截断并追加省略号，展示面统一语义，v0.9.0）、
 `SanitizeFileStem`（外部标识拼文件名前消毒路径分隔/引用语法字符，v0.10.5）、
 `NumberLines`（4 位宽行号前缀——无行号会逼模型编造 file:line 证据，v0.10.5）、
-`StripFence`（markdown 代码围栏剥离的单一事实源——jsonrepair 宽容解析与
-llm.ExtractJSON 共用，多围栏块取第一块，v0.10.9）、
+`StripCodeFence`（markdown 代码围栏剥离的单一事实源——jsonrepair 解析链共用，
+多围栏块取第一块；v0.10.9 引入名 StripFence，v0.10.10 消歧改现名）、
 `GlobMatch`（.gitignore 语义极简 glob：`**` 跨目录/`*` `?` 单段，`?` 按 rune，
 v0.10.9 自 severity 迁入）。
 
@@ -857,7 +865,7 @@ cur := h.Load()  // 运行中请求继续用旧快照跑完，新请求即时用
 栅栏剥离 → 散文抽对象 → 语法修复 → 标量归一。领域 schema 留给调用方。
 
 ```go
-jsonrepair.StripFence(s) / ExtractObject(s) / Repair(s) // 全角、非法转义、尾逗号、未闭合括号
+jsonrepair.ExtractJSON(s) / ExtractObject(s) / Repair(s)   // 全角、非法转义、尾逗号、未闭合括号
 schema := &jsonrepair.Schema{
     StringKeys: map[string]bool{"summary": true},
     ListKeys:   map[string]bool{"steps": true},
@@ -866,15 +874,18 @@ schema := &jsonrepair.Schema{
 err := jsonrepair.ParseLenient(raw, &v, schema)
 ```
 
-### llmjson —— 模型输出 JSON 统一解析入口（v0.9.8）
+### jsonrepair.Unmarshal —— 模型输出 JSON 宽容解析出口（v0.9.8 llmjson；
+v0.10.10 并入本包）
 
 宿主不拼装：一次调用走完 ExtractJSON 快路径 → 语法修复 → 全链宽容三级尝试，
 半损坏产出（全角结构标点/尾逗号/非法转义/截断未闭合）不再整轮判死。领域
-schema 校验（字段语义/枚举约束）仍归调用方。（沉自 argus/internal/llmjson。）
+schema 校验（字段语义/枚举约束）仍归调用方。（沉自 argus/internal/llmjson；
+v0.10.10 原 llmjson 包删除——其唯一依赖 llm.ExtractJSON 一并迁入 jsonrepair，
+解析原语不再依赖 LLM 客户端栈。）
 
 ```go
 var report ReviewReport
-err := llmjson.Unmarshal(modelOutput, &report)
+err := jsonrepair.Unmarshal(modelOutput, &report)
 // 全败时错误同时携带严格与宽容两路原因，可直接回喂 LLM 重试
 ```
 
@@ -955,14 +966,23 @@ safe := fence.EscapeUntrusted(llmOutput) // 中和标题/列表/围栏/水平线
 用于把不可信文本（LLM 产出/PR 描述）渲染进报告前中和结构伪造。前提：下游渲染器
 仍需自行 sanitize 裸 HTML 标签。
 
-### severity —— 严重级别归一化（v0.10.9 职责收敛：指纹→sampling、glob→textutil）
+### reportutil —— 评审/评测报告后处理（v0.10.10 severity/sampling/stats 合并）
+
+同一消费链的三段原语合一（归一严重度 → 聚簇去重 → 置信区间/检验），零依赖：
 
 ```go
-sev, ok := severity.Normalize("CRITICAL")            // → "high", true（词表 high/medium/low）
-sev, _ = severity.Normalize("P0")                    // → "high"（v0.10.5 别名折叠，同 P1→medium/P2,P3→low）
-rank := severity.Rank("high")                        // 排序权重
-fp := sampling.Fingerprint(file, comment)            // SHA256 前 16 位（跨轮去重；迁 sampling）
-textutil.GlobMatch("web/**", "web/src/a.go")         // .gitignore 语义；? 按 rune（迁 textutil）
+sev, ok := reportutil.Normalize("CRITICAL")      // → "high", true（词表 high/medium/low）
+sev, _ = reportutil.Normalize("P0")              // → "high"（别名折叠，同 P1→medium/P2,P3→low）
+rank := reportutil.Rank("high")                  // 排序权重
+fp := reportutil.Fingerprint(file, comment)      // SHA256 前 16 位（跨轮去重；聚簇签名通道）
+textutil.GlobMatch("web/**", "web/src/a.go")     // .gitignore 语义；? 按 rune（v0.10.9 迁 textutil）
+
+groups := reportutil.Aggregate(outputs,          // best-of-N 聚簇：Count≥2 = 相互复现
+    func(o Finding) []string { return []string{o.Fingerprint, o.File + o.NormText} },
+    func(a, b Finding) bool { return sameFinding(a, b) })
+
+lo, hi := reportutil.WilsonCI(8, 10, 1.96)       // 通过率诚实区间（小样本）
+p := reportutil.McNemarExact(6, 0)               // 配对差异显著性（6:0 单向翻转 → p≈0.031）
 ```
 
 ### audit —— 审计日志
@@ -972,34 +992,9 @@ al := audit.New(log, "argus-audit") // nil logger 回退缺省；nil receiver �
 al.Log("feedback.suppressed", "repo", "o/r", "fp", "abcd1234")
 ```
 
-### stats —— 评测/对比统计（v0.10.0）
-
-```go
-lo, hi := stats.WilsonCI(8, 10, 1.96) // → 约 [0.49, 0.94]（"至少多好"的诚实口径）
-p := stats.McNemarExact(6, 0)         // 6:0 单向翻转 → p≈0.031，显著
-```
-
-Wilson 区间回答"至少多好"（小样本下比正态近似诚实，total=0 → (0,0)，结果钳
-[0,1]）；McNemar 回答"两版本差异是否显著"（只看方向翻转的配对，平局不计，
-无翻转 → 1）。z 由调用方传入（沉自 heimdallr 报告层）。
-
-### sampling —— best-of-N 确定性聚簇（v0.10.5）
-
-```go
-groups := sampling.Aggregate(outputs,
-    func(o Finding) []string { return []string{o.Fingerprint, o.File + o.NormText} },
-    func(a, b Finding) bool { return sameFinding(a, b) })
-// groups[i].Count ≥ 2 = 多份采样相互复现（确定性可信度信号，不经任何模型）
-```
-
-测试时计算放大（test-time compute / best-of-N）的确定性聚合：同一任务对同一
-输入跑 N 次，按调用方提供的签名通道集 O(1) 快速定位，最终归属以 `eq` 对比
-簇代表判定——「与首见者等价才并入」，链式漂移不成簇（保守，防漂移链把不同
-问题串成一簇）。`Group` 携带 Representative/Items/Count（簇按首见序）。
-典型用法：审查/生成类 agent 对高危输入 opt-in N 采样，Count≥2 的簇升级呈现
-权重、孤立单现标注降权提示；全部簇保留（漏报防线）。
-`Fingerprint(file, comment)`（SHA256 前 16 位：file+规范化文本，行号不入指纹）
-提供「file+规范化文本」精确指纹通道的 canonical 实现（v0.10.9 自 severity 迁入）。
+reportutil 详解见上（聚簇语义与 Wilson/McNemar 口径不重复展开：
+「与首见者等价才并入」防链式漂移；Wilson 区间回答"至少多好"、McNemar 只看
+方向翻转的配对）。
 
 ---
 
@@ -1108,7 +1103,7 @@ webhook/poller ──▶ worker pool（多副本，ClaimNextPending 分片 + 心
                       │   R2 变更理解（长 diff 分块 textutil.SplitRunes）
                       │   R3 完成度判定（agentrun ReAct + toolprior 工具表：
                       │        get_file/get_diff → search_knowledge/use_skill → MCP 限 5 次）
-                      │   R4 专家 fan-out（builtin ReAct / cli=RunProcess / acpx=9 家 CLI；
+                      │   R4 专家 fan-out（builtin ReAct / cli=procx.Run / acpx=9 家 CLI；
                       │        squads 交叉编队；预算裁剪；熔断门）
                       │   R5 Merger（severity 指纹去重 + 跨轮抑制 + 交叉分歧标注）
                       ├─ workcopy 沙箱（引用计数；实例隔离目录）
@@ -1131,7 +1126,7 @@ flowchart TD
     WF --> R1["R1 需求解析（GenerateJSON）"]
     WF --> R2["R2 变更理解（SplitRunes 分块）"]
     WF --> R3["R3 ReAct（toolprior 工具表 + R3ChatModel 覆盖）"]
-    WF --> R4["R4 专家 fan-out<br/>builtin ReAct / cli=RunProcess / acpx 9 家 / squads 编队"]
+    WF --> R4["R4 专家 fan-out<br/>builtin ReAct / cli=procx.Run / acpx 9 家 / squads 编队"]
     WF --> R5["R5 Merger（指纹去重 + 抑制 + 分歧标注）"]
     R3 -. "search_knowledge" .-> KW[("Milvus 知识库<br/>含误报回流")]
     R4 -. "工作副本" .-> WC[("workcopy 沙箱")]
@@ -1238,3 +1233,17 @@ flowchart TD
   如实报错【行为变化】+ error/step 事件全量转发（transcript 排障）+ DefaultModel
   配置化（-m 须 xiaomi/ 全名）；gemini error 信封/codex error 事件/claude
   is_error result 同纪律横向补齐【行为变化：gemini 错误信封现报错】
+- **v0.10.10 续（第四轮包收敛，包数 34→33）【破坏性，无兼容层】**：
+  新包 procx（acpx 进程执行纪律迁出——acpx/mcp/workcopy 共用，acpx 不再兼
+  「CLI agent 适配」与「全仓进程托管」两角）；新包 reportutil（severity/
+  sampling/stats 合一）；新包 httpx（langfuse/rag/websearch 三份 HTTP+JSON
+  样板单源，修 embedder 吞读错/UTF-8 腰斩两缺陷）；llmjson 并入 jsonrepair
+  （解析原语不再依赖 LLM 客户端栈）；obsx.TokenUsageOf 用量提取单源（修
+  compose 场景 obsx 侧漏采）【行为变化】；skill AliasResolver.CanonicalName
+  签名加 ctx（scanAliases 不再 Background 断链）；router.Do→Run、
+  reflection.Output/agentrun.Answer→Text 词表统一；llm.NewFailoverModel 改
+  ChainLink 链节式（消平行切片错位）；lineage.Hub 复用 hotplug.Holder；
+  textutil.StripFence→StripCodeFence 消歧 + TruncNote 截断留痕单源；
+  acpx.tokenPair 收敛；全仓错误前缀补齐（skill/clarify/policy/worker/mcp/
+  langfuse/rag 约 30 处）；llm 包三份 package doc 合一；jsonrepair
+  Flatten*/CoerceString 收为非导出

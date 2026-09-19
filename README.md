@@ -1,7 +1,7 @@
 # agentkit
 
 AI Agent 开发工具箱 —— 从生产项目提炼的通用组件库：代码审查平台 **Argus** + 智能运维多智能体平台 **bianque** + LLM 评测/观测平台 **heimdallr**。
-当前版本 **v0.10.9** · Go ≥ 1.26 · 34 个包。
+当前版本 **v0.10.10** · Go ≥ 1.26 · 33 个包。
 
 > 📖 **完整框架文档**：[docs/FRAMEWORK.md](docs/FRAMEWORK.md) —— 设计原则、六层架构、
 > 各包逐一详解（API/示例/边界契约）、横向能力专题（可靠性/成本/多副本/安全）、
@@ -65,7 +65,7 @@ git.enjoye.top/enjoydream/agentkit
 
 | 包 | 说明 | 外部依赖 |
 |---|---|---|
-| `acpx` | CLI 编码 agent 统一调用（9 家 + GenericAgent）+ RunProcess 进程托管 | eino |
+| `acpx` | CLI 编码 agent 统一调用（9 家 + GenericAgent，执行纪律经 procx） | eino |
 | `llm` | LLM 客户端（重试/限速/预算/fitInput/JSON + Resilient 降级链 + StageRouter 路由 + CostTracker + UsageHandler 完整用量采集） | eino, eino-ext openai, x/time |
 | `toolprior` | 工具优先级决策层（提示词/排序/限流三层约束） | eino |
 | `mcp` | MCP server 工具池（lazy 建连 + 白名单 + eino 工具适配 + UnwrapMCPText 信封剥离） | eino, eino-ext tool/mcp, mcp-go |
@@ -89,10 +89,10 @@ git.enjoye.top/enjoydream/agentkit
 | `lineage` | 装配血缘图（used_by 单源 + reload 影响面 diff + 焦点子图） | skill, pack |
 | `hotplug` | 插拔视图 Plugboard + 泛型原子快照 Holder | 无 |
 | `logredact` | 日志/审计凭据脱敏（URL/token/Bearer 打码 + Redact 高敏感抹除 + Masker/Restore 拓扑标识令牌化） | 无 |
-| `jsonrepair` | LLM 宽容 JSON 修复（栅栏/尾逗号/全角/散文包裹 + 标量归一） | 无 |
-| `llmjson` | 模型输出 JSON 统一解析入口（ExtractJSON 快路径 → 语法修复 → 全链宽容三级尝试） | llm, jsonrepair |
-| `severity` | 严重级别归一化 + 指纹 + glob 匹配 | 无 |
-| `stats` | 评测/对比统计（Wilson 置信区间 + McNemar 精确检验） | 无 |
+| `jsonrepair` | LLM 宽容 JSON 修复（栅栏/尾逗号/全角/散文包裹 + 标量归一 + ExtractJSON/Unmarshal 解析链） | 无 |
+| `procx` | 子进程托管纪律单源（进程组执行/超时整组终止/限容采集/环境白名单） | 无 |
+| `httpx` | HTTP+JSON 调用纪律单源（限容读体 + rune 安全错误摘要） | 无 |
+| `reportutil` | 评审/评测报告后处理（严重度归一 + 采样聚簇 + Wilson/McNemar 统计） | 无 |
 | `audit` | 审计日志 | ekit |
 | `textutil` | rune 安全截断 + 等分块 + TruncEllipsis + 近重复检测（bigram 集合 + Jaccard） | 无 |
 | `workcopy` | Git 工作副本沙箱（singleflight + 引用计数 + TTL 回收） | ekit, x/sync |
@@ -124,8 +124,10 @@ reg.Run(ctx, "claude", acpx.RunRequest{
 // 包成 eino 工具挂进 ReAct agent（LLM 自主决定调哪个 agent）
 tool := reg.AsTool() // run_coding_agent(agent, prompt, work_dir)
 
-// RunProcess：只要进程组托管纪律、不需要 Agent 解析层时（v0.7.1）
-stdout, stderr, code, err := acpx.RunProcess(ctx, acpx.ProcessRequest{
+// procx：只要进程组托管纪律、不需要 Agent 解析层时（v0.10.10 自 acpx 迁出）
+import "git.enjoye.top/enjoydream/agentkit/procx"
+
+stdout, stderr, code, err := procx.Run(ctx, procx.RunRequest{
     Argv: []string{"my-cli", "run"}, Dir: workDir, Env: []string{"NEEDED_VAR"},
     Timeout: 5 * time.Minute, MaxStdout: 1 << 20,
 })
@@ -283,7 +285,7 @@ res, err := agentrun.PlanAndExecute(ctx, agentrun.PlanExecuteConfig{
     Tools:    tools,
     MaxSteps: 10,
 }, goal)
-fmt.Println(res.Answer)
+fmt.Println(res.Text) // v0.10.10 起自 Answer 改名（产出字段词表统一 Text）
 ```
 
 姊妹原语（v0.8.0）：
@@ -294,7 +296,7 @@ res, _ := reflection.Refine(ctx, &reflection.Config{
     Model: chatModel, Task: "实现函数", Input: 需求,
     Rubric: "1. 处理空切片 2. 无 data race", MaxIterations: 3,
 })
-// res.Output / res.Converged / res.Rounds
+// res.Text / res.Converged / res.Rounds（v0.10.10 起自 Output 改名）
 
 // Router：LLM 意图分类→选路→分发（入口意图可枚举场景）
 r, _ := router.New(&router.Config{Model: fastModel, Routes: []router.Route{
@@ -447,16 +449,17 @@ import "git.enjoye.top/enjoydream/agentkit/fence"
 // 中和不可信文本中的 markdown 注入（标题/列表/围栏/水平线/表格行/引用定义/HTML 注释）
 safe := fence.EscapeUntrusted(llmOutput)
 
-import "git.enjoye.top/enjoydream/agentkit/severity"
+import "git.enjoye.top/enjoydream/agentkit/reportutil"
+import "git.enjoye.top/enjoydream/agentkit/textutil"
 
-// 归一化严重级别
-sev, ok := severity.Normalize("CRITICAL") // → "high", true
+// 归一化严重级别（P0/fatal 等外部审查别名一并折叠）
+sev, ok := reportutil.Normalize("CRITICAL") // → "high", true
 
-// 指纹去重
-fp := severity.Fingerprint("main.go", "未处理错误返回值")
+// 指纹去重（file + 规范化评论文本的 sha256 前 16 位，聚簇签名通道）
+fp := reportutil.Fingerprint("main.go", "未处理错误返回值")
 
 // glob 匹配（.gitignore 语义：web/** 匹配目录内部，不含目录自身；? 按 rune）
-matched := severity.GlobMatch("web/**/*.vue", "web/src/components/Foo.vue")
+matched := textutil.GlobMatch("web/**/*.vue", "web/src/components/Foo.vue")
 ```
 
 ### Skill —— 内容解析 + 决策使用
@@ -506,10 +509,8 @@ err := jsonrepair.ParseLenient(llmOutput, &v, &jsonrepair.Schema{
 })
 // 栅栏剥离 → 散文抽对象 → 语法修复（全角/尾逗号/未闭合）→ 标量归一
 
-import "git.enjoye.top/enjoydream/agentkit/llmjson"
-
 var report ReviewReport
-err := llmjson.Unmarshal(llmOutput, &report)
+err := jsonrepair.Unmarshal(llmOutput, &report)
 // ExtractJSON 快路径 → 语法修复 → 全链宽容；全败错误携带两路原因，可直接回喂重试
 
 import "git.enjoye.top/enjoydream/agentkit/websearch"
@@ -696,15 +697,15 @@ agentkit/websearch      ← 公开资料检索
 agentkit/knowledge/rag  ← 双后端知识检索
 agentkit/worker         ← 异步任务队列（+ pglease PG 租约 / LeaderElector 选主）
 agentkit/hotplug        ← 插拔/热替换
-agentkit/jsonrepair     ← 宽容 JSON 修复
-agentkit/llmjson        ← 模型输出 JSON 统一解析入口
+agentkit/jsonrepair     ← 宽容 JSON 修复 + 模型输出解析链
+agentkit/procx · httpx  ← 子进程/HTTP 调用纪律单源
 agentkit/logredact      ← 凭据脱敏
 agentkit/breaker        ← 熔断保护
 agentkit/progress       ← 事件总线
 agentkit/obsx           ← eino 调用追踪
 agentkit/langfuse       ← Langfuse trace 读回（只读客户端）
-agentkit/stats          ← 评测/对比统计（Wilson CI + McNemar）
-agentkit/fence · severity · audit · textutil · workcopy  ← 安全/审计/文本/副本沙箱
+agentkit/reportutil     ← 评审/评测报告后处理（严重度/聚簇/统计）
+agentkit/fence · audit · textutil · workcopy  ← 安全/审计/文本/副本沙箱
     │
     ▼
   eino / eino-ext / mcp-go / milvus-sdk-go / ekit / x/time / x/sync / semver / yaml.v3
@@ -730,17 +731,17 @@ Argus 内部包改为 import agentkit：
 | `argus/internal/mcp`（如适用） | `agentkit/mcp` |
 | `argus/internal/obs`（如适用） | `agentkit/obsx` |
 | `argus/internal/plugin.Breaker/Breakers` | `agentkit/breaker` |
-| `argus/internal/plugin.SeverityRank/Normalize...` | `agentkit/severity` |
+| `argus/internal/plugin.SeverityRank/Normalize...` | `agentkit/reportutil`（v0.10.10 起自 severity 并入） |
 | `argus/internal/plugin.TokenBudget` | `agentkit/llm.TokenAccountant` 接口 |
-| `argus/internal/plugin.GlobMatch` | `agentkit/severity.GlobMatch` |
-| `argus/internal/plugin.Fingerprint` | `agentkit/severity.Fingerprint` |
+| `argus/internal/plugin.GlobMatch` | `agentkit/textutil.GlobMatch`（v0.10.9 迁入） |
+| `argus/internal/plugin.Fingerprint` | `agentkit/reportutil.Fingerprint`（v0.10.9 迁 sampling，v0.10.10 并入） |
 | `argus/internal/reportview.EscapeUntrusted` | `agentkit/fence.EscapeUntrusted`（v0.10.9 起，原 safejson） |
 
 ### argus（v0.9.8）
 
 | argus 旧路径 | agentkit 新路径 |
 |---|---|
-| `argus/internal/llmjson` | `agentkit/llmjson`（直接消费，内部包删除） |
+| `argus/internal/llmjson` | `agentkit/jsonrepair.Unmarshal`（v0.10.10 起自 llmjson 并入） |
 
 ### bianque（v0.9.0）
 
@@ -805,5 +806,5 @@ Argus 内部包改为 import agentkit：
 | heimdallr 旧路径 | agentkit 新路径 |
 |---|---|
 | `heimdallr/internal/mine/dedup.go` bigramSet/jaccard | `agentkit/textutil`（BigramSet/Jaccard/Similarity/NearDuplicate；InstructionBigrams 留宿主） |
-| `heimdallr/internal/report` WilsonCI/McNemarExact | `agentkit/stats`（原样，comb 转私有） |
+| `heimdallr/internal/report` WilsonCI/McNemarExact | `agentkit/reportutil`（v0.10.10 起自 stats 并入，comb 转私有） |
 | `heimdallr/internal/observe/client.go` + Trace/Observation 契约类型 | `agentkit/langfuse`（错误前缀 langfuse:；UsageTokens/UsageCost 导出；MapTrace 留宿主） |

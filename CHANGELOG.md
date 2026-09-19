@@ -23,6 +23,52 @@
 - **探活指导**：probe/健康判定以 `Run` 返回的 `err != nil` 为失败门槛——上述
   exit=0 错误形态已如实报错；勿用"有输出即通过"判定。
 
+### Changed (cont. 第四轮包收敛，包数 34→33)
+
+- **包结构调整（破坏性，无兼容层——本仓库不承诺跨版本兼容）**：
+  - 新包 `procx`：acpx 的进程执行纪律（进程组执行/超时整组终止/stdout 与单行
+    双限容/环境白名单 ChildEnv）迁出为全仓单源。此前 acpx 同时扮演「CLI agent
+    适配层」与「全仓进程托管设施」两角，workcopy/mcp 为两个函数拖入整个
+    agent 适配域 + eino 依赖。`acpx.RunProcess/ProcessRequest/ChildEnv` →
+    `procx.Run/RunRequest/ChildEnv`（sentinel 随迁：`procx.ErrTimeout/
+    ErrCanceled`）。
+  - 新包 `reportutil`：severity/sampling/stats 三包合并——同一条评审/评测报告
+    消费链（归一严重度 → 聚簇去重 → 置信区间/检验）、消费者画像相同、边界已
+    漂移过一轮（v0.10.9 severity→sampling 指纹迁移）。API 原样随迁。
+  - 新包 `httpx`：HTTP+JSON 调用纪律单源（ctx 感知构造 → 执行 → 限容读体 →
+    状态码检查 → JSON 解码；错误体 rune 安全摘要）。langfuse/rag.OpenAIEmbedder/
+    websearch.Searxng 三份手写样板收敛，**顺带修掉两个真缺陷**：embedder 吞
+    `io.ReadAll` 错误、错误体按字节截断腰斩 UTF-8。
+  - `llmjson` 包删除：`Unmarshal` 并入 `jsonrepair.Unmarshal`（宽松解析与语法
+    修复本就是一条链）；`llm.ExtractJSON` 迁入 `jsonrepair`（解析原语不再依赖
+    LLM 客户端栈——llmjson→llm 方向倒挂消除）。
+- **obsx**【行为变化】：新增 `TokenUsageOf`——eino 回调输出的真实用量提取单源
+  （llm/usage 与 obsx/tracing 共用）。修掉 compose 场景 obsx 侧漏采：图节点
+  对裸 ChatModel 只透传 Message 时，obsx 原缺 ResponseMeta.Usage 回退，usage
+  静默丢失（llm 侧自 v0.10.9 起有该回退，两份实现已漂移）。
+- **skill**【破坏性】：`AliasResolver.CanonicalName` 签名加 ctx——此前
+  `scanAliases` 内部用 `context.Background()` 调 ListSkills，ctx 在别名归一化
+  链上完全断开（FileProvider.Resolve 同步补 ctx.Err() 检查）。
+- **词表统一（破坏性）**：`router.Do`→`Run`（全仓主执行方法统一 Run 词表）；
+  `reflection.RefineResult.Output`→`Text`、`agentrun.PlanExecuteResult.Answer`→
+  `Text`（产出字段统一 Text=模型/agent 最终文本，与 acpx.RunResult.Text 对齐）。
+- **llm**（破坏性）：`NewFailoverModel`/`NewChainFailoverModel` 平行切片构造器
+  收敛为链节式 `NewFailoverModel(...ChainLink)`——names[i] 对不上 models[i] 是
+  装配期静默事故，结构化链节在编译期消错位。
+- **lineage**：`Hub` 改用 `hotplug.Holder` 持快照（读无锁整体原子换，消「快照
+  热替换」概念的第二份实现）。
+- **textutil**：`StripFence`→`StripCodeFence`（与 fence 包「数据区围栏」消歧）；
+  新增 `TruncNote`（rune 截断 + 中文注记留痕单源——llm fitInput/rag 超长行/
+  rag 工具摘要四处收敛）。
+- **杂项收敛**：acpx tokenPair（claude/codex 同形 usage 结构）；llm 包三份
+  package doc 合一（client.go 为唯一章程）；AttemptTimeout 双接线互链注释；
+  全仓错误前缀补齐约 30 处（skill/clarify/policy/worker/mcp/langfuse/rag——
+  同包混用两种风格最伤检索）；测试手写 contains/min/abs 助手清理、
+  skill.cut→strings.Cut、policy.contains→slices.Contains；jsonrepair
+  Flatten*/CoerceString 收为非导出（零外部消费者）。
+- **文档**：README/FRAMEWORK 同步新包面与失效 API 示例修正（severity.Fingerprint
+  等指向 v0.10.9 已迁 API）。
+
 ## v0.10.9 (2026-09-19)
 
 ### Changed
