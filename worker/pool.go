@@ -17,6 +17,8 @@ import (
 const (
 	HeartbeatInterval = 20 * time.Second
 	StaleRunningAfter = 90 * time.Second
+	// queueCallTimeout 单次守护队列调用限时（心跳续期/过期复位共用）。
+	queueCallTimeout = 5 * time.Second
 )
 
 // TaskQueue 任务队列存储接口（调用方实现，如 GORM/MySQL/Redis）。
@@ -112,35 +114,44 @@ func (p *Pool) heartbeatLoop(ctx context.Context) {
 	}
 }
 
-// heartbeat TouchRunningHeartbeats（panic 隔离 + 5s 限时）。
+// heartbeat TouchRunningHeartbeats（panic 隔离 + 限时，骨架见 guardedCall）。
 func (p *Pool) heartbeat() {
-	defer func() {
-		if r := recover(); r != nil {
-			p.logger().Error("agentkit.worker.heartbeat_panic", "panic", fmt.Sprint(r))
-		}
-	}()
-	hbCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := p.Queue.TouchRunningHeartbeats(hbCtx); err != nil {
-		p.logger().Warn("agentkit.worker.heartbeat_failed", "error", err.Error())
-	}
+	_ = p.guardedCall("agentkit.worker.heartbeat_panic", "agentkit.worker.heartbeat_failed",
+		p.Queue.TouchRunningHeartbeats)
 }
 
-// resetStale ResetRunningToPending（panic 隔离 + 5s 限时）。
+// resetStale ResetRunningToPending（panic 隔离 + 限时，骨架见 guardedCall）。
 func (p *Pool) resetStale() {
-	defer func() {
-		if r := recover(); r != nil {
-			p.logger().Error("agentkit.worker.stale_reset_panic", "panic", fmt.Sprint(r))
-		}
-	}()
-	rsCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if n, err := p.Queue.ResetRunningToPending(rsCtx, StaleRunningAfter); err != nil {
-		p.logger().Warn("agentkit.worker.stale_reset_failed", "error", err.Error())
-	} else if n > 0 {
+	var n int64
+	_ = p.guardedCall("agentkit.worker.stale_reset_panic", "agentkit.worker.stale_reset_failed",
+		func(ctx context.Context) error {
+			var err error
+			n, err = p.Queue.ResetRunningToPending(ctx, StaleRunningAfter)
+			return err
+		})
+	if n > 0 {
 		p.logger().Warn("agentkit.worker.stale_running_reset", "count", n,
 			"stale_after", StaleRunningAfter.String())
 	}
+}
+
+// guardedCall 守护队列调用的统一骨架：panic 隔离（记 panicLog）+ queueCallTimeout
+// 独立限时 ctx + 失败 Warn（failLog）。Queue 是调用方实现（GORM 等），panic 若穿透
+// 会杀死心跳 goroutine——本实例全部在途任务心跳停止 → 90s 后被对端复位重跑
+// （静默双跑），故与 claim/runTask 同等隔离。
+func (p *Pool) guardedCall(panicLog, failLog string, fn func(ctx context.Context) error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			p.logger().Error(panicLog, "panic", fmt.Sprint(r))
+			err = fmt.Errorf("queue panic: %v", r)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), queueCallTimeout)
+	defer cancel()
+	if err = fn(ctx); err != nil {
+		p.logger().Warn(failLog, "error", err.Error())
+	}
+	return err
 }
 
 // Stop 两阶段停机：取消领取循环 → 等 grace（排空期间心跳继续续期）→ 硬取消执行 →

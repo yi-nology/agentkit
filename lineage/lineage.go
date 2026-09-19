@@ -42,6 +42,20 @@ type Skill struct {
 	Deprecated  *skill.Deprecated
 }
 
+// SkillFromMeta 把 skill.LibMeta 投影为血缘输入（字段映射的唯一事实源——
+// 装配方不再手工逐字段对拷，LibMeta 演进时单点跟进）。
+func SkillFromMeta(m skill.LibMeta) Skill {
+	return Skill{
+		Name:        m.Name,
+		Version:     m.Version,
+		Maturity:    m.Maturity,
+		Source:      m.Source,
+		RequiresMCP: m.RequiresMCP,
+		Provides:    m.Provides,
+		Deprecated:  m.Deprecated,
+	}
+}
+
 // ExpertEdges 专家的装配边（slug → 技能/工具授予）。
 type ExpertEdges struct {
 	Skills     []string `json:"skills"`     // 有效技能（覆盖感知）
@@ -163,6 +177,11 @@ type Impact struct {
 	UsedBy       []string `json:"used_by,omitempty"`
 	ToolsAdded   []string `json:"tools_added,omitempty"`
 	ToolsRemoved []string `json:"tools_removed,omitempty"`
+	// SkillsAdded/SkillsRemoved refs_changed 时的技能名集合。
+	// 历史包袱：refs_changed 曾把技能名装进 tools_added/tools_removed（字段名撒谎），
+	// 新消费方应读本字段；旧字段仍同步填充，待消费方迁移完毕后下线。
+	SkillsAdded   []string `json:"skills_added,omitempty"`
+	SkillsRemoved []string `json:"skills_removed,omitempty"`
 }
 
 // Diff 对比前后两份装配图，产出结构化影响清单（仅 diff 可观察字段，无变化不产出）。
@@ -271,7 +290,9 @@ func Diff(prev, cur *Lineage) []Impact {
 		if len(added) > 0 || len(removed) > 0 {
 			sort.Strings(added)
 			sort.Strings(removed)
-			out = append(out, Impact{Type: "refs_changed", Expert: slug, ToolsAdded: added, ToolsRemoved: removed})
+			out = append(out, Impact{Type: "refs_changed", Expert: slug,
+				ToolsAdded: added, ToolsRemoved: removed, // 兼容旧消费方（实为技能名）
+				SkillsAdded: added, SkillsRemoved: removed})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {

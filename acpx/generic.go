@@ -2,8 +2,6 @@ package acpx
 
 import (
 	"context"
-	"encoding/json"
-	"strings"
 )
 
 // 编译期断言。
@@ -42,9 +40,6 @@ func (g *GenericAgent) Name() string {
 
 // Run 执行通用 CLI agent。
 func (g *GenericAgent) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
-	if err := req.validate(); err != nil {
-		return nil, err
-	}
 	var argv []string
 	for _, a := range g.Argv {
 		switch a {
@@ -62,16 +57,16 @@ func (g *GenericAgent) Run(ctx context.Context, req RunRequest) (*RunResult, err
 			argv = append(argv, a)
 		}
 	}
-	stdout, _, code, err := execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), nil, 0)
+	stdout, code, err := runCLI(ctx, req, argv, nil)
 	if err != nil {
 		return nil, err
 	}
 	if !g.IsJSON {
-		return &RunResult{Text: strings.TrimSpace(stdout), ExitCode: code, Raw: []byte(stdout)}, nil
+		return fallbackResult(stdout, code), nil
 	}
 	var out openCodeOut
-	if err := json.Unmarshal([]byte(extractJSONObj(stdout)), &out); err != nil || out.Text == "" {
-		return &RunResult{Text: strings.TrimSpace(stdout), ExitCode: code, Raw: []byte(stdout)}, nil
+	if err := parseJSONOut(stdout, &out); err != nil || out.Text == "" {
+		return fallbackResult(stdout, code), nil
 	}
 	r := &RunResult{Text: out.Text, SessionID: out.SessionID, ExitCode: code, Raw: []byte(stdout)}
 	if out.Tokens != nil {

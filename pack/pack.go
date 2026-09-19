@@ -1,6 +1,7 @@
 // Package pack 领域包（expert/pack 目录布局）的契约面：布局约定为
 // `_shared/`（平台共享基线）+ 各包目录（`<包>/`，`_` 前缀目录不算包），
-// 与 skill.Library 的扫描约定一致。本包承载跨包的 MCP 工具面契约清单
+// LayoutDirs 是该约定的单一事实源（本包的 mcp/ 扫描与 skill.Library 的
+// skills/ 扫描共用——布局演进单点修改）。本包承载跨包的 MCP 工具面契约清单
 // ——加载规则（基线/整文件覆盖/字典序冲突）为唯一事实源，调用方
 // （reload 校验、lint、血缘）共享同一份加载语义。
 package pack
@@ -14,6 +15,25 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+// LayoutBaseline `_shared` 基线目录名。
+const LayoutBaseline = "_shared"
+
+// LayoutDirs 领域包布局约定的单一事实源：返回基线目录名与全部包目录名
+// （`_` 前缀目录不算包），包名按字典序返回（确定性装配序契约）。
+func LayoutDirs(fsys fs.FS) (baseline string, packs []string, err error) {
+	dirs, err := fs.ReadDir(fsys, ".")
+	if err != nil {
+		return "", nil, err
+	}
+	for _, d := range dirs {
+		if d.IsDir() && !strings.HasPrefix(d.Name(), "_") {
+			packs = append(packs, d.Name())
+		}
+	}
+	sort.Strings(packs)
+	return LayoutBaseline, packs, nil
+}
 
 // ManifestTool 清单声明的单工具（契约面；desc 仅供人读）。
 type ManifestTool struct {
@@ -77,20 +97,13 @@ func LoadToolManifests(fsys fs.FS) (map[string]*ToolManifest, []string, error) {
 		return nil
 	}
 	// _shared 基线先入；包按字典序覆盖（与领域包装配的确定性排序契约一致）。
-	if err := parse(path.Join("_shared", "mcp"), "_shared"); err != nil {
-		return nil, nil, err
-	}
-	dirs, err := fs.ReadDir(fsys, ".")
+	baseline, packs, err := LayoutDirs(fsys)
 	if err != nil {
 		return nil, nil, err
 	}
-	var packs []string
-	for _, d := range dirs {
-		if d.IsDir() && !strings.HasPrefix(d.Name(), "_") {
-			packs = append(packs, d.Name())
-		}
+	if err := parse(path.Join(baseline, "mcp"), baseline); err != nil {
+		return nil, nil, err
 	}
-	sort.Strings(packs)
 	for _, pack := range packs {
 		if err := parse(path.Join(pack, "mcp"), pack); err != nil {
 			return nil, nil, err

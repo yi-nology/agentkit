@@ -24,16 +24,3 @@ func readFileTrim(path string) string {
 	}
 	return strings.TrimSpace(string(b))
 }
-
-// extractJSONObj 截取首个 { 到末个 }（日志混入 JSON 输出时的容错）。
-func extractJSONObj(s string) string {
-	start := strings.IndexByte(s, '{')
-	if start < 0 {
-		return s
-	}
-	end := strings.LastIndexByte(s, '}')
-	if end < start {
-		return s[start:]
-	}
-	return s[start : end+1]
-}

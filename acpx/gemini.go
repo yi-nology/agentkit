@@ -2,8 +2,6 @@ package acpx
 
 import (
 	"context"
-	"encoding/json"
-	"strings"
 )
 
 // 编译期断言。
@@ -52,10 +50,6 @@ type geminiOut struct {
 
 // Run 执行 Gemini CLI 非交互任务。
 func (g *Gemini) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
-	if err := req.validate(); err != nil {
-		return nil, err
-	}
-
 	argv := []string{g.Bin, "-p", promptArg(req.Prompt), "--output-format", "json"}
 	if req.Model != "" {
 		argv = append(argv, "-m", req.Model)
@@ -69,15 +63,15 @@ func (g *Gemini) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		argv = append(argv, "--approval-mode", "yolo")
 	}
 
-	stdout, _, code, err := execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), nil, 0)
+	stdout, code, err := runCLI(ctx, req, argv, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	var out geminiOut
-	if err := json.Unmarshal([]byte(extractJSONObj(stdout)), &out); err != nil || out.Response == "" {
+	if err := parseJSONOut(stdout, &out); err != nil || out.Response == "" {
 		// 非 JSON 输出：全文兜底
-		return &RunResult{Text: strings.TrimSpace(stdout), ExitCode: code, Raw: []byte(stdout)}, nil
+		return fallbackResult(stdout, code), nil
 	}
 	r := &RunResult{Text: out.Response, ExitCode: code, Raw: []byte(stdout)}
 	if out.Stats != nil {

@@ -84,26 +84,16 @@ func PlanAndExecute(ctx context.Context, cfg PlanExecuteConfig, goal string) (*P
 	iter := runner.Query(ctx, goal)
 
 	var answer string
-	for {
-		event, ok := iter.Next()
-		if !ok {
-			break
-		}
-		if event == nil {
-			continue
-		}
-		if event.Err != nil {
-			return nil, fmt.Errorf("agentrun: plan-execute 事件错误: %w", event.Err)
-		}
-		if event.Output == nil || event.Output.MessageOutput == nil {
-			continue
-		}
-		mv := event.Output.MessageOutput
+	err = drainEvents(iter, "plan-execute", func(mv *adk.MessageVariant) error {
 		// Replanner 判定完成时输出最终答复（assistant 无 tool_calls）
 		if mv.Role == schema.Assistant && mv.Message != nil &&
 			len(mv.Message.ToolCalls) == 0 && mv.Message.Content != "" {
 			answer = mv.Message.Content
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	if answer == "" {
 		return nil, fmt.Errorf("agentrun: plan-execute 未产出最终答复（max_steps=%d）", maxSteps)

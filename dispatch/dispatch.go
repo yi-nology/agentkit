@@ -8,12 +8,19 @@ import (
 	"fmt"
 )
 
+// 拒绝原因词表（DenyError.Reason 的取值全集，审计消费方按常量比对而非裸字符串）。
+const (
+	ReasonNotAllowed    = "not_allowed"    // caller→callee 不在 allow 矩阵
+	ReasonDepthExceeded = "depth_exceeded" // 派发深度超限
+	ReasonSelfDispatch  = "self_dispatch"  // 自派发
+)
+
 // DenyError 结构化拒绝（宿主可原样落审计事件载荷）。
 type DenyError struct {
 	Caller string
 	Callee string
 	Depth  int
-	Reason string // not_allowed | depth_exceeded | self_dispatch
+	Reason string // ReasonNotAllowed | ReasonDepthExceeded | ReasonSelfDispatch
 }
 
 func (e *DenyError) Error() string {
@@ -49,13 +56,13 @@ func NewGuard(src EdgeSource, maxDepth int) *Guard {
 // Assert 校验 caller→callee 派发；不合法返回 *DenyError。
 func (g *Guard) Assert(caller, callee string, depth int) error {
 	if caller == callee {
-		return &DenyError{Caller: caller, Callee: callee, Depth: depth, Reason: "self_dispatch"}
+		return &DenyError{Caller: caller, Callee: callee, Depth: depth, Reason: ReasonSelfDispatch}
 	}
 	if depth >= g.maxDepth {
-		return &DenyError{Caller: caller, Callee: callee, Depth: depth, Reason: "depth_exceeded"}
+		return &DenyError{Caller: caller, Callee: callee, Depth: depth, Reason: ReasonDepthExceeded}
 	}
 	if _, ok := g.allow[caller][callee]; !ok {
-		return &DenyError{Caller: caller, Callee: callee, Depth: depth, Reason: "not_allowed"}
+		return &DenyError{Caller: caller, Callee: callee, Depth: depth, Reason: ReasonNotAllowed}
 	}
 	return nil
 }
@@ -63,7 +70,7 @@ func (g *Guard) Assert(caller, callee string, depth int) error {
 // AssertDepth 仅校验深度（引擎内部环节推进用）。
 func (g *Guard) AssertDepth(depth int) error {
 	if depth >= g.maxDepth {
-		return &DenyError{Depth: depth, Reason: "depth_exceeded"}
+		return &DenyError{Depth: depth, Reason: ReasonDepthExceeded}
 	}
 	return nil
 }

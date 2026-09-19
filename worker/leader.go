@@ -150,6 +150,19 @@ func (e *LeaderElector) stopping() bool {
 	}
 }
 
+// releaseTimeout 让位释放租约的限时（独立 Background ctx：原 ctx 往往已取消）。
+const releaseTimeout = 5 * time.Second
+
+// releaseLease 主动释放租约（计划内交接）：失败仅 Warn——租约 ttl 到期会自然失效，
+// 让位失败不阻断停机流程。
+func (e *LeaderElector) releaseLease() {
+	ctx, cancel := context.WithTimeout(context.Background(), releaseTimeout)
+	defer cancel()
+	if err := e.store.Release(ctx, e.key, e.holder); err != nil {
+		e.log.Warn("agentkit.leader.release_failed", "key", e.key, "error", err.Error())
+	}
+}
+
 // tick 竞争一次租约。返回 false = 竞选应终止（已停止或 ctx 取消）。
 func (e *LeaderElector) tick(ctx context.Context) bool {
 	// 停止/取消后不再发起新的竞争：避免"Stop 之后新获得租约"的让位遗漏
@@ -168,11 +181,7 @@ func (e *LeaderElector) tick(ctx context.Context) bool {
 	}
 	if ok && e.stopping() {
 		// Stop 与 TryAcquire 穿插：刚获得的租约立即让位，不宣布当选
-		ctx2, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := e.store.Release(ctx2, e.key, e.holder); err != nil {
-			e.log.Warn("agentkit.leader.release_failed", "key", e.key, "error", err.Error())
-		}
+		e.releaseLease()
 		return false
 	}
 	e.setLeader(ok)
@@ -188,11 +197,7 @@ func (e *LeaderElector) yield() {
 	if !wasLeader {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := e.store.Release(ctx, e.key, e.holder); err != nil && e.log != nil {
-		e.log.Warn("agentkit.leader.release_failed", "key", e.key, "error", err.Error())
-	}
+	e.releaseLease()
 	e.log.Info("agentkit.leader.yielded", "key", e.key, "holder", e.holder)
 }
 

@@ -224,11 +224,38 @@ func (r *Resilient) GenerateJSON(ctx context.Context, stage string, msgs []*sche
 
 // generateWithTrace 带尝试链的生成核心。
 func (r *Resilient) generateWithTrace(ctx context.Context, stage string, msgs []*schema.Message) (*schema.Message, []Attempt, error) {
+	var out *schema.Message
+	attempts, err := r.walkChain(ctx, stage, func(p Provider) error {
+		o, e := r.tryOneProvider(ctx, p, stage, msgs)
+		if e != nil {
+			return e
+		}
+		out = o
+		return nil
+	})
+	if err != nil {
+		return nil, attempts, err
+	}
+	return out, attempts, nil
+}
+
+// generateJSONWithTrace 带尝试链的 JSON 生成核心。
+func (r *Resilient) generateJSONWithTrace(ctx context.Context, stage string, msgs []*schema.Message, out any) ([]Attempt, error) {
+	return r.walkChain(ctx, stage, func(p Provider) error {
+		return r.tryOneProviderJSON(ctx, p, stage, msgs, out)
+	})
+}
+
+// walkChain 降级链遍历骨架（Generate/GenerateJSON 共用）：预算逐 provider 复查 →
+// 熔断跳过 → nil model 防御 → try 单模型尝试 → 成功记熔断/记模型返回，失败配对
+// Failure、记 attempt、发 OnFallback。ctx 取消中止全链；全部熔断/链空返回
+// 带原因的错误而非误导性的"0 个模型失败"。
+func (r *Resilient) walkChain(ctx context.Context, stage string, try func(p Provider) error) ([]Attempt, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if r.Budget != nil && r.Budget.Remaining() <= 0 {
-		return nil, nil, fmt.Errorf("llm: %s 任务 token 预算已耗尽（%d）", stage, r.Budget.Used())
+		return nil, fmt.Errorf("llm: %s 任务 token 预算已耗尽（%d）", stage, r.Budget.Used())
 	}
 
 	var attempts []Attempt
@@ -236,7 +263,7 @@ func (r *Resilient) generateWithTrace(ctx context.Context, stage string, msgs []
 	for i, p := range r.chain.Providers {
 		// 预算逐 provider 复查：截断记账后本链内仍会继续烧，越早短路越省钱
 		if r.Budget != nil && r.Budget.Remaining() <= 0 {
-			return nil, attempts, fmt.Errorf("llm: %s 任务 token 预算已耗尽（%d）", stage, r.Budget.Used())
+			return attempts, fmt.Errorf("llm: %s 任务 token 预算已耗尽（%d）", stage, r.Budget.Used())
 		}
 		// 熔断中的模型直接跳过（不记录为 attempt——没真正尝试）
 		if !r.breakers.Allow(p.ModelName()) {
@@ -251,18 +278,18 @@ func (r *Resilient) generateWithTrace(ctx context.Context, stage string, msgs []
 		}
 
 		start := time.Now()
-		out, err := r.tryOneProvider(ctx, p, stage, msgs)
+		err := try(p)
 		if err == nil {
 			r.breakers.Success(p.ModelName())
 			r.rememberModel(p.ModelName())
-			return out, attempts, nil
+			return attempts, nil
 		}
 		// ctx 取消：用户主动中止，不再尝试其他模型。
 		// 这次尝试确实失败了，仍要配对 Failure——否则半开探测被提前返回吃掉，
 		// 该模型被永久逐出降级链
 		r.breakers.Failure(p.ModelName())
 		if ctx.Err() != nil {
-			return nil, attempts, ctx.Err()
+			return attempts, ctx.Err()
 		}
 		attempts = append(attempts, Attempt{
 			Provider: p.Name(), Model: p.ModelName(),
@@ -279,64 +306,6 @@ func (r *Resilient) generateWithTrace(ctx context.Context, stage string, msgs []
 	}
 
 	// 全部被熔断跳过时 attempts 为空——"全部 0 个模型失败"极具误导性
-	if len(attempts) == 0 {
-		if breakerSkipped > 0 {
-			return nil, nil, fmt.Errorf("llm: %s 全部 %d 个模型均处于熔断冷却中，未发起任何尝试", stage, breakerSkipped)
-		}
-		return nil, nil, fmt.Errorf("llm: %s 降级链为空", stage)
-	}
-	return nil, attempts, &AttemptError{Stage: stage, Attempts: attempts}
-}
-
-// generateJSONWithTrace 带尝试链的 JSON 生成核心。
-func (r *Resilient) generateJSONWithTrace(ctx context.Context, stage string, msgs []*schema.Message, out any) ([]Attempt, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if r.Budget != nil && r.Budget.Remaining() <= 0 {
-		return nil, fmt.Errorf("llm: %s 任务 token 预算已耗尽（%d）", stage, r.Budget.Used())
-	}
-
-	var attempts []Attempt
-	breakerSkipped := 0
-	for i, p := range r.chain.Providers {
-		// 预算逐 provider 复查（同 generateWithTrace）
-		if r.Budget != nil && r.Budget.Remaining() <= 0 {
-			return attempts, fmt.Errorf("llm: %s 任务 token 预算已耗尽（%d）", stage, r.Budget.Used())
-		}
-		if !r.breakers.Allow(p.ModelName()) {
-			breakerSkipped++
-			continue
-		}
-		// nil model 防御：Allow 已放行（可能占用半开探测配额），必须配对 Failure
-		if isNilModel(p.Model()) {
-			r.breakers.Failure(p.ModelName())
-			attempts = append(attempts, Attempt{Provider: p.Name(), Model: p.ModelName(), Err: "provider.Model() 为 nil"})
-			continue
-		}
-
-		start := time.Now()
-		err := r.tryOneProviderJSON(ctx, p, stage, msgs, out)
-		if err == nil {
-			r.breakers.Success(p.ModelName())
-			r.rememberModel(p.ModelName())
-			return attempts, nil
-		}
-		// ctx 取消路径同样配对 Failure（防止半开探测被吃掉，见 generateWithTrace）
-		r.breakers.Failure(p.ModelName())
-		if ctx.Err() != nil {
-			return attempts, ctx.Err()
-		}
-		attempts = append(attempts, Attempt{Provider: p.Name(), Model: p.ModelName(), Err: err.Error(), Duration: time.Since(start)})
-		if r.OnFallback != nil {
-			to := ""
-			if i+1 < len(r.chain.Providers) {
-				to = r.chain.Providers[i+1].ModelName()
-			}
-			r.OnFallback(p.ModelName(), to, stage, err.Error())
-		}
-	}
-
 	if len(attempts) == 0 {
 		if breakerSkipped > 0 {
 			return nil, fmt.Errorf("llm: %s 全部 %d 个模型均处于熔断冷却中，未发起任何尝试", stage, breakerSkipped)
@@ -375,7 +344,7 @@ func (r *Resilient) tryOneProvider(ctx context.Context, p Provider, stage string
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(r.backoff(attempt, lastErr)):
+			case <-time.After(backoffDelay(attempt, r.cfg.BaseDelay, r.cfg.MaxDelay, lastErr)):
 			}
 		}
 		if r.Limiter != nil {
@@ -474,27 +443,6 @@ func isNilModel(m model.BaseChatModel) bool {
 		return v.IsNil()
 	}
 	return false
-}
-
-// backoff 指数退避 + jitter；429 下限 5s。
-func (r *Resilient) backoff(attempt int, err error) time.Duration {
-	base := r.cfg.BaseDelay
-	minDelay := base
-	if IsRateLimitError(err) {
-		minDelay = 5 * time.Second
-		if minDelay > r.cfg.MaxDelay {
-			minDelay = r.cfg.MaxDelay
-		}
-	}
-	delay := base * time.Duration(1<<uint(attempt-1))
-	if delay < minDelay {
-		delay = minDelay
-	}
-	delay += time.Duration(fastRand(int64(base / 2)))
-	if delay > r.cfg.MaxDelay {
-		delay = r.cfg.MaxDelay
-	}
-	return delay
 }
 
 func (r *Resilient) rememberModel(name string) {

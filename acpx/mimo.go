@@ -47,10 +47,6 @@ type mimoEvent struct {
 
 // Run 执行 mimo run 任务。
 func (m *Mimo) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
-	if err := req.validate(); err != nil {
-		return nil, err
-	}
-
 	argv := []string{m.Bin, "run", promptArg(req.Prompt), "--format", "json"}
 	if req.Model != "" {
 		argv = append(argv, "-m", req.Model)
@@ -79,9 +75,7 @@ func (m *Mimo) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		case "text":
 			if ev.Part != nil && ev.Part.Text != "" {
 				text = ev.Part.Text // 增量文本：保留最后一段（完整回复以 step_finish 收尾）
-				if req.OnEvent != nil {
-					req.OnEvent(Event{Type: EventText, Text: ev.Part.Text, Raw: json.RawMessage(line)})
-				}
+				emitText(req, ev.Part.Text, line)
 			}
 		case "step_finish":
 			if ev.SessionID != "" {
@@ -97,7 +91,7 @@ func (m *Mimo) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		}
 	}
 
-	stdout, _, code, err := execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), onLine, 0)
+	stdout, code, err := runCLI(ctx, req, argv, onLine)
 	if err != nil {
 		return nil, err
 	}

@@ -67,6 +67,8 @@ type Event struct {
 }
 
 // 事件类型词表。
+// 注意与 acpx 包事件词表（text/tool_call/tool_result）互为平行词汇：
+// 两侧有意保持同名字面量以便消费方对译；改动任一侧词表时同步检查另一侧。
 const (
 	EventReasoning  = "reasoning"
 	EventText       = "text"
@@ -111,18 +113,15 @@ func RunWithEvents(ctx context.Context, cfg Config, query string, onEvent func(E
 // 注意：两次尝试共用 cfg.Tools 实例——工具表含 toolprior.WithCallLimit 等
 // 有状态包装时，限流计数会跨尝试累计；需要按尝试重置预算请设置 ToolsFactory。
 func RunWithRetry(ctx context.Context, cfg Config, query, retryQuery string) (string, error) {
-	out, mutating, err := runWithMeta(ctx, cfg, query, nil)
-	if err == nil {
-		return out, nil
-	}
-	if mutating != "" && !cfg.RetryAfterMutation {
-		return "", mutationSkipErr(mutating, err)
-	}
-	return run(ctx, cfg, retryQuery, nil)
+	return RunWithEventsAndRetry(ctx, cfg, query, retryQuery, nil)
 }
 
 // RunWithEventsAndRetry 带 过程事件回调 的失败回喂重试（重试过程可观测）。
 // 副作用守卫与 RunWithRetry 一致：首轮调过变更类工具后不整体重跑（观测事件照常全量回调）。
+// RunWithEventsAndRetry 首轮失败（LLM 调用错误/超时等）后以 retryQuery 整体重跑一轮。
+// ⚠ retryQuery 是**完整替换** query 而非追加（2026-09-19 bianque 实弹教训：消费者若传
+// 纯提示语，重试轮将丢失全部任务材料——工单/合议上下文全空，模型输出「未收到输入」类
+// 空心合规报告）。消费方应传 query+提示语的拼接串；改拼接语义属破坏性变更，见 CHANGELOG。
 func RunWithEventsAndRetry(ctx context.Context, cfg Config, query, retryQuery string, onEvent func(Event)) (string, error) {
 	out, mutating, err := runWithMeta(ctx, cfg, query, onEvent)
 	if err == nil {
@@ -166,22 +165,7 @@ func run(ctx context.Context, cfg Config, query string, onEvent func(Event)) (st
 		sawFinal   bool
 		toolCalled = map[string]string{} // tool_call id → 工具名（回填 tool_result 事件）
 	)
-	for {
-		event, ok := iter.Next()
-		if !ok {
-			break
-		}
-		if event == nil {
-			continue
-		}
-		if event.Err != nil {
-			// 底层事件通道是 UnboundedChan（生产者不阻塞），提前返回不会泄漏
-			return "", fmt.Errorf("agentrun: agent 事件错误: %w", event.Err)
-		}
-		if event.Output == nil || event.Output.MessageOutput == nil {
-			continue
-		}
-		mv := event.Output.MessageOutput
+	err = drainEvents(iter, "agent", func(mv *adk.MessageVariant) error {
 		if mv.Message != nil {
 			for _, tc := range mv.Message.ToolCalls {
 				toolCalled[tc.ID] = tc.Function.Name
@@ -191,7 +175,7 @@ func run(ctx context.Context, cfg Config, query string, onEvent func(Event)) (st
 		if onEvent != nil && mv.Role == schema.Tool && mv.Message != nil {
 			name := toolCalled[mv.Message.ToolCallID]
 			onEvent(Event{Type: EventToolResult, CallID: mv.Message.ToolCallID, Tool: name, Text: mv.Message.Content})
-			continue
+			return nil
 		}
 		if mv.Role == schema.Assistant && mv.Message != nil {
 			// 思考过程先于动作/答复（同一 assistant 消息内 reasoning_content 先产出）
@@ -206,7 +190,7 @@ func run(ctx context.Context, cfg Config, query string, onEvent func(Event)) (st
 				if onEvent != nil && finalText != "" {
 					onEvent(Event{Type: EventText, Text: finalText})
 				}
-				continue
+				return nil
 			}
 			// 中间过程：tool_calls 声明 → 工具调用事件（含参数与原生 ID，观测面需要看到调用命令并精确配对）
 			if onEvent != nil {
@@ -215,6 +199,10 @@ func run(ctx context.Context, cfg Config, query string, onEvent func(Event)) (st
 				}
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		return "", err
 	}
 	if !sawFinal {
 		return "", fmt.Errorf("agentrun: agent 未产出最终文本（iterations=%d）", cfg.maxIterations())
@@ -223,4 +211,28 @@ func run(ctx context.Context, cfg Config, query string, onEvent func(Event)) (st
 		return "", fmt.Errorf("agentrun: agent 最终答复为空（iterations=%d）", cfg.maxIterations())
 	}
 	return finalText, nil
+}
+
+// drainEvents ADK 事件流消费骨架（run 与 PlanAndExecute 共用）：迭代 → 空事件跳过 →
+// 事件错误包装中止 → 非消息输出跳过 → 业务处理交给 handle（返回错误同样中止上抛）。
+// 底层事件通道是 UnboundedChan（生产者不阻塞），提前返回不会泄漏。
+func drainEvents(iter *adk.AsyncIterator[*adk.AgentEvent], errKind string, handle func(mv *adk.MessageVariant) error) error {
+	for {
+		event, ok := iter.Next()
+		if !ok {
+			return nil
+		}
+		if event == nil {
+			continue
+		}
+		if event.Err != nil {
+			return fmt.Errorf("agentrun: %s 事件错误: %w", errKind, event.Err)
+		}
+		if event.Output == nil || event.Output.MessageOutput == nil {
+			continue
+		}
+		if err := handle(event.Output.MessageOutput); err != nil {
+			return err
+		}
+	}
 }

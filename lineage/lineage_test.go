@@ -155,3 +155,23 @@ func TestHub(t *testing.T) {
 		t.Fatal("Resync 应换图留清单")
 	}
 }
+
+func TestSkillFromMeta(t *testing.T) {
+	// LibMeta → Skill 投影的字段映射（映射唯一事实源的回归钉）。
+	dep := &skill.Deprecated{Reason: "r", RemoveAfter: "2026-12-31"}
+	meta := skill.LibMeta{
+		Name: "sop", Version: "1.2.0", Maturity: skill.MaturityStable, Source: "k8s",
+		RequiresMCP: []skill.MCPDep{{Server: "sec", Tools: []string{"collect"}}},
+		Provides:    []string{"triage"},
+		Deprecated:  dep,
+		// 以下字段不应进入血缘输入
+		Title: "展示名", Path: "k8s/skills/sop/SKILL.md", Description: "desc",
+	}
+	got := SkillFromMeta(meta)
+	if got.Name != "sop" || got.Version != "1.2.0" || got.Maturity != "stable" ||
+		got.Source != "k8s" || got.Deprecated != dep ||
+		!slices.Equal(got.Provides, []string{"triage"}) ||
+		len(got.RequiresMCP) != 1 || got.RequiresMCP[0].Server != "sec" {
+		t.Fatalf("SkillFromMeta 映射不符: %+v", got)
+	}
+}

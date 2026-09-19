@@ -33,7 +33,7 @@ var OnNegationHit func()
 // 不再因包含关键词而误命中；同一输入里关键词多处出现时，任一处未被否定即命中。
 // 输入应已小写（中文不受影响；拉丁关键词内部自动 ToLower 兜底）。
 func KeywordHit(lowerInput, keyword string) bool {
-	return hitAt(lowerInput, keyword, nil)
+	return hitScan(lowerInput, keyword, nil, false)
 }
 
 // KeywordHitBoundary KeywordHit 的词边界变体：命中处的前一字符与后一字符都不得是
@@ -41,13 +41,13 @@ func KeywordHit(lowerInput, keyword string) bool {
 // 「skill」「killed」误命中；中文关键词不受影响（相邻字符本就不是 ASCII 字母数字，
 // 行为与 KeywordHit 完全一致，混排输入如「ssh执行」也不受牵连——只约束声明的词）。
 func KeywordHitBoundary(lowerInput, keyword string) bool {
-	return hitBoundary(lowerInput, keyword, nil)
+	return hitScan(lowerInput, keyword, nil, true)
 }
 
 // KeywordHitBoundaryExcept KeywordHitBoundary 的排除构式变体（词边界 + mask 构式 +
 // 否定守门三重判定）。
 func KeywordHitBoundaryExcept(lowerInput, keyword string, masks []string) bool {
-	return hitBoundary(lowerInput, keyword, masks)
+	return hitScan(lowerInput, keyword, masks, true)
 }
 
 // KeywordHitExcept KeywordHit 的排除构式变体：关键词某处命中若落在任一 mask 复合短语
@@ -55,12 +55,13 @@ func KeywordHitBoundaryExcept(lowerInput, keyword string, masks []string) bool {
 // 否定守门与 KeywordHit 一致。语义：处置词出现在问句/名词性构式里不触发执行链，
 // 而同句真正的处置词（kill）不受「执行结果」这类名词性短语牵连。
 func KeywordHitExcept(lowerInput, keyword string, masks []string) bool {
-	return hitAt(lowerInput, keyword, masks)
+	return hitScan(lowerInput, keyword, masks, false)
 }
 
-// hitAt 逐处扫描关键词命中：否定守门命中作废；masks 非空时命中位置落在任一
-// mask 短语内部同样作废——只作废该处，不作废整条词。
-func hitAt(lowerInput, keyword string, masks []string) bool {
+// hitScan 逐处扫描关键词命中（四个导出入口的统一骨架）：任一处通过全部守门即命中；
+// 否定守门/词边界/排除构式都只作废**该处**，不作废整条词。
+// boundary=true 叠加 ASCII 词边界判定（拉丁词防 skill/killed 误命中）。
+func hitScan(lowerInput, keyword string, masks []string, boundary bool) bool {
 	kw := strings.ToLower(keyword)
 	for start := 0; ; {
 		i := strings.Index(lowerInput[start:], kw)
@@ -68,39 +69,16 @@ func hitAt(lowerInput, keyword string, masks []string) bool {
 			return false
 		}
 		pos := start + i
-		if neg := negatedAt(lowerInput, pos); neg {
-			if OnNegationHit != nil {
-				OnNegationHit() // 观测面：否定守门作废计数（误判率观察）
-			}
-			if !maskedAt(lowerInput, pos, len(kw), masks) {
-				start = pos + len(kw) // 该处被否定，继续找下一处
-				continue
-			}
-		}
-		if !maskedAt(lowerInput, pos, len(kw), masks) {
-			return true
-		}
-		start = pos + len(kw) // 该处被构式排除，继续找下一处
-	}
-}
-
-// hitBoundary 词边界逐处扫描：边界失败/否定/构式排除只作废该处，继续找下一处。
-func hitBoundary(lowerInput, keyword string, masks []string) bool {
-	kw := strings.ToLower(keyword)
-	for start := 0; ; {
-		i := strings.Index(lowerInput[start:], kw)
-		if i < 0 {
-			return false
-		}
-		pos := start + i
-		end := pos + len(kw)
-		if neg := negatedAt(lowerInput, pos); neg && OnNegationHit != nil {
+		neg := negatedAt(lowerInput, pos)
+		masked := maskedAt(lowerInput, pos, len(kw), masks)
+		// 观测面：否定作为作废原因时计数（命中已被构式排除的，不归功否定守门）
+		if neg && !masked && OnNegationHit != nil {
 			OnNegationHit()
 		}
-		if !boundaryFail(lowerInput, pos, end) && !negatedAt(lowerInput, pos) && !maskedAt(lowerInput, pos, len(kw), masks) {
+		if !neg && !masked && (!boundary || !boundaryFail(lowerInput, pos, pos+len(kw))) {
 			return true
 		}
-		start = pos + len(kw)
+		start = pos + len(kw) // 该处被作废，继续找下一处
 	}
 }
 

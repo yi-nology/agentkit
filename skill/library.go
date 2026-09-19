@@ -7,10 +7,11 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"git.enjoye.top/enjoydream/agentkit/pack"
 )
 
 // 技能生命周期常量（通用概念，非特定平台专属）。
@@ -44,10 +45,12 @@ type Deprecated struct {
 
 // LibMeta 技能完整元数据（渐进披露清单 + 生命周期管理）。
 // JSON 标签即对外 API 契约（名册/血缘面），变更须同步消费方。
+// yaml 标签即 SKILL.md frontmatter 契约（omitempty 与 marshalFrontmatter
+// 「缺省字段不写回防膨胀」约定一体），解析/序列化均以本结构体为唯一事实源。
 type LibMeta struct {
-	Name        string   `yaml:"name" json:"name"`
+	Name        string   `yaml:"name,omitempty" json:"name"`
 	Title       string   `yaml:"-" json:"-"` // frontmatter name（展示名）；目录名规范
-	Description string   `yaml:"description" json:"description"`
+	Description string   `yaml:"description,omitempty" json:"description"`
 	Mode        string   `yaml:"mode" json:"mode"`
 	Version     string   `yaml:"version,omitempty" json:"version,omitempty"`
 	Maturity    string   `yaml:"maturity,omitempty" json:"maturity,omitempty"`
@@ -72,6 +75,45 @@ func (m LibMeta) DeprecationExpired(now time.Time) bool {
 		return false
 	}
 	return now.After(d.Add(24*time.Hour - time.Nanosecond))
+}
+
+var (
+	semverRe = regexp.MustCompile(`^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
+	dateRe   = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+)
+
+// Validate 元数据硬校验（加载期 fail-fast；错误信息带「字段: 消息」定位）。
+//   - mode/maturity 枚举；version 须为 SemVer（缺省 0.0.0 合法）；
+//   - maturity=deprecated 必须带 deprecated.remove_after（YYYY-MM-DD）——弃用必须有窗口终点；
+//   - requires_mcp[].server 非空。
+func (m LibMeta) Validate() error {
+	switch m.Mode {
+	case ModeStatic, ModeOnDemand:
+	default:
+		return fmt.Errorf("mode 非法 %q（static|on_demand）", m.Mode)
+	}
+	switch m.Maturity {
+	case MaturityExperimental, MaturityStable, MaturityFrozen, MaturityDeprecated:
+	default:
+		return fmt.Errorf("maturity 非法 %q（experimental|stable|frozen|deprecated）", m.Maturity)
+	}
+	if m.Version != "" && m.Version != DefaultVersion && !semverRe.MatchString(m.Version) {
+		return fmt.Errorf("version 非法 %q（SemVer）", m.Version)
+	}
+	if m.Maturity == MaturityDeprecated {
+		if m.Deprecated == nil || m.Deprecated.RemoveAfter == "" {
+			return fmt.Errorf("maturity=deprecated 必须填写 deprecated.remove_after（YYYY-MM-DD）")
+		}
+		if !dateRe.MatchString(m.Deprecated.RemoveAfter) {
+			return fmt.Errorf("deprecated.remove_after 非法 %q（YYYY-MM-DD）", m.Deprecated.RemoveAfter)
+		}
+	}
+	for i, dep := range m.RequiresMCP {
+		if dep.Server == "" {
+			return fmt.Errorf("requires_mcp[%d].server 不能为空", i)
+		}
+	}
+	return nil
 }
 
 // LibEntry 库内单技能。
@@ -170,15 +212,14 @@ func LoadFromFS(fsys fs.FS, opts ...LoadOption) (*Library, error) {
 		return nil
 	}
 
-	prefixes := []string{path.Join("_shared", "skills")}
-	dirs, err := fs.ReadDir(fsys, ".")
+	// 布局约定（_shared 基线 + 非 _ 前缀包目录）以 pack.LayoutDirs 为单一事实源。
+	baseline, packs, err := pack.LayoutDirs(fsys)
 	if err != nil {
 		return nil, err
 	}
-	for _, d := range dirs {
-		if d.IsDir() && !strings.HasPrefix(d.Name(), "_") {
-			prefixes = append(prefixes, path.Join(d.Name(), "skills"))
-		}
+	prefixes := []string{path.Join(baseline, "skills")}
+	for _, p := range packs {
+		prefixes = append(prefixes, path.Join(p, "skills"))
 	}
 	prefixes = append(prefixes, cfg.extraPrefixes...)
 
@@ -298,78 +339,6 @@ var (
 	_ Lister        = (*Library)(nil)
 	_ AliasResolver = (*Library)(nil)
 )
-
-// ParseRichFrontmatter 用 yaml 解析 SKILL.md frontmatter（name/description/mode/
-// version/maturity/requires_mcp/deprecated/compatibility）。返回元数据与正文。
-// frontmatter name 写入 Title（展示名）；目录名仍作规范 Name。
-func ParseRichFrontmatter(dirName, content string) (LibMeta, string, error) {
-	meta := LibMeta{Name: dirName, Mode: ModeStatic}
-	body := content
-	if !strings.HasPrefix(content, "---") {
-		return meta, body, nil
-	}
-	inner := content[3:]
-	rest := strings.TrimPrefix(inner, "\n")
-	// 空 frontmatter：`---\n---` 经剥壳后 rest 以 --- 开头（无前置换行）。
-	if strings.HasPrefix(rest, "---") {
-		after := strings.TrimPrefix(rest, "---")
-		if after == "" || after[0] == '\n' || after[0] == '\r' {
-			return meta, strings.TrimSpace(strings.TrimPrefix(after, "\n")), nil
-		}
-	}
-	// 定位独立成行的闭合 ---。
-	closeAt := -1
-	for off := 0; ; {
-		j := strings.Index(rest[off:], "\n---")
-		if j < 0 {
-			break
-		}
-		pos := off + j
-		endLine := pos + 4 // 指向 \n--- 之后
-		if endLine >= len(rest) || rest[endLine] == '\n' || rest[endLine] == '\r' {
-			closeAt = pos
-			break
-		}
-		off = pos + 1
-	}
-	if closeAt < 0 {
-		return meta, body, fmt.Errorf("frontmatter 未闭合")
-	}
-	fmRaw := rest[:closeAt]
-	after := strings.TrimPrefix(rest[closeAt+1:], "---")
-	body = strings.TrimSpace(after)
-
-	var typed struct {
-		Name           string      `yaml:"name"`
-		Description    string      `yaml:"description"`
-		Mode           string      `yaml:"mode"`
-		Version        string      `yaml:"version"`
-		Maturity       string      `yaml:"maturity"`
-		RequiresMCP    []MCPDep    `yaml:"requires_mcp"`
-		RequiresConfig []string    `yaml:"requires_config"`
-		Deprecated     *Deprecated `yaml:"deprecated"`
-		Provides       []string    `yaml:"provides"`
-		Compatibility  string      `yaml:"compatibility"`
-	}
-	if err := yaml.Unmarshal([]byte(fmRaw), &typed); err != nil {
-		return meta, body, fmt.Errorf("frontmatter YAML 非法: %w", err)
-	}
-	if typed.Name != "" {
-		meta.Title = typed.Name
-	}
-	meta.Description = typed.Description
-	if typed.Mode != "" {
-		meta.Mode = typed.Mode
-	}
-	meta.Version = typed.Version
-	meta.Maturity = typed.Maturity
-	meta.RequiresMCP = typed.RequiresMCP
-	meta.RequiresConfig = typed.RequiresConfig
-	meta.Deprecated = typed.Deprecated
-	meta.Provides = typed.Provides
-	meta.Compatibility = typed.Compatibility
-	return meta, body, nil
-}
 
 // DeprecatedExpiredInUse 列出「弃用窗口已过且仍被 used 引用」的技能名（调用方的
 // reload/lint 失败清单）。used 为 技能名 → 引用方列表；未引用的过期弃用不阻塞加载。

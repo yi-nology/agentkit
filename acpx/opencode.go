@@ -2,8 +2,6 @@ package acpx
 
 import (
 	"context"
-	"encoding/json"
-	"strings"
 )
 
 // 编译期断言。
@@ -23,10 +21,6 @@ func (c *OpenCode) Name() string { return "opencode" }
 
 // Run 执行 opencode run 任务（--session 续聊、-m provider/model）。
 func (c *OpenCode) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
-	if err := req.validate(); err != nil {
-		return nil, err
-	}
-
 	argv := []string{c.Bin, "run", promptArg(req.Prompt), "--json"}
 	if req.Model != "" {
 		argv = append(argv, "-m", req.Model)
@@ -35,14 +29,14 @@ func (c *OpenCode) Run(ctx context.Context, req RunRequest) (*RunResult, error) 
 		argv = append(argv, "--session", req.SessionID)
 	}
 
-	stdout, _, code, err := execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), nil, 0)
+	stdout, code, err := runCLI(ctx, req, argv, nil)
 	if err != nil {
 		return nil, err
 	}
 	var out openCodeOut
-	if err := json.Unmarshal([]byte(extractJSONObj(stdout)), &out); err != nil || out.Text == "" {
+	if err := parseJSONOut(stdout, &out); err != nil || out.Text == "" {
 		// 非 JSON 输出（版本差异/日志混入）：全文当文本兜底
-		return &RunResult{Text: strings.TrimSpace(stdout), ExitCode: code, Raw: []byte(stdout)}, nil
+		return fallbackResult(stdout, code), nil
 	}
 	r := &RunResult{Text: out.Text, SessionID: out.SessionID, ExitCode: code, Raw: []byte(stdout)}
 	if out.Tokens != nil {

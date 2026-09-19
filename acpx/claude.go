@@ -32,10 +32,6 @@ func (c *ClaudeCode) Name() string {
 
 // Run 执行 headless 任务（stream-json NDJSON 事件流解析）。
 func (c *ClaudeCode) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
-	if err := req.validate(); err != nil {
-		return nil, err
-	}
-
 	argv := []string{c.Bin, "-p", promptArg(req.Prompt), "--output-format", "stream-json", "--verbose"}
 	if req.Model != "" {
 		argv = append(argv, "--model", req.Model)
@@ -75,15 +71,19 @@ func (c *ClaudeCode) Run(ctx context.Context, req RunRequest) (*RunResult, error
 				result.SessionID = ev.SessionID
 			}
 		case "assistant":
-			if ev.Message != nil && req.OnEvent != nil {
+			if ev.Message != nil {
 				for _, blk := range ev.Message.Content {
 					switch blk.Type {
 					case "text":
-						req.OnEvent(Event{Type: EventText, Text: blk.Text, Raw: json.RawMessage(line)})
+						emitText(req, blk.Text, line)
 					case "thinking":
-						req.OnEvent(Event{Type: EventThinking, Text: blk.Thinking, Raw: json.RawMessage(line)})
+						if req.OnEvent != nil {
+							req.OnEvent(Event{Type: EventThinking, Text: blk.Thinking, Raw: json.RawMessage(line)})
+						}
 					case "tool_use":
-						req.OnEvent(Event{Type: EventToolCall, Tool: blk.Name, Raw: json.RawMessage(line)})
+						if req.OnEvent != nil {
+							req.OnEvent(Event{Type: EventToolCall, Tool: blk.Name, Raw: json.RawMessage(line)})
+						}
 					}
 				}
 			}
@@ -102,7 +102,7 @@ func (c *ClaudeCode) Run(ctx context.Context, req RunRequest) (*RunResult, error
 		}
 	}
 
-	stdout, _, code, err := execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), onLine, 0)
+	stdout, code, err := runCLI(ctx, req, argv, onLine)
 	if err != nil {
 		// result 事件已到达（agent 正常完成但进程退出码非零）：以结果为准
 		if result != nil && result.Text != "" {
@@ -114,7 +114,7 @@ func (c *ClaudeCode) Run(ctx context.Context, req RunRequest) (*RunResult, error
 	}
 	if result == nil {
 		// 无 stream-json 输出（旧版本/输出格式变更）：全文当文本兜底
-		result = &RunResult{Text: strings.TrimSpace(stdout)}
+		result = fallbackResult(stdout, code)
 	}
 	result.ExitCode = code
 	result.Raw = []byte(stdout)

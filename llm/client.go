@@ -10,7 +10,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"time"
 
 	"github.com/cloudwego/eino/components/model"
@@ -117,7 +116,7 @@ func (c *Client) Generate(ctx context.Context, stage string, msgs []*schema.Mess
 	truncatedBoosted := false
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
-			delay := c.backoffDelay(attempt, base, ceil, lastErr)
+			delay := backoffDelay(attempt, base, ceil, lastErr)
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -160,18 +159,21 @@ func (c *Client) Generate(ctx context.Context, stage string, msgs []*schema.Mess
 	return nil, fmt.Errorf("llm: %s 调用失败（已重试 %d 次）: %w", stage, maxRetries-1, lastErr)
 }
 
-func (c *Client) backoffDelay(attempt int, base, ceil time.Duration, err error) time.Duration {
+// backoffDelay 指数退避 + jitter（Client 与 Resilient 共用）；429 下限 5s，
+// 下限本身仍封顶 ceil——ceil<5s 的测试场景下最终钳到 ceil 的结果不变。
+func backoffDelay(attempt int, base, ceil time.Duration, err error) time.Duration {
 	minDelay := base
 	if IsRateLimitError(err) {
 		minDelay = 5 * time.Second
+		if minDelay > ceil {
+			minDelay = ceil
+		}
 	}
 	delay := base * time.Duration(1<<uint(attempt-1))
 	if delay < minDelay {
 		delay = minDelay
 	}
-	if half := int64(base / 2); half > 0 { // base=1ns 等极小值时 Int63n(0) 会 panic
-		delay += time.Duration(rand.Int63n(half))
-	}
+	delay += time.Duration(fastRand(int64(base / 2)))
 	if delay > ceil {
 		delay = ceil
 	}

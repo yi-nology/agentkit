@@ -113,11 +113,14 @@ func (r *RunRequest) validate() error {
 	return nil
 }
 
+// defaultTimeout 单次运行缺省超时（RunRequest.Timeout 与 ProcessRequest.Timeout 共用）。
+const defaultTimeout = 10 * time.Minute
+
 func (r *RunRequest) timeout() time.Duration {
 	if r.Timeout > 0 {
 		return r.Timeout
 	}
-	return 10 * time.Minute
+	return defaultTimeout
 }
 
 // promptArg prompt 传参防注入：以 "-" 开头的 prompt 传给位置参数或 flag 值时，

@@ -24,10 +24,6 @@ func (c *Codex) Name() string { return "codex" }
 // Run 执行 Codex exec 任务。
 // 最终文本优先取 --output-last-message 文件（官方保证的最终消息），事件流兜底。
 func (c *Codex) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
-	if err := req.validate(); err != nil {
-		return nil, err
-	}
-
 	lastMsg, cleanup, err := tempFile("acpx-codex-last-*")
 	if err != nil {
 		return nil, err
@@ -61,9 +57,7 @@ func (c *Codex) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		case "item.completed":
 			if ev.Item != nil && ev.Item.ItemType == "assistant_message" && ev.Item.Text != "" {
 				lastText = ev.Item.Text
-				if req.OnEvent != nil {
-					req.OnEvent(Event{Type: EventText, Text: ev.Item.Text, Raw: json.RawMessage(line)})
-				}
+				emitText(req, ev.Item.Text, line)
 			}
 		case "turn.completed":
 			// 多轮任务逐轮累加（与 mimo 适配器一致，只取最后一轮会少计）
@@ -74,7 +68,7 @@ func (c *Codex) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		}
 	}
 
-	stdout, _, code, err := execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), onLine, 0)
+	stdout, code, err := runCLI(ctx, req, argv, onLine)
 	if err != nil {
 		// 与 claude 族一致：output-last-message 已有最终消息（agent 正常完成但
 		// 退出码非零）时以结果为准

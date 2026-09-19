@@ -64,3 +64,24 @@ func TestLoadToolManifests(t *testing.T) {
 		t.Fatalf("空 FS 应合法: %v %v %+v", err, ws, ms2)
 	}
 }
+
+func TestLayoutDirs(t *testing.T) {
+	// 布局约定：_shared 基线 + 非 _ 前缀目录算包，按字典序返回。
+	fsys := fstest.MapFS{
+		"_shared/mcp/sec.yaml": mf("name: sec\n"),
+		"k8s/pack.yaml":        mf("api_version: 1\n"),
+		"ops/pack.yaml":        mf("api_version: 1\n"),
+		"_drafts/readme.md":    mf("x"),
+		"root-file.md":         mf("x"), // 根目录散文件不是包
+	}
+	baseline, packs, err := LayoutDirs(fsys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseline != LayoutBaseline {
+		t.Fatalf("baseline 应为 %q，实际 %q", LayoutBaseline, baseline)
+	}
+	if len(packs) != 2 || packs[0] != "k8s" || packs[1] != "ops" {
+		t.Fatalf("包目录应为 [k8s ops]（字典序、排除 _ 前缀），实际 %v", packs)
+	}
+}

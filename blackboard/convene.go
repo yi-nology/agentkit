@@ -29,6 +29,8 @@ type ConveneResult struct {
 
 // Convene 召集专家轮转协作：每轮按序让每位专家观察增量并可写入；
 // 一整轮无人贡献（共识达成）或达 MaxRounds 停止。
+// 注意：Specialist.Name 须全局唯一——观察游标按 Name 键控，重名会共享游标
+// （后执行者读到被同名者推进的 since，跳过的增量永不重看）。
 func Convene(ctx context.Context, b *Board, specialists []Specialist, opts *ConveneOptions) (*ConveneResult, error) {
 	if b == nil {
 		return nil, fmt.Errorf("blackboard: Board 不能为空")

@@ -9,12 +9,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"git.enjoye.top/enjoydream/agentkit/acpx"
 	"git.enjoye.top/enjoydream/ekit/observability/logx"
 	"golang.org/x/sync/singleflight"
 )
@@ -60,6 +60,10 @@ func NewPool(root string, log logx.Logger) *Pool {
 	return &Pool{Root: root, Log: log, entries: map[string]*wcEntry{}}
 }
 
+// registerRetryMax "登记后丢失"重试上限：条目只可能被 Sweep/refresh 重挂删除，
+// 重建一次后必命中；更多次说明存在未知并发竞争，报错优于死循环。
+const registerRetryMax = 1
+
 // Ensure 返回就绪的工作副本目录（浅克隆 base + checkout PR head）。
 // 同 key 并发调用共享同一目录（引用计数）。
 func (p *Pool) Ensure(ctx context.Context, key WorktreeKey) (string, error) {
@@ -75,62 +79,85 @@ func (p *Pool) Ensure(ctx context.Context, key WorktreeKey) (string, error) {
 	}
 
 	k := key.String()
-	p.mu.Lock()
-	if e, ok := p.entries[k]; ok {
-		e.refCount++
-		e.lastUsed = time.Now()
-		dir := e.dir
-		p.mu.Unlock()
+	if dir, ok := p.hitExisting(k); ok {
 		return dir, nil
 	}
 	// 同 PR 换 head（新推送）：领用引用归零的保留目录做增量刷新——只 fetch 新的
 	// PR refspec，base 分支浅对象已在库，省掉整次浅克隆。领用（rc++）阻断 Sweep
 	// 与并发二次领用；刷新失败回落全新克隆。
-	var claim *wcEntry
+	if claim := p.claimStale(key); claim != nil {
+		if dir, ok := p.refreshClaim(ctx, k, key, claim, token); ok {
+			return dir, nil
+		}
+	}
+	return p.buildAndRegister(ctx, k, key, baseURL, token)
+}
+
+// hitExisting 同 key 快路径：命中即领用（rc++）返回目录。
+func (p *Pool) hitExisting(k string) (dir string, ok bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.entries[k]
+	if !ok {
+		return "", false
+	}
+	e.refCount++
+	e.lastUsed = time.Now()
+	return e.dir, true
+}
+
+// claimStale 领用同 PR 引用归零的保留目录（换 head 增量刷新候选）。
+func (p *Pool) claimStale(key WorktreeKey) *wcEntry {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	for _, e := range p.entries {
 		if e.refCount <= 0 &&
 			e.key.Platform == key.Platform && e.key.Owner == key.Owner &&
 			e.key.Repo == key.Repo && e.key.Number == key.Number &&
 			e.key.HeadSHA != key.HeadSHA {
 			e.refCount++
-			claim = e
-			break
+			return e
 		}
 	}
-	p.mu.Unlock()
+	return nil
+}
 
-	if claim != nil {
-		if err := p.refresh(ctx, claim.dir, key, token); err == nil {
-			p.mu.Lock()
-			if e, ok := p.entries[k]; ok {
-				// 竞争窗口内同 key 已被常规建仓登记：既有条目胜出。claim 条目仍挂在
-				// 旧 key 下且工作树已被推进到新 head——留着会让旧 key 命中错误内容，
-				// 必须整条作废
-				e.refCount++
-				e.lastUsed = time.Now()
-				dir := e.dir
-				delete(p.entries, claim.key.String())
-				p.mu.Unlock()
-				_ = os.RemoveAll(claim.dir)
-				return dir, nil
-			}
-			delete(p.entries, claim.key.String())
-			claim.key = key
-			claim.lastUsed = time.Now()
-			p.entries[k] = claim
-			dir := claim.dir
-			p.mu.Unlock()
-			return dir, nil
-		}
+// refreshClaim 对领用的保留目录做增量刷新。ok=false 表示刷新失败（已释放领用，
+// 调用方回落全新克隆）。
+func (p *Pool) refreshClaim(ctx context.Context, k string, key WorktreeKey, claim *wcEntry, token string) (dir string, ok bool) {
+	if err := p.refresh(ctx, claim.dir, key, token); err != nil {
 		// 刷新失败（force push 抹掉旧引用等）→ 释放领用，回落全新克隆
 		p.mu.Lock()
 		claim.refCount--
 		p.mu.Unlock()
+		return "", false
 	}
+	p.mu.Lock()
+	if e, dup := p.entries[k]; dup {
+		// 竞争窗口内同 key 已被常规建仓登记：既有条目胜出。claim 条目仍挂在
+		// 旧 key 下且工作树已被推进到新 head——留着会让旧 key 命中错误内容，
+		// 必须整条作废
+		e.refCount++
+		e.lastUsed = time.Now()
+		dir = e.dir
+		delete(p.entries, claim.key.String())
+		p.mu.Unlock()
+		_ = os.RemoveAll(claim.dir)
+		return dir, true
+	}
+	delete(p.entries, claim.key.String())
+	claim.key = key
+	claim.lastUsed = time.Now()
+	p.entries[k] = claim
+	dir = claim.dir
+	p.mu.Unlock()
+	return dir, true
+}
 
-	// 建仓与登记同在 singleflight 内完成（条目 rc=0，引用由 Do 返回后统一加）：
-	// 共享者退出时若条目已消失（同 flight 先到者的条目被 Sweep 回收或 refresh 重挂
-	// key），重走一次建仓，杜绝拿到已删除目录
+// buildAndRegister 建仓与登记同在 singleflight 内完成（条目 rc=0，引用由 Do 返回后
+// 统一加）：共享者退出时若条目已消失（同 flight 先到者的条目被 Sweep 回收或 refresh
+// 重挂 key），重走一次建仓（上限 registerRetryMax），杜绝拿到已删除目录。
+func (p *Pool) buildAndRegister(ctx context.Context, k string, key WorktreeKey, baseURL, token string) (string, error) {
 	for round := 0; ; round++ {
 		// 返回值不消费：建仓与登记同在 flight 内，Do 返回后统一从 entries 取
 		_, err, _ := p.group.Do(k, func() (any, error) {
@@ -161,7 +188,7 @@ func (p *Pool) Ensure(ctx context.Context, key WorktreeKey) (string, error) {
 			return dir, nil
 		}
 		p.mu.Unlock()
-		if round >= 1 {
+		if round >= registerRetryMax {
 			return "", fmt.Errorf("workcopy: %s 工作副本登记后丢失（并发释放竞争）", k)
 		}
 	}
@@ -253,7 +280,7 @@ func (p *Pool) prepare(ctx context.Context, key WorktreeKey, baseURL, token stri
 // 浅对象已在库——这是"第二次审查少拉取"的收益来源），checkout --force 与
 // prepare 末步同款。origin/<默认分支> 不随刷新前移，base 端新鲜度以首次克隆
 // 为界（由保留 TTL 限定窗口）；默认分支大跨度强推场景由调用方全新克隆兜底
-//（refresh 失败即回落 prepare）。
+// （refresh 失败即回落 prepare）。
 func (p *Pool) refresh(ctx context.Context, dir string, key WorktreeKey, token string) error {
 	insecureTLS := p.InsecureTLSOf != nil && p.InsecureTLSOf(key.Platform)
 	steps := [][]string{
@@ -281,24 +308,23 @@ func scrub(msg string, secrets ...string) string {
 	return msg
 }
 
+// gitExecTimeout 单步 git 命令超时（clone/fetch/checkout 各自独立计时）。
+const gitExecTimeout = 5 * time.Minute
+
+// runGit 经 acpx 进程组纪律执行 git：Setpgid 建组 + 超时 TERM 整组（ssh/askpass
+// 孙进程不泄漏）、环境白名单（clone URL 内嵌 token——全量继承会把宿主凭证透传给
+// 子进程）、stderr 截尾随错误返回。GIT_TERMINAL_PROMPT=0 禁交互由 childEnv 统一注入。
 func runGit(ctx context.Context, args []string, insecureTLS bool) error {
-	c, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(c, args[0], args[1:]...)
-	// 禁交互：认证失败时 git 弹终端提问会挂到超时
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	var env []string
 	if insecureTLS {
-		cmd.Env = append(cmd.Env, "GIT_SSL_NO_VERIFY=true")
+		env = append(env, "GIT_SSL_NO_VERIFY=true")
 	}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		tail := string(out)
-		if len(tail) > 400 {
-			tail = tail[len(tail)-400:]
-		}
-		return fmt.Errorf("%v: %s", err, strings.TrimSpace(tail))
-	}
-	return nil
+	_, _, _, err := acpx.RunProcess(ctx, acpx.ProcessRequest{
+		Argv:    args,
+		Env:     env,
+		Timeout: gitExecTimeout,
+	})
+	return err
 }
 
 // Sweep 清理泄漏的沙箱目录（兜底 TTL 扫描）。

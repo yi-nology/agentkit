@@ -25,11 +25,15 @@ const (
 	ModeFull    Mode = "full"    // 完全访问：≤full_max_risk 代批（最高危恒人工双确认）
 )
 
+// modes 合法模式全集（Normalize/ValidMode 共用单一事实源，新增模式只改这里与常量）。
+var modes = map[Mode]bool{
+	ModeConfirm: true, ModeAuto: true, ModePlan: true, ModeFull: true,
+}
+
 // Normalize 归一：空/非法一律回落 confirm。非法值在 API 入口已被 400 拦截
 // （ValidMode），这里是纵深兜底——审计门不允许因模式脏值放大权限。
 func Normalize(s string) Mode {
-	switch Mode(s) {
-	case ModeConfirm, ModeAuto, ModePlan, ModeFull:
+	if modes[Mode(s)] {
 		return Mode(s)
 	}
 	return ModeConfirm
@@ -37,11 +41,7 @@ func Normalize(s string) Mode {
 
 // ValidMode API 入参严格校验（空串返回 false，由调用方走缺省档）。
 func ValidMode(s string) bool {
-	switch Mode(s) {
-	case ModeConfirm, ModeAuto, ModePlan, ModeFull:
-		return true
-	}
-	return false
+	return modes[Mode(s)]
 }
 
 // Verdict 裁决值：三值裁决 + 两个过程值（plan_only=计划模式只审不执行；

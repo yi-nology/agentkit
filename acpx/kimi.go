@@ -28,10 +28,6 @@ func (k *Kimi) Name() string { return "kimi" }
 
 // Run 执行 Kimi print 模式任务。
 func (k *Kimi) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
-	if err := req.validate(); err != nil {
-		return nil, err
-	}
-
 	argv := []string{k.Bin, "-p", promptArg(req.Prompt), "--output-format", "stream-json"}
 	if req.Model != "" {
 		argv = append(argv, "--model", req.Model)
@@ -48,13 +44,11 @@ func (k *Kimi) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		}
 		if msg.Role == "assistant" && msg.Content != "" {
 			lastAssistant = msg.Content
-			if req.OnEvent != nil {
-				req.OnEvent(Event{Type: EventText, Text: msg.Content, Raw: json.RawMessage(line)})
-			}
+			emitText(req, msg.Content, line)
 		}
 	}
 
-	stdout, _, code, err := execCLI(ctx, req.WorkDir, argv, childEnv(req.Env), req.timeout(), onLine, 0)
+	stdout, code, err := runCLI(ctx, req, argv, onLine)
 	if err != nil {
 		return nil, err
 	}

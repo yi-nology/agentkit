@@ -65,77 +65,71 @@ func (t *Table) Add(e Entry) *Table {
 // Len 当前条目数。
 func (t *Table) Len() int { return len(t.entries) }
 
-// Ordered 按优先级稳定排序返回工具表（同优先级保持注册序）。
-// Info 失败的条目排在末尾（排序键不可得时不遮挡可用工具）。
-func (t *Table) Ordered(ctx context.Context) []tool.BaseTool {
-	type keyed struct {
-		priority int
-		idx      int
-		t        tool.BaseTool
-		missing  bool
-	}
-	keyedEntries := make([]keyed, len(t.entries))
+// resolvedEntry 一条经 Info 解析的注册项（排序视图元素）。
+type resolvedEntry struct {
+	e       Entry
+	idx     int    // 注册序（同优先级的稳定 tiebreak）
+	name    string // Info 失败为空串
+	missing bool   // Info 失败/无名：排末尾，不遮挡可用工具
+}
+
+// sortedEntries 统一排序视图（Ordered 与 StrategyPrompt 共用）：priority 升序 →
+// Info 失败的排末尾 → 同档保持注册序。两处共用同一视图，提示词宣称的顺序
+// 与真实工具表顺序才不会在工具元数据缺失时互相矛盾。
+func (t *Table) sortedEntries(ctx context.Context) []resolvedEntry {
+	rs := make([]resolvedEntry, len(t.entries))
 	for i, e := range t.entries {
 		name := ""
 		if info, err := e.Tool.Info(ctx); err == nil && info.Name != "" {
 			name = info.Name
 		}
-		keyedEntries[i] = keyed{priority: e.Priority, idx: i, t: e.Tool, missing: name == ""}
+		rs[i] = resolvedEntry{e: e, idx: i, name: name, missing: name == ""}
 	}
-	sort.SliceStable(keyedEntries, func(a, b int) bool {
-		if keyedEntries[a].priority != keyedEntries[b].priority {
-			return keyedEntries[a].priority < keyedEntries[b].priority
+	sort.SliceStable(rs, func(a, b int) bool {
+		if rs[a].e.Priority != rs[b].e.Priority {
+			return rs[a].e.Priority < rs[b].e.Priority
 		}
-		if keyedEntries[a].missing != keyedEntries[b].missing {
-			return keyedEntries[b].missing // Info 失败的排末尾，不遮挡可用工具
+		if rs[a].missing != rs[b].missing {
+			return rs[b].missing // Info 失败的排末尾，不遮挡可用工具
 		}
-		return keyedEntries[a].idx < keyedEntries[b].idx
+		return rs[a].idx < rs[b].idx
 	})
-	out := make([]tool.BaseTool, 0, len(keyedEntries))
-	for _, k := range keyedEntries {
-		out = append(out, k.t)
+	return rs
+}
+
+// Ordered 按优先级稳定排序返回工具表（同优先级保持注册序）。
+// Info 失败的条目排在末尾（排序键不可得时不遮挡可用工具）。
+func (t *Table) Ordered(ctx context.Context) []tool.BaseTool {
+	rs := t.sortedEntries(ctx)
+	out := make([]tool.BaseTool, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, r.e.Tool)
 	}
 	return out
 }
 
-// StrategyPrompt 渲染"工具使用策略"提示词段（按优先级序）。
+// StrategyPrompt 渲染"工具使用策略"提示词段（按优先级序，与 Ordered 同一视图）。
 // 空表返回空串。调用方拼进 agent instruction。
 func (t *Table) StrategyPrompt(ctx context.Context) string {
 	if len(t.entries) == 0 {
 		return ""
 	}
-	type line struct {
-		priority int
-		idx      int
-		text     string
-	}
-	var lines []line
-	for i, e := range t.entries {
-		name := fmt.Sprintf("tool#%d", i)
-		if info, err := e.Tool.Info(ctx); err == nil && info.Name != "" {
-			name = info.Name
-		}
-		var parts []string
-		parts = append(parts, fmt.Sprintf("priority=%d", e.Priority))
-		if e.Cost != "" {
-			parts = append(parts, "cost="+e.Cost)
-		}
-		if e.When != "" {
-			parts = append(parts, e.When)
-		}
-		lines = append(lines, line{e.Priority, i, fmt.Sprintf("- %s（%s）", name, strings.Join(parts, "；"))})
-	}
-	sort.SliceStable(lines, func(a, b int) bool {
-		if lines[a].priority != lines[b].priority {
-			return lines[a].priority < lines[b].priority
-		}
-		return lines[a].idx < lines[b].idx
-	})
 	var b strings.Builder
 	b.WriteString("===【工具使用策略（按优先级决策）】===\n")
-	for _, l := range lines {
-		b.WriteString(l.text)
-		b.WriteString("\n")
+	for _, r := range t.sortedEntries(ctx) {
+		name := r.name
+		if name == "" {
+			name = fmt.Sprintf("tool#%d", r.idx)
+		}
+		var parts []string
+		parts = append(parts, fmt.Sprintf("priority=%d", r.e.Priority))
+		if r.e.Cost != "" {
+			parts = append(parts, "cost="+r.e.Cost)
+		}
+		if r.e.When != "" {
+			parts = append(parts, r.e.When)
+		}
+		fmt.Fprintf(&b, "- %s（%s）\n", name, strings.Join(parts, "；"))
 	}
 	b.WriteString("原则：先用优先级数值小的工具取得基础证据；优先级数值大的外部工具（有网络/进程开销）仅在本地信息不足时调用，避免不必要的外部开销。")
 	return b.String()
