@@ -122,3 +122,32 @@ func TestRedactSecrets(t *testing.T) {
 		t.Fatalf("无命中应原样返回: %s", got)
 	}
 }
+
+// 平台 API token 特征前缀（裸形态）打码——2026-09 review-service 收敛评估反哺：
+// 旧规则只覆盖键值对/连接串形态，裸 token 散文形态（sk-/ghp_/JWT）会泄漏。
+func TestRedactProviderTokenPrefixes(t *testing.T) {
+	cases := []struct{ name, in, mustNotContain string }{
+		{"OpenAI 风格", "key is sk-abc123def456ghi789jklmnop", "sk-abc123"},
+		{"Anthropic 风格", "sk-ant-api03-abcdef1234567890abcdef", "sk-ant-api03"},
+		{"GitHub PAT", "push with ghp_0123456789abcdefghij", "ghp_0123456789"},
+		{"Slack", "xoxb-123456789012-abcdef", "xoxb-123456789012"},
+		{"AWS AKIA", "aws key AKIAIOSFODNN7EXAMPLE in log", "AKIAIOSFODNN7EXAMPLE"},
+		{"JWT", "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c leaked", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIi"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := Redact(c.in)
+			if strings.Contains(got, c.mustNotContain) {
+				t.Fatalf("泄漏未打码: %q -> %q", c.in, got)
+			}
+		})
+	}
+}
+
+func TestRedactKeepsNormalText(t *testing.T) {
+	// 防误伤：普通文本/路径/短词不受新规则影响。
+	normal := "task done in 1.25s, see design.md and http://example.com/docs"
+	if got := Redact(normal); got != normal {
+		t.Fatalf("普通文本被误改: %q -> %q", normal, got)
+	}
+}
