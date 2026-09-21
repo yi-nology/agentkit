@@ -143,7 +143,25 @@ func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) ([]tool.BaseTool, er
 		if len(tools) == 0 && len(spec.Allow) > 0 && p.OnError != nil {
 			p.OnError(cfg.Name, fmt.Errorf("mcp: %s 白名单 %v 无一命中（返回 0 个工具）", cfg.Name, spec.Allow))
 		}
-		out = append(out, WrapErrorAsObservation(tools)...)
+		// 调用期自愈（批次五十）：自愈层在最外（传输层死亡重连重试），业务错误
+		// （isError:true）仍由 errorAsObservation 层转观察回喂 LLM。
+		for _, w := range WrapErrorAsObservation(tools) {
+			if it, ok := w.(tool.InvokableTool); ok {
+				info, ierr := it.Info(ctx)
+				if ierr != nil {
+					out = append(out, w)
+					continue
+				}
+				allow := spec.Allow
+				out = append(out, &selfHealTool{
+					name:   info.Name,
+					inner:  it,
+					redial: p.selfHealRedial(ctx, cfg, allow, info.Name),
+				})
+				continue
+			}
+			out = append(out, w)
+		}
 	}
 	return out, nil
 }

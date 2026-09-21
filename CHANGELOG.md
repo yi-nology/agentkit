@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.10.17 (2026-09-21)
+
+### Added
+
+- **mcp**：调用期自愈 `selfHealTool`（批次五十，对标 ZCode callTool 自愈：先查
+  disconnected 再重连、SDK 裸 "Not connected" 竞态重试一次）——`Pool.Tools` 返回的
+  每个可调用工具套自愈层：传输层死亡类错误（not connected/connection closed/broken
+  pipe 等，`isTransportDead` 判定）时摘死连接→重连→GetTools 按名解析同名工具重试
+  一次；业务类错误（isError:true，errorAsObservation 层）不触发自愈。自愈层在最外，
+  观察包装在内层。自愈重连失败/重试仍失败如实上抛（错误带自愈轨迹）。
+
+### Fixed
+
+- 无（自愈覆盖此前「GetTools 成功后连接才死→工具调用持续失败到会话结束」的窗口；
+  GetTools 失败路径的 evict+重连既有语义不变）。
+
 ## v0.10.16 (2026-09-21)
 
 ### Added
