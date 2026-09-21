@@ -3,6 +3,12 @@
 // langfuse / rag.OpenAIEmbedder / websearch.Searxng 共用同一实现——此前三份
 // 手写样板已漂移出真缺陷（响应体读取错误被吞、错误体按字节截断腰斩 UTF-8）。
 // 错误不带包前缀返回，调用方以自己的包前缀包装一次（与全仓错误前缀纪律一致）。
+//
+// 与 ekit/network/httpx 的分工（同名不同物）：那侧是 Hertz 底座的服务间
+// 调用基础设施（服务发现/熔断/指标/追踪，编译期即拉 hertz+prometheus+
+// gobreaker+otel 依赖链）；本包 stdlib-only 纯函数、调用方注入
+// *http.Client——agentkit 是被嵌入的 SDK，对 ekit 依赖面仅 logx 与
+// concurrency/async，调外部 API 取 JSON 不把微服务全家桶拖进嵌入方依赖树。
 package httpx
 
 import (
