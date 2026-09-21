@@ -20,12 +20,15 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
+
+	"git.enjoye.top/enjoydream/agentkit/llm"
 )
 
 // 默认迭代上限（ADK ReAct 循环轮数；防失控循环）。
@@ -123,12 +126,27 @@ func RunWithRetry(ctx context.Context, cfg Config, query, retryQuery string) (st
 // 纯提示语，重试轮将丢失全部任务材料——工单/合议上下文全空，模型输出「未收到输入」类
 // 空心合规报告）。消费方应传 query+提示语的拼接串；改拼接语义属破坏性变更，见 CHANGELOG。
 func RunWithEventsAndRetry(ctx context.Context, cfg Config, query, retryQuery string, onEvent func(Event)) (string, error) {
+	// Retry-After sink（批次四十五）：传输层捕获 429 服务端建议（Retry-After 头），
+	// 供重跑前的等待决策。
+	ctx = llm.WithRetryAfterSink(ctx)
 	out, mutating, err := runWithMeta(ctx, cfg, query, onEvent)
 	if err == nil {
 		return out, nil
 	}
 	if mutating != "" && !cfg.RetryAfterMutation {
 		return "", mutationSkipErr(mutating, err)
+	}
+	// 服务端退避建议优先（钳制 ≤5min，ctx 取消即止）：429 时端点知道限流窗口还剩
+	// 多久——对仍在限流窗口的端点立即重跑只会再吃一个 429（对标 ZCode runner-retry
+	// 的服务端建议优先语义；等待钳制内才原地重跑，超限交调用方/failover 处置）。
+	if hint := llm.RetryAfterFrom(ctx); hint > 0 {
+		if wait := llm.SelectRetryDelay(0, hint); wait > 0 {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(wait):
+			}
+		}
 	}
 	return run(ctx, cfg, retryQuery, onEvent)
 }

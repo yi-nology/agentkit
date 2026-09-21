@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.10.16 (2026-09-21)
+
+### Added
+
+- **llm**：Retry-After 捕获与消费（对标 ZCode runner-retry 的「服务端退避建议优先于
+  本地曲线」）三件套——
+  - `retryAfterTransport`（`OpenAIProviderConfig.CaptureRetryAfter=true` 启用）：
+    429 响应的 Retry-After（秒数/HTTP-date）经 ctx sink 透明捕获，响应体零改写；
+  - `WithRetryAfterSink`/`RetryAfterFrom`：重试环上游注入、退避计算处读取的公开对；
+  - `SelectRetryDelay`：合理性钳制取舍——建议 >0 且（≤5min 或短于本地曲线值）才
+    采信，长限流交调用方/failover 处置（ZCode 同款规则）。
+  `Client.generateRetry` 已接入（安装 sink + 退避取舍）；消费方：
+  `llm.OpenAIProviderConfig.CaptureRetryAfter=true` 一行启用。
+- **agentrun**：`RunWithEventsAndRetry` 重跑分支前置 Retry-After 等待——429 时端点
+  知道限流窗口还剩多久，对仍在窗口内的端点立即重跑只会再吃一个 429。等待钳制
+  ≤5min、ctx 取消即止（steer/停机零延迟穿透）；超限不等待交调用方处置。sink 在
+  本函数顶部安装，ReAct 主路径（经 OpenAIProvider 传输层）即被覆盖。
+
+### Tests
+
+- `parseRetryAfter`（秒数/HTTP-date/非法值）、`SelectRetryDelay`（五分支钳制表）、
+  transport 捕获（429+头 → sink；无 sink 不炸）；
+- 端到端：真 HTTP 端点首响 429+`Retry-After: 1` → 次响 200——generateRetry 全链
+  等待 ≥1s 且最终成功（1.01s 实测）。
+
 ## v0.10.15 (2026-09-21)
 
 ### Added

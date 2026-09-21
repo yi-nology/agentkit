@@ -152,6 +152,8 @@ func (c *Client) generateRetry(ctx context.Context, stage string, msgs []*schema
 	if c.OnUsage != nil || c.Budget != nil {
 		ctx = withClientAccounting(ctx)
 	}
+	// Retry-After sink（批次四十五）：传输层捕获 429 服务端建议，退避取舍时优先采信
+	ctx = WithRetryAfterSink(ctx)
 	var lastErr error
 	truncatedBoosted := false
 	for attempt := 0; attempt < pol.maxAttempts; attempt++ {
@@ -165,10 +167,15 @@ func (c *Client) generateRetry(ctx context.Context, stage string, msgs []*schema
 			} else if !ClassifyLLMError(lastErr).Retryable {
 				break
 			}
+			delay := backoffDelay(attempt, pol.base, pol.ceil, lastErr)
+			// 服务端建议优先（合理性钳制：≤5min 或短于本地曲线才采信——长限流交降级链）
+			if hint := RetryAfterFrom(ctx); hint > 0 {
+				delay = SelectRetryDelay(delay, hint)
+			}
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(backoffDelay(attempt, pol.base, pol.ceil, lastErr)):
+			case <-time.After(delay):
 			}
 		}
 		if c.Limiter != nil {
