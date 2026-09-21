@@ -143,7 +143,7 @@ func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) ([]tool.BaseTool, er
 		if len(tools) == 0 && len(spec.Allow) > 0 && p.OnError != nil {
 			p.OnError(cfg.Name, fmt.Errorf("mcp: %s 白名单 %v 无一命中（返回 0 个工具）", cfg.Name, spec.Allow))
 		}
-		out = append(out, tools...)
+		out = append(out, WrapErrorAsObservation(tools)...)
 	}
 	return out, nil
 }
