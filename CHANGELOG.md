@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.10.15 (2026-09-21)
+
+### Added
+
+- **mcp**：`WrapErrorAsObservation` + `Pool.Tools()` 出口统一启用——eino-ext 把
+  MCP isError:true 的工具结果当调用 error 上抛，ReAct 直接以 NodeRunError 炸掉
+  整个 agent 步骤，LLM 没机会看到错误并修正参数（实弹：k8sgpt get-resource 猜
+  错 pod 名 → 专家整步 degraded）。现剥出错误文本降级为观察回传 LLM（是否修正
+  参数/换路径由 LLM 自行决定）；传输层等其他错误原样上抛。
+- **httpx**：`StatusError`（非 2xx 类型化，`errors.As` 按状态码分类；Error()
+  文案与历史一致）+ `RetryConfig`/`DoJSONWithRetry`（指数退避+抖动，默认网络
+  超时/5xx/429 可重试，`reqFn` 每轮重建请求体）——重试骨架此前锁在
+  llm.generateRetry（私有、LLM 专用），泛 HTTP 消费方（langfuse/rag/websearch
+  及外部）各自手写；review-service 收敛评估反哺。
+- **logredact**：补平台 API token 裸形态模式（sk-/sk-ant-/ghp_/gho_/github_pat_/
+  xoxb-/AKIA 及三段式 JWT）——键值对/连接串形态已有规则，裸 token 散文形态
+  此前会泄漏；附防误伤用例（普通文本/路径不改写）。
+
 ## v0.10.14 (2026-09-20)
 
 ### Changed

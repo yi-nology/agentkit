@@ -1,6 +1,6 @@
 # agentkit 框架完整文档
 
-> 版本：v0.10.14 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
+> 版本：v0.10.15 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
 > 配套文档：[架构模式支持矩阵](patterns.md)（七架构何时用/何时不用）· [README](../README.md)（快速上手）
 
 > 文中架构图使用 Mermaid：Forgejo/GitHub 等端原生渲染；不支持渲染的查看端，
@@ -109,7 +109,7 @@
 | `jsonrepair` | LLM 宽容 JSON 修复（栅栏/尾逗号/全角/散文 + 标量归一） | 无 | v0.9.0 |
 | `procx` | 子进程托管纪律单源：进程组执行/超时整组终止/限容采集/环境白名单（acpx/mcp/workcopy 共用） | 无 | v0.10.11（自 acpx 进程层迁出） |
 | `llm/llmtest` | 脚本化 ChatModel/Provider 测试桩（RepeatLast/耗尽报错两语义显式化，输入记录/ResponseMeta 可编程） | eino | v0.10.12 |
-| `httpx` | HTTP+JSON 调用纪律单源：限容读体 + rune 安全错误摘要（langfuse/rag/websearch 共用） | 无 | v0.10.11 |
+| `httpx` | HTTP+JSON 调用纪律单源：限容读体 + rune 安全错误摘要 + StatusError 类型化与 DoJSONWithRetry 重试骨架（langfuse/rag/websearch 共用） | 无 | v0.10.11 |
 | `obsx` | eino callbacks 追踪（结构化日志 + 真实 usage 回流） | eino, ekit | v0.4.0 |
 | `langfuse` | Langfuse Public API 只读客户端（FetchBatch 分页/GetTrace/Query 选择口径 + Trace/Observation 契约，UsageTokens/UsageCost 新旧口径兜底） | 无 | v0.10.0 |
 | `reportutil` | 评审/评测报告后处理：严重度归一 + best-of-N 聚簇 + Wilson/McNemar 统计 | 无 | v0.10.11（severity/sampling/stats 三包合并） |
@@ -671,6 +671,9 @@ defer pool.Close()
 
 lazy 建连缓存 + Initialize 握手；列举失败自动摘除坏连接（下次重建）；Close 后拒绝
 新建；Allow 全部未命中经 OnError 告警。schema 转换委托 eino-ext，无自造轮子。
+出口统一经 `WrapErrorAsObservation` 包装（v0.10.15）：isError:true 的 MCP 业务
+失败降级为文本观察回传 LLM（修正参数/换路径由模型自行决定），不再以
+NodeRunError 炸掉整个 agent 步骤；传输层等其他错误原样上抛。
 
 ### workcopy —— Git 工作副本沙箱
 
@@ -849,7 +852,8 @@ logredact.RedactValue(payload) // 递归脱敏 map/slice 中的字符串
 logredact.RedactSecrets(msg, token) // 抹除调用方已知确切秘密（长串优先，不回填）
 ```
 
-规则：URL 内嵌账号口令、token/secret/password/api_key 键值对、Authorization/Bearer 头。
+规则：URL 内嵌账号口令、token/secret/password/api_key 键值对、Authorization/Bearer 头、
+平台 API token 裸形态特征前缀（sk-/ghp_/AKIA 等，v0.10.15）与裸 JWT 三段式。
 三机制分工：Redact=未知形态模式化打码；RedactSecrets=已知值精确抹除（v0.10.8）；
 Masker=低敏感拓扑标识令牌化（可 Restore 回填）——高敏感秘密不走 Masker。
 
