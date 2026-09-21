@@ -1,0 +1,27 @@
+# Milvus standalone（embedded etcd + local storage，最小依赖单容器）
+# 用途：agentkit/knowledge/rag 的 MilvusStore 集成测试
+# 启动：docker compose -f docker-compose.milvus-test.yml up -d
+# 就绪探测：等待 19530 端口 + /healthz
+services:
+  milvus:
+    image: milvusdb/milvus:v2.4.5
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_USE_EMBED: "true"
+      ETCD_DATA_DIR: /var/lib/milvus/etcd
+      ETCD_CONFIG_PATH: /milvus/configs/embedEtcd.yaml
+      COMMON_STORAGETYPE: local
+    ports:
+      - "19530:19530"
+    volumes:
+      - milvus-data:/var/lib/milvus
+      - ./embedEtcd.yaml:/milvus/configs/embedEtcd.yaml:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  milvus-data:
