@@ -3,6 +3,7 @@ package skill
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -268,5 +269,81 @@ func TestListPromptSanitizesDescription(t *testing.T) {
 	}
 	if !strings.Contains(out, "sop") {
 		t.Fatalf("正常内容应保留: %s", out)
+	}
+}
+
+// RenderList 清单预算三态（批次五十三沉淀）：不限/降级纯名单/截断注明。
+func TestRenderListBudget(t *testing.T) {
+	metas := []Meta{
+		{Name: "sop", Title: "sop", Description: strings.Repeat("处置标准要点。", 40)},
+		{Name: "other", Title: "other", Description: strings.Repeat("另一条要点。", 40)},
+	}
+	full := RenderList(metas, 0)
+	if full != ListPrompt(metas) {
+		t.Fatal("budget≤0 应等价 ListPrompt 全额")
+	}
+	if out := RenderList(metas, 10_000); out != full {
+		t.Fatal("预算充足应与全额一致")
+	}
+	// 超预算降级：保留全部名、丢描述（预算取「描述占位」与「纯名单」之间）。
+	degraded := RenderList(metas, 200)
+	if !strings.Contains(degraded, "已降级为纯名单") {
+		t.Fatalf("超预算应声明降级: %q", degraded)
+	}
+	for _, m := range metas {
+		if !strings.Contains(degraded, m.Name) {
+			t.Fatalf("降级形态丢名 %s", m.Name)
+		}
+	}
+	if strings.Contains(degraded, "处置标准") {
+		t.Fatal("降级形态不应含描述")
+	}
+	// 极端截断：长度受控 + 截断声明。
+	many := make([]Meta, 0, 500)
+	for i := range 500 {
+		many = append(many, Meta{Name: fmt.Sprintf("s-%04d", i), Description: "d"})
+	}
+	trunc := RenderList(many, 400)
+	if !strings.Contains(trunc, "已截断") || len(trunc) > 800 {
+		t.Fatalf("极端超限应截断且受控: len=%d %q", len(trunc), trunc[:80])
+	}
+}
+
+// WithContentCap 全文上限：超限截断声明、其余字段保留、≤0 不限。
+func TestAsSkillToolContentCap(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "big.md"), []byte("# 大技能\n\n"+strings.Repeat("A", 5000)), 0o644)
+	p2 := NewFileProvider(dir)
+
+	bt, err := AsSkillTool(p2, []string{"big"}, WithContentCap(1000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, ok := bt.(tool.InvokableTool)
+	if !ok {
+		t.Fatal("应为 InvokableTool")
+	}
+	raw, err := it.InvokableRun(context.Background(), `{"name":"big"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out useSkillOut
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		t.Fatalf("出参非 JSON: %v", err)
+	}
+	if len(out.Content) >= 5000 || !strings.Contains(out.Content, "已截断") {
+		t.Fatalf("全文应截断并声明: %d 字节", len(out.Content))
+	}
+	if out.Name != "big" || out.Version == "" && out.Checksum == "" {
+		t.Fatalf("自证字段应保留: %+v", out.Name)
+	}
+	// 不限形态原样。
+	bt2, _ := AsSkillTool(p2, []string{"big"}, WithContentCap(0))
+	it2 := bt2.(tool.InvokableTool)
+	raw2, _ := it2.InvokableRun(context.Background(), `{"name":"big"}`)
+	var out2 useSkillOut
+	_ = json.Unmarshal([]byte(raw2), &out2)
+	if len(out2.Content) < 5000 || strings.Contains(out2.Content, "已截断") {
+		t.Fatal("cap≤0 应不限且原样")
 	}
 }

@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.10.18 (2026-09-22)
+
+### Added
+
+- **skill**：两级渐进披露的预算面（批次五十三自 bianque 沉淀，对标 ZCode skills.ts
+  预算-降级形态）——
+  - `RenderList(metas, budget)`：清单渲染 + 确定性预算降级。budget≤0=不限（等价
+    ListPrompt）；超预算先降级为纯名单（name only），仍超按预算截断并注明。降级
+    是确定性行为而非异常：形态可测试、可预期；多字节字符按完整名回退不截半个字。
+  - `AsSkillTool` 新增可变参 `ToolOption`：`WithContentCap(n)` 限定 use_skill 单次
+    返回全文上限（超限截断 + 尾部声明——LLM 可感知的诚实形态，不静默吞内容；
+    缺省 DefaultContentCap=100KB，≤0=不限）。变参向后兼容，存量调用零改动。
+  - 缺省常量 `DefaultListBudget=20000` / `DefaultContentCap=100000`。
+- **mcp**：连接租约面（对标 ZCode pool 探活+惰性关闭；语义按借用模型裁定）——
+  - `PingServer(ctx, name)`：MCP 协议级探活。HTTP server 被停掉不派发断连回调，
+    「无声死亡」只有显式探活才能暴露；死亡连接立即摘除出缓存并关闭，下次调用
+    透明重建。无缓存连接返回 `ErrNotConnected` 哨兵（懒建连模型下属正常态）。
+  - `ReapIdle(maxIdle)` / `StartIdleReaper(interval, maxIdle)`：闲置回收租约。
+    语义裁定：ZCode 原型的引用计数在本池不可行（工具对象生命周期调用方不可见，
+    refcount 无处挂钩），借用模型的等价租约 = 闲置回收 + 调用期透明重建。闲置
+    时钟 = 最近一次建连/取工具/探活成功；启用回收的部署须保证 maxIdle 显著大于
+    最大工具超时（在途调用不触碰时钟）。Close 停止回收协程。
+
+### Fixed
+
+- RenderList 截断分支对「名单短于预算但含头超预算」形态的切片越界，随首版一并
+  修复并以测试钉住。
+
 ## v0.10.17 (2026-09-21)
 
 ### Added

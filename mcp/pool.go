@@ -68,6 +68,7 @@ type ToolSpec struct {
 }
 
 // Pool MCP 连接池：lazy 建连（首次 Tools 时）、连接缓存复用、Close 全量回收。
+// 闲置回收/探活租约面见 lease.go（ReapIdle/StartIdleReaper/PingServer）。
 type Pool struct {
 	mu sync.Mutex
 	// closed 置位后拒绝新建连接（Close 与在途建连并发时，新连接会被立即关闭，
@@ -75,6 +76,10 @@ type Pool struct {
 	closed  bool
 	cfgs    map[string]ServerConfig
 	clients map[string]client.MCPClient
+	// lastUsed 连接最近使用时刻（建连/取工具/探活成功；闲置回收时钟，lease.go）。
+	lastUsed map[string]time.Time
+	// reapStop 闲置回收协程停止信号（StartIdleReaper 置位；Close 关闭）。
+	reapStop chan struct{}
 	// OnError 建连/列举失败回调（nil 安全）。返回错误不中断其余 server——
 	// 部分失败容忍：可用的工具照常返回，失败的 server 由调用方经钩子观测。
 	OnError func(server string, err error)
@@ -84,7 +89,8 @@ type Pool struct {
 // Name 为空的配置忽略；重名保留先到者（后者忽略）——配置错误尽早收敛为确定性
 // 行为而非静默覆盖。
 func NewPool(cfgs ...ServerConfig) *Pool {
-	p := &Pool{cfgs: map[string]ServerConfig{}, clients: map[string]client.MCPClient{}}
+	p := &Pool{cfgs: map[string]ServerConfig{}, clients: map[string]client.MCPClient{},
+		lastUsed: map[string]time.Time{}}
 	for _, c := range cfgs {
 		if c.Name == "" {
 			continue
@@ -174,6 +180,7 @@ func (p *Pool) client(ctx context.Context, cfg ServerConfig) (client.MCPClient, 
 		return nil, errors.New("mcp: 池已关闭")
 	}
 	if cli, ok := p.clients[cfg.Name]; ok {
+		p.lastUsed[cfg.Name] = time.Now()
 		p.mu.Unlock()
 		return cli, nil
 	}
@@ -213,6 +220,7 @@ func (p *Pool) client(ctx context.Context, cfg ServerConfig) (client.MCPClient, 
 		return existing, nil
 	}
 	p.clients[cfg.Name] = cli
+	p.lastUsed[cfg.Name] = time.Now()
 	p.mu.Unlock()
 	return cli, nil
 }
@@ -266,7 +274,7 @@ func (c ServerConfig) timeoutOr(d time.Duration) time.Duration {
 	return d
 }
 
-// Close 关闭全部缓存连接并拒绝后续建连（幂等）。Close 后池不可复用。
+// Close 关闭全部缓存连接并拒绝后续建连（幂等）；停止闲置回收协程。Close 后池不可复用。
 func (p *Pool) Close() {
 	p.mu.Lock()
 	if p.closed {
@@ -276,7 +284,12 @@ func (p *Pool) Close() {
 	p.closed = true
 	clients := p.clients
 	p.clients = map[string]client.MCPClient{}
+	stop := p.reapStop
+	p.reapStop = nil
 	p.mu.Unlock()
+	if stop != nil {
+		close(stop)
+	}
 	for _, cli := range clients {
 		_ = cli.Close()
 	}
