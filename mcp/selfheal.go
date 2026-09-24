@@ -5,8 +5,8 @@ package mcp
 // 连接/管道断裂）时，摘除死连接→重连→解析同名工具重试一次。业务类错误（工具真的
 // 执行了但失败，isError:true）不触发自愈——那是 errorAsObservation 层的语义。
 //
-// 与 evict 的关系：evict 只在 GetTools 失败时触发；本层覆盖「GetTools 成功后、调用
-// 时连接才死」的窗口（长会话里 tools 子进程中途死亡的真形态）。
+// 与 evict 的关系：evict 在目录列举失败时触发（连接摘除+目录失效）；本层覆盖「目录
+// 拿到后、调用时连接才死」的窗口（长会话里 tools 子进程中途死亡的真形态）。
 
 import (
 	"context"
@@ -16,7 +16,6 @@ import (
 	"os"
 	"strings"
 
-	einomcp "github.com/cloudwego/eino-ext/components/tool/mcp"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 )
@@ -87,11 +86,11 @@ func (p *Pool) selfHealRedial(ctx context.Context, cfg ServerConfig, allow []str
 		if err != nil {
 			return nil, err
 		}
-		tools, err := einomcp.GetTools(ctx, &einomcp.Config{Cli: cli, ToolNameList: allow})
+		entries, err := p.catalogFor(ctx, cfg, cli)
 		if err != nil {
 			return nil, err
 		}
-		for _, t := range WrapErrorAsObservation(tools) {
+		for _, t := range WrapErrorAsObservation(convTools(cli, entries, allow)) {
 			if it, ok := t.(tool.InvokableTool); ok {
 				if info, ierr := it.Info(ctx); ierr == nil && info.Name == name {
 					return it, nil

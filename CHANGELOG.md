@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.10.19 (2026-09-24)
+
+### Changed
+
+- **mcp**：工具目录层——tools/list 在建连后仅走线一次并缓存（批次对标 ZCode
+  「连接时列一次、注册面全量」adapters/src/mcp），此前每次 `Tools()` 都经
+  `einomcp.GetTools` 全量走线。转换自持（mcp.Tool → eino tool，口径与 eino-ext
+  components/tool/mcp v0.9 一致；isError:true 降级锚点文案不变），本包不再依赖
+  eino-ext/components/tool/mcp。目录随连接 evict（列举失败/探活死亡/自愈摘除）
+  一并失效，重建连接重新列举。
+
+### Added
+
+- **mcp**：工具注解归一 `ToolHints{ReadOnly,Idempotent,Destructive}` + `Pool.Hints(server)`
+  快照——随目录同源提取（指针字段 nil 按规范缺省，mcp-go 服务端 NewTool 缺省
+  destructive=true，第三方无注解工具保守落非只读）。消费面：url 并发开关
+  （annotations 档读写锁）、审计门风险分级、控制台风险徽标。`ConcurrentSafe()`
+  （readOnly+idempotent，对标 ZCode concurrentSafe）、`RiskLevel()`
+  （readOnly→low / destructive→high / 其余 medium）。
+
 ## v0.10.18 (2026-09-22)
 
 ### Added

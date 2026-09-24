@@ -28,7 +28,6 @@ import (
 	"sync"
 	"time"
 
-	einomcp "github.com/cloudwego/eino-ext/components/tool/mcp"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
@@ -78,6 +77,9 @@ type Pool struct {
 	clients map[string]client.MCPClient
 	// lastUsed 连接最近使用时刻（建连/取工具/探活成功；闲置回收时钟，lease.go）。
 	lastUsed map[string]time.Time
+	// catalog 每连接的 tools/list 目录缓存（server → 条目，含注解；见 catalog.go）。
+	// 连接被 evict 时同 server 目录一并失效。
+	catalog map[string][]toolEntry
 	// reapStop 闲置回收协程停止信号（StartIdleReaper 置位；Close 关闭）。
 	reapStop chan struct{}
 	// OnError 建连/列举失败回调（nil 安全）。返回错误不中断其余 server——
@@ -90,7 +92,7 @@ type Pool struct {
 // 行为而非静默覆盖。
 func NewPool(cfgs ...ServerConfig) *Pool {
 	p := &Pool{cfgs: map[string]ServerConfig{}, clients: map[string]client.MCPClient{},
-		lastUsed: map[string]time.Time{}}
+		lastUsed: map[string]time.Time{}, catalog: map[string][]toolEntry{}}
 	for _, c := range cfgs {
 		if c.Name == "" {
 			continue
@@ -133,18 +135,15 @@ func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) ([]tool.BaseTool, er
 			}
 			continue // 部分失败容忍
 		}
-		tools, err := einomcp.GetTools(ctx, &einomcp.Config{
-			Cli:          cli,
-			ToolNameList: spec.Allow,
-		})
+		entries, err := p.catalogFor(ctx, cfg, cli)
 		if err != nil {
-			p.evict(cfg.Name, cli)
 			if p.OnError != nil {
 				p.OnError(cfg.Name, err)
 			}
 			continue
 		}
-		// Allow 白名单全部未命中（拼写错误等）：eino-ext 静默返回空表，
+		tools := convTools(cli, entries, spec.Allow)
+		// Allow 白名单全部未命中（拼写错误等）：转换层静默返回空表，
 		// 这里经 OnError 告警，避免 agent 拿到空工具表却无从排查
 		if len(tools) == 0 && len(spec.Allow) > 0 && p.OnError != nil {
 			p.OnError(cfg.Name, fmt.Errorf("mcp: %s 白名单 %v 无一命中（返回 0 个工具）", cfg.Name, spec.Allow))
@@ -225,12 +224,14 @@ func (p *Pool) client(ctx context.Context, cfg ServerConfig) (client.MCPClient, 
 	return cli, nil
 }
 
-// evict 连接失效时从缓存摘除并关闭（仅当缓存中的仍是该连接），下次调用走重建。
+// evict 连接失效时从缓存摘除并关闭（仅当缓存中的仍是该连接），下次调用走重建；
+// 同 server 目录缓存一并失效（重建连接后重新列举）。
 func (p *Pool) evict(name string, cli client.MCPClient) {
 	p.mu.Lock()
 	cached, ok := p.clients[name]
 	if ok && cached == cli {
 		delete(p.clients, name)
+		delete(p.catalog, name)
 	} else {
 		cli = nil
 	}
@@ -284,6 +285,7 @@ func (p *Pool) Close() {
 	p.closed = true
 	clients := p.clients
 	p.clients = map[string]client.MCPClient{}
+	p.catalog = map[string][]toolEntry{}
 	stop := p.reapStop
 	p.reapStop = nil
 	p.mu.Unlock()
