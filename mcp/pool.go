@@ -59,6 +59,23 @@ type ServerConfig struct {
 	// ProbeTimeout 探活（PingServer）独立预算（默认 5s；租约面 lease.go——
 	// 探活是轻量协议 ping，不该吃连接级 30s 预算）。
 	ProbeTimeout time.Duration
+	// OAuth URL 模式 OAuth2 客户端配置（批次五十六 C，对标 ZCode oauth 全栈；
+	// 仅 URL 传输生效）。非 nil 时 dial 走 NewOAuthStreamableHttpClient——401 触发
+	// client.OAuthAuthorizationRequiredError（errors.As 可穿透池的 %w 包装），
+	// 调用方经 client.GetOAuthHandler 取 handler 驱动授权码+PKCE 流程；
+	// TokenStore 由调用方提供（进程内缓存失效后重 dial 仍能取回已授权 token）。
+	OAuth *OAuthClientConfig
+}
+
+// OAuthClientConfig URL 传输的 OAuth2 装配输入（映射 mcp-go client.OAuthConfig；
+// TokenStore 必填——缺省会落内存 store，进程内自愈场景重连后丢授权态）。
+type OAuthClientConfig struct {
+	ClientID     string // 空=依赖 IdP DCR（handler.RegisterClient 由调用方驱动）
+	ClientSecret string
+	Scopes       []string
+	MetadataURL  string // 空=从 base URL .well-known 发现
+	RedirectURI  string // 授权回调落点（无头服务端=固定平台端点）
+	TokenStore   client.TokenStore
 }
 
 // ToolSpec 工具白名单：某 server 的哪些工具暴露给 agent。
@@ -271,6 +288,23 @@ func dial(ctx context.Context, cfg ServerConfig) (client.MCPClient, error) {
 				return cmd, nil
 			}))
 	case cfg.URL != "":
+		if cfg.OAuth != nil {
+			if cfg.OAuth.TokenStore == nil {
+				return nil, fmt.Errorf("mcp: server %s OAuth 配置缺 TokenStore（缺省内存 store 会在重连后丢授权态）", cfg.Name)
+			}
+			// OAuth 客户端（批次五十六 C）：静态 headers 保留（可与 Bearer 共存——
+			// 代理网关类附加头），token 注入由 transport 内 oauthHandler 承担。
+			return client.NewOAuthStreamableHttpClient(cfg.URL, client.OAuthConfig{
+				ClientID:              cfg.OAuth.ClientID,
+				ClientSecret:          cfg.OAuth.ClientSecret,
+				RedirectURI:           cfg.OAuth.RedirectURI,
+				Scopes:                cfg.OAuth.Scopes,
+				TokenStore:            cfg.OAuth.TokenStore,
+				AuthServerMetadataURL: cfg.OAuth.MetadataURL,
+				PKCEEnabled:           true,
+			}, transport.WithHTTPHeaders(cfg.Headers),
+				transport.WithHTTPTimeout(cfg.timeoutOr(DefaultTimeout)))
+		}
 		return client.NewStreamableHttpClient(cfg.URL,
 			transport.WithHTTPHeaders(cfg.Headers),
 			transport.WithHTTPTimeout(cfg.timeoutOr(DefaultTimeout)))

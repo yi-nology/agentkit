@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.10.21 (2026-09-25)
+
+### Added
+
+- **mcp**：URL 传输 OAuth2 客户端装配（批次五十六 C，对标 ZCode OAuth 全栈）——
+  `ServerConfig.OAuth *OAuthClientConfig`（ClientID/Secret/Scopes/MetadataURL/
+  RedirectURI/TokenStore），dial 分支走 `client.NewOAuthStreamableHttpClient`
+  （PKCE 恒开；静态 headers 保留可共存）。TokenStore 必填 fail-fast（缺省会落内存
+  store，重连丢授权态）。401 经 `client.OAuthAuthorizationRequiredError` 冒泡
+  （errors.As 可穿透池的 %w 包装），授权码流程由调用方经 `client.GetOAuthHandler`
+  驱动——handler 独立于 MCP 连接存活，连接 Close 不影响 ProcessAuthorizationResponse。
+
 ## v0.10.20 (2026-09-25)
 
 ### Added
