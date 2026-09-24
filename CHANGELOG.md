@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.10.20 (2026-09-25)
+
+### Added
+
+- **mcp**：请求侧上下文透传——`Pool.RequestMeta func(ctx) map[string]any`（nil 安全，
+  批次五十六 B，对标 ZCode `com.zcode/request-context`）。metaFn 在调用方 ctx 上取值
+  （池不感知业务键），经 `metaClient` 装饰器注入每笔 CallTool 的 `req.Params.Meta`
+  （stdio/HTTP 同走 JSON-RPC params；装饰在 client() 单点——初次建连与自愈 redial
+  同走；已有 Meta 按 AdditionalFields 合并，metaFn 键胜）。server 侧通用可读——
+  供下游 serverkit 写审计关联字段。
+- **mcp**：`ServerConfig.ProbeTimeout` 探活独立预算（缺省 `DefaultProbeTimeout`=5s，
+  对标 ZCode MCP_PING_TIMEOUT_MS）——ping 是轻量协议方法，此前误吃连接级 30s 预算。
+
 ## v0.10.19 (2026-09-24)
 
 ### Changed

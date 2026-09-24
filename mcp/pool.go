@@ -56,6 +56,9 @@ type ServerConfig struct {
 	Headers map[string]string
 	// Timeout 连接 + Initialize 超时（默认 30s）。
 	Timeout time.Duration
+	// ProbeTimeout 探活（PingServer）独立预算（默认 5s；租约面 lease.go——
+	// 探活是轻量协议 ping，不该吃连接级 30s 预算）。
+	ProbeTimeout time.Duration
 }
 
 // ToolSpec 工具白名单：某 server 的哪些工具暴露给 agent。
@@ -85,6 +88,10 @@ type Pool struct {
 	// OnError 建连/列举失败回调（nil 安全）。返回错误不中断其余 server——
 	// 部分失败容忍：可用的工具照常返回，失败的 server 由调用方经钩子观测。
 	OnError func(server string, err error)
+	// RequestMeta 每笔工具调用 _meta 注入来源（nil 安全；批次五十六 B，对标 ZCode
+	// request-context）。metaFn 在调用方 ctx 上取值，池不感知业务键；经 metaClient
+	// 装饰器注入 req.Params.Meta（见 meta.go）。返回 nil/空 = 不注入。
+	RequestMeta func(ctx context.Context) map[string]any
 }
 
 // NewPool 创建连接池（建连延后到 Tools 调用时——允许启动期 MCP server 未就绪）。
@@ -217,6 +224,11 @@ func (p *Pool) client(ctx context.Context, cfg ServerConfig) (client.MCPClient, 
 		p.mu.Unlock()
 		_ = cli.Close()
 		return existing, nil
+	}
+	if p.RequestMeta != nil {
+		// _meta 请求上下文注入（meta.go）：装饰器在 client() 单点包装——初次建连
+		// 与自愈 redial 同走此路，evict 指针比对基于装饰器一致。
+		cli = &metaClient{MCPClient: cli, metaFn: p.RequestMeta}
 	}
 	p.clients[cfg.Name] = cli
 	p.lastUsed[cfg.Name] = time.Now()

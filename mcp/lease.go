@@ -20,6 +20,10 @@ import (
 // （与「有连接但已死」区分，探活无意义不算失败）。
 var ErrNotConnected = errors.New("mcp: server 无缓存连接（未建连或已被回收）")
 
+// DefaultProbeTimeout 探活独立预算（批次五十六 B：ping 是轻量协议方法，不该吃
+// 连接级 30s 预算；对标 ZCode MCP_PING_TIMEOUT_MS=5s）。
+const DefaultProbeTimeout = 5 * time.Second
+
 // PingServer 探活指定 server 的缓存连接（MCP 协议 ping）。死亡连接立即摘除出缓存
 // 并关闭，下次调用透明重建——HTTP server 被停掉不派发断连回调，「无声死亡」只有
 // 显式探活才能暴露（ZCode pool 同款问题与解法）。
@@ -35,7 +39,11 @@ func (p *Pool) PingServer(ctx context.Context, name string) error {
 	cfg := p.cfgs[name]
 	p.mu.Unlock()
 
-	cctx, cancel := context.WithTimeout(ctx, cfg.timeoutOr(DefaultTimeout))
+	budget := cfg.ProbeTimeout
+	if budget <= 0 {
+		budget = DefaultProbeTimeout
+	}
+	cctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	if err := cli.Ping(cctx); err != nil {
 		p.evict(name, cli)
