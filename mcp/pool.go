@@ -154,6 +154,11 @@ func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) ([]tool.BaseTool, er
 		}
 		cli, err := p.client(ctx, cfg)
 		if err != nil {
+			if client.IsOAuthAuthorizationRequiredError(err) {
+				// OAuth 授权必需（批次五十六 C）：调用方可行动的确定态而非瞬态
+				// 故障——不进部分失败容忍，直通调用方（401 → 授权单/状态面）。
+				return nil, err
+			}
 			if p.OnError != nil {
 				p.OnError(cfg.Name, err)
 			}
@@ -161,6 +166,9 @@ func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) ([]tool.BaseTool, er
 		}
 		entries, err := p.catalogFor(ctx, cfg, cli)
 		if err != nil {
+			if client.IsOAuthAuthorizationRequiredError(err) {
+				return nil, err
+			}
 			if p.OnError != nil {
 				p.OnError(cfg.Name, err)
 			}
