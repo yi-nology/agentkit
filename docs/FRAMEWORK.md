@@ -1,6 +1,6 @@
 # agentkit 框架完整文档
 
-> 版本：v0.10.23 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
+> 版本：v0.10.24 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
 > 配套文档：[架构模式支持矩阵](patterns.md)（七架构何时用/何时不用）· [README](../README.md)（快速上手）
 
 > 文中架构图使用 Mermaid：Forgejo/GitHub 等端原生渲染；不支持渲染的查看端，
@@ -68,7 +68,8 @@
 │                 knowledge/rag(双后端检索)  websearch  textutil   │
 │                 pack(包契约清单)  lineage(装配血缘图)             │
 │                 fence(数据区围栏)  egress(出口围栏/SSRF)         │
-│                 conversation(会话窗口)                           │
+│                 conversation(会话窗口)  compact(压缩策略)         │
+│                 sysprompt(分段组装)                               │
 │                 procx(子进程纪律)  httpx(HTTP+JSON纪律)           │
 ├──────────────────────────────────────────────────────────────┤
 │ L5 运行时  breaker(熔断)  worker+pglease(队列+选主+PG租约)      │
@@ -121,6 +122,8 @@
 | `fence` | 提示词数据区围栏：不可信内容显式包裹 + 逃逸序列中和（返回中和计数作注入特征信号） | 无 | v0.10.5 |
 | `egress` | 出口围栏：LLM 可控 URL 的字面量层 SSRF 防护（localhost/私网/保留段 + IPv4-mapped/NAT64 还原；域名不 preflight） | 无 | v0.10.23 |
 | `conversation` | 多轮会话历史原语：Turn / Split 滚动窗口切分 / Render 截断渲染 / Combine 摘要拼装（确定性，摘要生成归调用方） | textutil | v0.10.5 |
+| `compact` | 会话压缩策略面：auto-compact 判定（output 预留/token 双轨/熔断）+ microcompact（旧工具结果占位清除，保最近 N 组） | 无 | v0.10.24 |
+| `sysprompt` | system prompt 分段组装：stable/dynamic 缓存边界分块 + 计量 + env/git/date 内置段 + DetectEnv 采集 | procx | v0.10.24 |
 | `textutil` | rune 安全截断/等分块/TruncEllipsis + 近重复检测（bigram Jaccard） | 无 | v0.1.0（v0.9.0 Ellipsis，v0.10.0 近重复） |
 
 ---
@@ -812,6 +815,50 @@ if err := egress.Check(targetURL); err != nil {
 与 fence 正交：fence 管提示词注入卫生（内容进模型前），egress 管网络出口边界
 （请求出机器前）。
 
+### compact —— 会话压缩策略（v0.10.24）
+
+两层分工（对标 ZCode compact/policy.ts + microcompact.ts，摘要生成归调用方）：
+
+```go
+d := compact.ShouldCompact(msgs, compact.Config{ContextWindow: 128_000}, failures, usage)
+if d.ShouldCompact { /* 调用方做摘要压缩 */ }
+mr := compact.MaybeMicrocompact(msgs, compact.MicroConfig{
+    ThresholdTokens: compact.BuildDefaultThreshold(d.Threshold),
+}, lastAssistantDone, time.Now())
+msgs = mr.Messages // 触发时旧工具结果已替换为占位符
+```
+
+- **ShouldCompact**：阈值 = (window − min(output 预留, 21K)) − 13K buffer——
+  provider 窗口输入输出共享，分母先扣 output；token 双轨（TokenOverride 的
+  provider 真实用量优先，本地估算 chars/3 必然低估 cache 与嵌入内容）；连续
+  失败 3 次熔断（压缩失败反复重试只会原地打转）；估算计入工具调用入参
+  （大型 args 漏计是踩过的坑）；<2 assistant 轮不压。
+- **MaybeMicrocompact**：旧工具结果 → `[Old tool result content cleared]`
+  占位（诚实形态，不静默吞）；保最近 N 组（缺省 5）与出错结果（排障证据）；
+  组 = 同一 assistant 轮内连续结果；最小节省 256 门槛；idle 60 分钟触发；
+  幂等（已清除跳过）；白名单缺省不限（生产应传工具名单收紧）。
+
+### sysprompt —— system prompt 分段组装（v0.10.24）
+
+Section 化收集 → stable/dynamic 边界分块（stable 前缀保 provider 缓存命中，
+dynamic 隔离在后防击穿）+ user_context 附加上下文（引导/免责句可覆写）。
+
+```go
+b := &sysprompt.Builder{}
+b.Add(sysprompt.IdentitySection("你是审查助手…")) // stable（唯一 stable 内置段）
+env, git, _ := sysprompt.DetectEnv(ctx, workDir)   // git 经 procx 纪律采集
+b.Add(sysprompt.EnvSection(*env))
+if git != nil { b.Add(sysprompt.GitSection(*git)) }
+b.Add(sysprompt.DateSection(time.Now()))
+res := b.Build()
+// res.System[0]=stable 块（打缓存断点）；res.System[1]=dynamic 块
+// res.UserContext → 用户消息前缀附加；res.TotalTokens → 预算观测
+```
+
+内置段：Identity/Env/Git（带「会话开始时的快照」免责——模型对过期状态自信
+是真实事故面）/Date。计量口径与 compact 统一（chars/3）。缺省 target=system、
+boundary=dynamic（保守：没想清楚稳定性就别进缓存前缀）。
+
 ### fence —— 提示词注入卫生（v0.10.5 数据区围栏；v0.10.9 吸收 safejson）
 
 ```go
@@ -1326,3 +1373,7 @@ flowchart TD
   ZCode scheduler/batch-runner，StopAfter 停轮门独占组、失败不截断后续组）；
   新包 egress（出口围栏/字面量 SSRF 防护，第 36 包——NAT64/IPv4-mapped 还原后
   套同一策略，域名不 preflight）；llm 存量 errcheck 修复（lint 门禁全绿）
+- **v0.10.24**：新包 compact（第 37 包——auto-compact 判定 + microcompact，
+  对标 ZCode 压缩策略面，摘要生成归调用方）；新包 sysprompt（第 38 包——
+  stable/dynamic 缓存边界分段组装 + env/git/date 内置段 + DetectEnv 采集，
+  对标 ZCode context/builder）

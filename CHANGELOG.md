@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.10.24 (2026-09-27)
+
+### Added
+
+- **compact（第 37 包）**：会话压缩策略面，对标 ZCode compact/policy.ts +
+  microcompact.ts。两层：
+  - `ShouldCompact` auto-compact 判定——阈值 = (contextWindow − min(output 预留,
+    21K 上限)) − 13K buffer（provider 窗口输入输出共享，分母先扣 output 侧）；
+    token 双轨（provider 真实用量优先于本地估算——provider 口径含 cache 读写，
+    本地估算 chars/3 必然低估）；连续失败 3 次熔断；估算计工具调用入参
+    （大型 args 漏计是 ZCode 踩过的坑）；<2 个 assistant 轮不压（摘要开销可能
+    超过省下的窗口）。
+  - `MaybeMicrocompact` 轻量先手——旧工具结果替换占位符（`[Old tool result
+    content cleared]`，LLM 可感知的诚实形态）：保留最近 N 组（缺省 5）与出错
+    结果（排障证据，可选放开）；组 = 同一 assistant 轮内的连续结果（随轮整体
+    清除）；最小节省门槛 256（微小收益不让会话形态抖动）；idle 60 分钟也触发
+    （挂起会话的旧结果大概率无引用价值）；阈值推导 `min(auto 阈值×0.9, 阈值
+    −2000)`（BuildDefaultThreshold）。白名单缺省不限（通用工具箱无 ZCode 的
+    内置工具名表，生产应传实际名单收紧）。
+  - 摘要生成（真压缩）归调用方——模型请求不在原语层。
+- **sysprompt（第 38 包）**：system prompt 分段组装，对标 ZCode
+  context/builder.ts。Section 化（Name/Target/Boundary/Content + chars/tokens
+  自计量）→ 排序（system-stable → system-dynamic → user_context；组内插入序
+  确定性）→ 分块（stable 块在前保 provider 前缀缓存命中，dynamic 块隔离在后
+  防击穿）+ user_context 附加文本（引导句 + 「未必相关」免责句，措辞可覆写）。
+  内置段：IdentitySection（唯一 stable 内置）、EnvSection、GitSection（带
+  「会话开始时的快照」免责——模型对过期状态自信是真实事故面）、DateSection。
+  `DetectEnv` 运行期采集（git 子命令经 procx 纪律：argv 直传/5s 超时/限容）。
+
 ## v0.10.23 (2026-09-27)
 
 ### Changed

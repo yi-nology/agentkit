@@ -1,7 +1,7 @@
 # agentkit
 
 AI Agent 开发工具箱 —— 从生产项目提炼的通用组件库：代码审查平台 **Argus** + 智能运维多智能体平台 **bianque** + LLM 评测/观测平台 **heimdallr**。
-当前版本 **v0.10.23** · Go ≥ 1.26 · 36 个包。
+当前版本 **v0.10.24** · Go ≥ 1.26 · 38 个包。
 
 > 📖 **完整框架文档**：[docs/FRAMEWORK.md](docs/FRAMEWORK.md) —— 设计原则、六层架构、
 > 各包逐一详解（API/示例/边界契约）、横向能力专题（可靠性/成本/多副本/安全）、
@@ -98,6 +98,8 @@ git.enjoye.top/enjoydream/agentkit
 | `textutil` | rune 安全截断 + 等分块 + TruncEllipsis + 近重复检测（bigram 集合 + Jaccard） | 无 |
 | `workcopy` | Git 工作副本沙箱（singleflight + 引用计数 + TTL 回收） | ekit, x/sync |
 | `egress` | 出口围栏：LLM 可控 URL 字面量 SSRF 防护（NAT64/IPv4-mapped 还原，v0.10.23） | 无 |
+| `compact` | 会话压缩策略：auto-compact 判定（output 预留/token 双轨/熔断）+ microcompact 旧工具结果占位（v0.10.24） | 无 |
+| `sysprompt` | system prompt 分段组装：stable/dynamic 缓存边界 + env/git/date 段 + DetectEnv（v0.10.24） | procx |
 
 ## 快速使用
 
