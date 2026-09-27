@@ -108,15 +108,19 @@ func (p *Pool) hitExisting(k string) (dir string, ok bool) {
 }
 
 // claimStale 领用同 PR 引用归零的保留目录（换 head 增量刷新候选）。
+// 领用即摘牌（rc++ 与 delete 同临界区原子完成）：刷新窗口内旧 key 不可再命中——
+// 否则并发 Ensure(旧head) 会拿到正被 checkout --force 重写的工作树（撕裂读），
+// 且其 Release 因条目已重挂新 key 而 no-op，rc 永久泄漏、Sweep 永不回收。
 func (p *Pool) claimStale(key WorktreeKey) *wcEntry {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for _, e := range p.entries {
+	for k, e := range p.entries {
 		if e.refCount <= 0 &&
 			e.key.Platform == key.Platform && e.key.Owner == key.Owner &&
 			e.key.Repo == key.Repo && e.key.Number == key.Number &&
 			e.key.HeadSHA != key.HeadSHA {
 			e.refCount++
+			delete(p.entries, k)
 			return e
 		}
 	}
@@ -127,26 +131,22 @@ func (p *Pool) claimStale(key WorktreeKey) *wcEntry {
 // 调用方回落全新克隆）。
 func (p *Pool) refreshClaim(ctx context.Context, k string, key WorktreeKey, claim *wcEntry, token string) (dir string, ok bool) {
 	if err := p.refresh(ctx, claim.dir, key, token); err != nil {
-		// 刷新失败（force push 抹掉旧引用等）→ 释放领用，回落全新克隆
-		p.mu.Lock()
-		claim.refCount--
-		p.mu.Unlock()
+		// 刷新失败（force push 抹掉旧引用等）→ 回落全新克隆。条目已随领用摘牌，
+		// 不回挂——checkout 中途失败的工作树可能撕裂，回挂旧 key 会让后续同
+		// head 的 Ensure 静默命中混合态目录（目录交 Sweep/孤儿扫描按 TTL 回收）
 		return "", false
 	}
 	p.mu.Lock()
 	if e, dup := p.entries[k]; dup {
-		// 竞争窗口内同 key 已被常规建仓登记：既有条目胜出。claim 条目仍挂在
-		// 旧 key 下且工作树已被推进到新 head——留着会让旧 key 命中错误内容，
-		// 必须整条作废
+		// 竞争窗口内同 key 已被常规建仓登记：既有条目胜出。claim 条目已摘牌
+		// （领用即摘牌，刷新期间无并发持有者），整条作废安全
 		e.refCount++
 		e.lastUsed = time.Now()
 		dir = e.dir
-		delete(p.entries, claim.key.String())
 		p.mu.Unlock()
 		_ = os.RemoveAll(claim.dir)
 		return dir, true
 	}
-	delete(p.entries, claim.key.String())
 	claim.key = key
 	claim.lastUsed = time.Now()
 	p.entries[k] = claim

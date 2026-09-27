@@ -120,16 +120,20 @@ func (s *MilvusStore) ensureCollection(ctx context.Context) error {
 }
 
 // Index 将文档分块并索引到 Milvus。
-// 幂等：先清该文件旧数据再写入——文件变短（删章节/内容精简）时 chunk 数变少，
-// 只 Upsert 新块会残留 chunk_M..N-1 旧行携带过期内容参与检索挤占 topK
-// （与 Local.Rescan 的全量重建同语义）。
+// 幂等：成功路径上先清该文件旧数据再写入——文件变短（删章节/内容精简）时
+// chunk 数变少，只 Upsert 新块会残留 chunk_M..N-1 旧行携带过期内容参与检索
+// 挤占 topK（与 Local.Rescan 的全量重建同语义）。
+// 顺序：chunk → Embed 成功 → Delete → Upsert。Embed 是外部网络调用，先删后
+// 嵌的失败路径会把旧索引一并清掉（该文件从检索面静默消失，比调用前更糟）；
+// 倒序后失败只发生在写入前，旧数据完好。
 func (s *MilvusStore) Index(ctx context.Context, file string, content string) error {
 	chunks := chunkMarkdown(content)
-	if err := s.DeleteFile(ctx, file); err != nil {
-		return fmt.Errorf("milvus: 清理旧索引失败: %w", err)
-	}
 	if len(chunks) == 0 {
-		return nil // 清旧后无新内容：文件已空，索引中不残留该文件数据
+		// 无新内容：清旧即全量（文件已空，索引中不残留该文件数据）
+		if err := s.DeleteFile(ctx, file); err != nil {
+			return fmt.Errorf("milvus: 清理旧索引失败: %w", err)
+		}
+		return nil
 	}
 
 	// 准备文本用于 embedding
@@ -145,10 +149,14 @@ func (s *MilvusStore) Index(ctx context.Context, file string, content string) er
 		files[i] = file
 	}
 
-	// 批量 embedding
+	// 批量 embedding（在动旧数据之前完成——失败时旧索引原样保留）
 	vectors, err := s.embedder.Embed(ctx, texts)
 	if err != nil {
 		return fmt.Errorf("milvus: embedding 失败: %w", err)
+	}
+
+	if err := s.DeleteFile(ctx, file); err != nil {
+		return fmt.Errorf("milvus: 清理旧索引失败: %w", err)
 	}
 
 	// 插入 Milvus

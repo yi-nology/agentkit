@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
@@ -143,7 +144,12 @@ func capContent(out *useSkillOut, capBytes int) {
 	if capBytes <= 0 || len(out.Content) <= capBytes {
 		return
 	}
-	out.Content = out.Content[:capBytes] +
+	// rune 安全回退：字节截断可切出非法 UTF-8 尾字节（json 序列化时退化为替换符）
+	cut := capBytes
+	for cut > 0 && !utf8.RuneStart(out.Content[cut]) {
+		cut--
+	}
+	out.Content = out.Content[:cut] +
 		"\n\n[系统提示] 技能全文超过上限已截断；以上为前缀内容，请基于已有信息继续，必要时申请平台侧拆分技能。"
 }
 

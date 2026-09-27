@@ -354,3 +354,35 @@ func TestCloneURLPreservesScheme(t *testing.T) {
 		t.Fatalf("无 scheme 应补 https: %q", got)
 	}
 }
+
+// TestClaimStaleDetachesEntry 回归（v0.10.28 审计）：领用即摘牌——claimStale
+// 领用保留目录的同临界区内必须把旧 key 条目从 entries 摘除。否则增量刷新窗口
+// 内并发 Ensure(旧head) 会命中正被 checkout --force 重写的工作树（撕裂读），
+// 且 Release(旧key) no-op 导致 rc 永久泄漏、Sweep 永不回收。
+func TestClaimStaleDetachesEntry(t *testing.T) {
+	fixture := makeFixtureRepo(t)
+	p := newTestPool(t, fixture)
+	p.CredentialOf = func(string) (string, string, bool) { return "file://" + fixture, "x", true }
+	ctx := context.Background()
+
+	v1 := WorktreeKey{Platform: "gitea", Owner: "o", Repo: "r", Number: "1",
+		HeadSHA: "v1", DefaultBranch: "main"}
+	if _, err := p.Ensure(ctx, v1); err != nil {
+		t.Fatal(err)
+	}
+	p.Release(v1) // rc=0：保留目录可被 claimStale 领用
+
+	v2 := WorktreeKey{Platform: "gitea", Owner: "o", Repo: "r", Number: "1",
+		HeadSHA: "another-sha", DefaultBranch: "main"}
+	claim := p.claimStale(v2)
+	if claim == nil {
+		t.Fatal("应领用到同 PR 保留条目")
+	}
+	// 摘牌不变量：旧 key 立即不可达（hitExisting miss、再次 claimStale 无货）
+	if _, ok := p.hitExisting(v1.String()); ok {
+		t.Fatal("领用后旧 key 仍可命中（未摘牌）——撕裂读/rc 泄漏窗口")
+	}
+	if p.claimStale(v2) != nil {
+		t.Fatal("摘牌后条目不应再被重复领用")
+	}
+}

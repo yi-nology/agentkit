@@ -67,6 +67,7 @@ func (c *ClaudeCode) Run(ctx context.Context, req RunRequest) (*RunResult, error
 	}
 
 	var result *RunResult
+	var sawResult bool // result 事件是否到达（init-only 空壳不具备终态语义）
 	onLine := func(line string) {
 		var ev claudeEvent
 		if err := json.Unmarshal([]byte(line), &ev); err != nil {
@@ -98,6 +99,7 @@ func (c *ClaudeCode) Run(ctx context.Context, req RunRequest) (*RunResult, error
 				}
 			}
 		case "result":
+			sawResult = true // 终态事件真的到达过（区分 init-only 空壳）
 			r := &RunResult{Text: ev.Result, SessionID: ev.SessionID}
 			if ev.Usage != nil {
 				r.Usage = Usage{InputTokens: ev.Usage.InputTokens, OutputTokens: ev.Usage.OutputTokens, CostUSD: ev.TotalCostUSD}
@@ -121,15 +123,17 @@ func (c *ClaudeCode) Run(ctx context.Context, req RunRequest) (*RunResult, error
 	stdout, code, err := runCLI(ctx, req, argv, onLine)
 	if err != nil {
 		// result 事件已到达（agent 正常完成但进程退出码非零）：以结果为准
-		if result != nil && result.Text != "" {
+		if sawResult && result != nil && result.Text != "" {
 			result.ExitCode = code
 			result.Raw = []byte(stdout)
 			return result, nil
 		}
 		return nil, err
 	}
-	if result == nil {
-		// 无 stream-json 输出（旧版本/输出格式变更）：全文当文本兜底
+	if !sawResult || result == nil {
+		// 无 result 事件（旧版本/输出格式变更/超长行被限容丢弃/流尾被截断）：
+		// 全文当文本兜底——init-only 的空壳 result 不具备终态语义（曾绕过兜底
+		// 静默返回空文本成功）
 		result = fallbackResult(stdout, code)
 	}
 	result.ExitCode = code

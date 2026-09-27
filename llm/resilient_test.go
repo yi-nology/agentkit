@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
+	"git.enjoye.top/enjoydream/agentkit/breaker"
 	"git.enjoye.top/enjoydream/agentkit/llm/llmtest"
 )
 
@@ -480,5 +482,79 @@ func TestChainFailoverModel(t *testing.T) {
 		[]*schema.Message{schema.UserMessage("q")}); err == nil ||
 		!strings.Contains(err.Error(), "m2 down") {
 		t.Fatalf("全败应上抛末模型错误: %v", err)
+	}
+}
+
+// TestResilientProbeTimeoutDerived 回归（v0.10.28 审计）：半开探测时限必须
+// 覆盖单模型一次完整尝试的最坏在途时间——缺省按 (重试+1)×(MaxDelay+90s)
+// 推导并接线 WithProbeTimeout（此前用 Breakers 缺省 1 分钟，半开隔离必然失效）。
+func TestResilientProbeTimeoutDerived(t *testing.T) {
+	cfg := ResilientConfig{MaxDelay: 30 * time.Second}
+	cfg.fillDefaults()
+	if cfg.RetriesPerModel != 2 {
+		t.Fatalf("默认重试: %d", cfg.RetriesPerModel)
+	}
+	want := time.Duration(cfg.RetriesPerModel+1) * (cfg.MaxDelay + 90*time.Second)
+	if cfg.BreakerProbeTimeout != want {
+		t.Fatalf("探测时限推导: got %v want %v", cfg.BreakerProbeTimeout, want)
+	}
+	// 显式配置直传
+	cfg2 := ResilientConfig{BreakerProbeTimeout: 7 * time.Second}
+	cfg2.fillDefaults()
+	if cfg2.BreakerProbeTimeout != 7*time.Second {
+		t.Fatalf("显式配置应直传: %v", cfg2.BreakerProbeTimeout)
+	}
+}
+
+// blockingModel 模型层阻塞到调用方 ctx 取消（模拟用户中途取消在途请求——
+// walkChain 的 try 走 Model().Generate，不在 Provider.Generate 层）。
+type blockingModel struct {
+	*llmtest.Model
+	calls atomic.Int32
+}
+
+func (m *blockingModel) Generate(ctx context.Context, in []*schema.Message, opts ...model.Option) (*schema.Message, error) {
+	m.calls.Add(1)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+type blockingProvider struct {
+	Provider
+	m *blockingModel
+}
+
+func (b *blockingProvider) Model() model.BaseChatModel { return b.m }
+
+// TestResilientUserCancelDoesNotTripBreaker 回归（v0.10.28 审计）：用户主动
+// 取消走 Abandon（不计失败统计）——连续取消曾把模型熔断 5 分钟全员降级。
+func TestResilientUserCancelDoesNotTripBreaker(t *testing.T) {
+	base := llmtest.NewScriptedProvider("primary", llmtest.Resp{Content: "x"})
+	bm := &blockingModel{Model: base.Model().(*llmtest.Model)}
+	bp := &blockingProvider{Provider: base, m: bm}
+	r, err := NewResilient(NewFallbackChain(bp), ResilientConfig{
+		RetriesPerModel: 0, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 连续取消次数超过熔断阈值（曾触发连续失败熔断）
+	for i := 0; i < breaker.DefaultTripThreshold+2; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+		_, gerr := r.Generate(ctx, "test", msgs("q"))
+		cancel()
+		if gerr == nil {
+			t.Fatal("取消应失败返回")
+		}
+	}
+	if bm.calls.Load() != int32(breaker.DefaultTripThreshold+2) {
+		t.Fatalf("每次都应真实发起调用: %d", bm.calls.Load())
+	}
+	// 取消不计失败：模型未被熔断——超时窗口内仍可继续打到该模型
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	_, _ = r.Generate(ctx, "test", msgs("q"))
+	if bm.calls.Load() != int32(breaker.DefaultTripThreshold+3) {
+		t.Fatalf("取消不得熔断模型（下一次调用仍应打到它）: %d", bm.calls.Load())
 	}
 }

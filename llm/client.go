@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/cloudwego/eino/components/model"
@@ -261,11 +262,16 @@ func (c *Client) GenerateJSON(ctx context.Context, stage string, msgs []*schema.
 			return err
 		}
 		raw := jsonrepair.ExtractJSON(resp.Content)
-		if err := json.Unmarshal([]byte(raw), out); err != nil {
+		// 解进临时零值、成功后整体赋回：encoding/json 失败/合并不清零已解码
+		// 字段——重试共用同一 out 时，上次残留（如部分解码出的 Confidence）会
+		// 泄入本次结果（v0.10.28 审计修复）
+		fresh := reflect.New(reflect.TypeOf(out).Elem())
+		if err := json.Unmarshal([]byte(raw), fresh.Interface()); err != nil {
 			lastErr = err
 			lastRaw = resp.Content
 			continue
 		}
+		reflect.ValueOf(out).Elem().Set(fresh.Elem())
 		return nil
 	}
 	return fmt.Errorf("llm: %s JSON 解析失败（已带错误重试 1 次）: %w", stage, lastErr)

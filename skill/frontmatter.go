@@ -99,9 +99,14 @@ func trimQuoted(v string) string {
 func ParseRichFrontmatter(dirName, content string) (LibMeta, string, error) {
 	meta := LibMeta{Name: dirName, Mode: ModeStatic}
 	body := content
-	if !strings.HasPrefix(content, "---") {
+	// BOM/前导空白容忍（与 parseFrontmatter 口径对齐）：带前导空行或 UTF-8 BOM
+	// 的 SKILL.md 曾被整份当正文，元数据静默丢失
+	content = strings.TrimPrefix(content, "\ufeff")
+	trimmed := strings.TrimLeft(content, "\r\n\t ")
+	if !strings.HasPrefix(trimmed, "---") {
 		return meta, body, nil
 	}
+	content = trimmed
 	inner := content[3:]
 	rest := strings.TrimPrefix(inner, "\n")
 	// 空 frontmatter：`---\n---` 经剥壳后 rest 以 --- 开头（无前置换行）。

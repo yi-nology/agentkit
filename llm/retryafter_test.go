@@ -100,7 +100,7 @@ func TestGenerateRetryHonorsRetryAfter(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Retry-After", "1")
 			w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = w.Write([]byte(`{"error":{"message":"rate limited","type":"requests","code":"1305"}}`))
+			_, _ = w.Write([]byte(`{"error":{"message":"rate limited","type":"requests","code":"1305"}}`))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

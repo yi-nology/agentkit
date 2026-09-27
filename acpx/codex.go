@@ -91,7 +91,10 @@ func (c *Codex) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		}
 		return nil, err
 	}
-	if errMsg != "" && lastText == "" {
+	// 有错如实报错（对齐 mimo 纪律及其回归测试）：exit=0 但事件流含 error 的
+	// 部分输出跑（配额耗尽/流中断后吐了些文本）不得当成功——lastText 条件
+	// 曾让这类跑静默丢错
+	if errMsg != "" {
 		return nil, fmt.Errorf("acpx: codex 运行错误: %s", errMsg)
 	}
 	text := strings.TrimSpace(readFileTrim(lastMsg))

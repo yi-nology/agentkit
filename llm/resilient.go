@@ -113,6 +113,11 @@ type ResilientConfig struct {
 	BaseDelay time.Duration
 	// MaxDelay 重试退避上限，默认 30s。
 	MaxDelay time.Duration
+	// BreakerProbeTimeout 熔断半开探测的单次时限。缺省按「单模型一次完整尝试」
+	// 推导：(RetriesPerModel+1) 次尝试 × (MaxDelay + 90s 预算)。该值必须覆盖
+	// tryOneProvider 的最长在途时间——否则 Breakers 会把超时探测判为失联并
+	// 放行并发新探测，半开「单探测隔离」失效（v0.10.28 审计修复）。
+	BreakerProbeTimeout time.Duration
 }
 
 func (c *ResilientConfig) fillDefaults() {
@@ -130,6 +135,10 @@ func (c *ResilientConfig) fillDefaults() {
 	}
 	if c.MaxDelay <= 0 {
 		c.MaxDelay = 30 * time.Second
+	}
+	if c.BreakerProbeTimeout <= 0 {
+		// 单模型最坏在途 = (重试+1) 次 × (退避上限 + 单次尝试预算余量 90s)
+		c.BreakerProbeTimeout = time.Duration(c.RetriesPerModel+1) * (c.MaxDelay + 90*time.Second)
 	}
 }
 
@@ -169,9 +178,10 @@ func NewResilient(chain *FallbackChain, cfg ResilientConfig) (*Resilient, error)
 	}
 	cfg.fillDefaults()
 	return &Resilient{
-		chain:    chain,
-		cfg:      cfg,
-		breakers: breaker.NewBreakers(cfg.BreakerTrip, cfg.BreakerCooldown),
+		chain: chain,
+		cfg:   cfg,
+		breakers: breaker.NewBreakers(cfg.BreakerTrip, cfg.BreakerCooldown,
+			breaker.WithProbeTimeout(cfg.BreakerProbeTimeout)),
 	}, nil
 }
 
@@ -308,13 +318,14 @@ func (r *Resilient) walkChain(ctx context.Context, stage string, try func(p Prov
 			r.rememberModel(p.ModelName())
 			return attempts, nil
 		}
-		// ctx 取消：用户主动中止，不再尝试其他模型。
-		// 这次尝试确实失败了，仍要配对 Failure——否则半开探测被提前返回吃掉，
-		// 该模型被永久逐出降级链
-		r.breakers.Failure(p.ModelName())
 		if ctx.Err() != nil {
+			// 用户主动中止：结果未知，走 Abandon（解除半开探测占位、不计失败
+			// 统计——Failure 曾让连续 3 次用户取消把模型熔断 5 分钟）
+			r.breakers.Abandon(p.ModelName())
 			return attempts, ctx.Err()
 		}
+		// 真实模型失败：配对 Failure（含半开探测占位的解除）
+		r.breakers.Failure(p.ModelName())
 		attempts = append(attempts, Attempt{
 			Provider: p.Name(), Model: p.ModelName(),
 			Err: err.Error(), Duration: time.Since(start),

@@ -181,6 +181,18 @@ func (p *FileProvider) ListSkills(ctx context.Context) ([]Meta, error) {
 // 未命中返回 ("", false)。别名表懒扫描构建（进程内 skill 目录通常不变）；
 // 首次扫描为全目录磁盘 I/O，ctx 取消随链透传。
 func (p *FileProvider) CanonicalName(ctx context.Context, name string) (string, bool) {
+	// 精确名优先（与 Library.CanonicalName 的 byName 契约对齐）：技能 A 的
+	// frontmatter name 恰与技能 B 的目录名相同时，别名表不得把 B 重定向到 A。
+	// 同 loadName 的防穿越归一（前缀 / 使 .. 无法越出 root）
+	name = filepath.Clean("/" + strings.TrimSpace(name))[1:]
+	if name != "" {
+		if _, err := os.Stat(filepath.Join(p.Root, name, "SKILL.md")); err == nil {
+			return name, true
+		}
+		if _, err := os.Stat(filepath.Join(p.Root, name+".md")); err == nil {
+			return name, true
+		}
+	}
 	p.mu.RLock()
 	aliases := p.aliases
 	p.mu.RUnlock()

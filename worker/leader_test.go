@@ -168,3 +168,43 @@ func TestLeaderElectorStopWithInflightTick(t *testing.T) {
 		t.Fatal("stop 后在途获得的租约应已让出")
 	}
 }
+
+// TestLeaderElectorStopBoundedWhenAcquireHangs 回归（v0.10.28 审计）：TryAcquire
+// 挂起（存储层故障/网络分区且 driver 无超时）时 Stop 不得永久阻塞——tick 的
+// acquire 现带 5s 独立限时，挂起场景下 Stop 有界返回。
+type hangingStore struct {
+	memLeaseStore
+	hang chan struct{}
+}
+
+func (s *hangingStore) TryAcquire(ctx context.Context, key, holder string, ttl time.Duration) (bool, error) {
+	select {
+	case <-s.hang: // 永不关闭：模拟存储挂起，直到 ctx 取消
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+	return s.memLeaseStore.TryAcquire(ctx, key, holder, ttl)
+}
+
+func TestLeaderElectorStopBoundedWhenAcquireHangs(t *testing.T) {
+	store := &hangingStore{memLeaseStore: *newMemLeaseStore(), hang: make(chan struct{})}
+	e := NewLeaderElector(store, "poller", "A", time.Minute, 10*time.Millisecond,
+		WithLeaderLogger(logx.NewSlogLogger("test")))
+	e.Start(context.Background())
+	time.Sleep(50 * time.Millisecond) // 等竞选 goroutine 进入挂起的 TryAcquire
+
+	done := make(chan struct{})
+	go func() {
+		e.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// Stop 有界返回（acquire 限时 5s < 本测试等待预算）
+	case <-time.After(8 * time.Second):
+		t.Fatal("TryAcquire 挂起时 Stop 应有界返回（acquire 独立限时）")
+	}
+	if e.IsLeader() {
+		t.Fatal("挂起期间不得当选")
+	}
+}

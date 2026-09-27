@@ -9,6 +9,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -153,6 +154,9 @@ func (e *LeaderElector) stopping() bool {
 // releaseTimeout 让位释放租约的限时（独立 Background ctx：原 ctx 往往已取消）。
 const releaseTimeout = 5 * time.Second
 
+// acquireTimeout 竞选 TryAcquire 的单次限时（存储挂起时 Stop 不至于无界）。
+const acquireTimeout = 5 * time.Second
+
 // releaseLease 主动释放租约（计划内交接）：失败仅 Warn——租约 ttl 到期会自然失效，
 // 让位失败不阻断停机流程。
 func (e *LeaderElector) releaseLease() {
@@ -169,10 +173,20 @@ func (e *LeaderElector) tick(ctx context.Context) bool {
 	if e.stopping() || ctx.Err() != nil {
 		return false
 	}
-	ok, err := e.store.TryAcquire(ctx, e.key, e.holder, e.ttl)
+	// 独立限时（继承 caller ctx 保留父取消语义）：存储层挂起（连接池耗尽/
+	// 网络分区）时 Stop 不至于永久阻塞在 <-e.done——与 releaseTimeout 同口径
+	acquireCtx, cancel := context.WithTimeout(ctx, acquireTimeout)
+	defer cancel()
+	ok, err := e.store.TryAcquire(acquireCtx, e.key, e.holder, e.ttl)
 	if err != nil {
 		if ctx.Err() != nil {
 			return false // ctx 取消导致的失败不算失主，退出走 yield 让位
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			// 本限时触发（父 ctx 未取消）：按存储抖动同路——保守失主、下周期重试
+			e.setLeader(false)
+			e.log.Warn("agentkit.leader.acquire_timeout", "key", e.key)
+			return true
 		}
 		// 存储抖动：保守认为失主（回调方组件按非 leader 收敛），下个周期重试
 		e.setLeader(false)
