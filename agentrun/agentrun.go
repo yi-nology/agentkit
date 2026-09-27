@@ -103,6 +103,9 @@ func Run(ctx context.Context, cfg Config, query string) (string, error) {
 }
 
 // RunWithEvents 执行并回调过程事件（nil 回调等价 Run）。
+// onEvent 契约：回调在事件 drain 循环内同步执行——不得阻塞（阻塞会拖停整轮
+// agent）、不得 panic（会击穿调用方 goroutine，与 acpx OnEvent 同契约；事件
+// 已固化，回调内消费失败不影响事件面完整性，自行 recover）。
 func RunWithEvents(ctx context.Context, cfg Config, query string, onEvent func(Event)) (string, error) {
 	return run(ctx, cfg, query, onEvent)
 }

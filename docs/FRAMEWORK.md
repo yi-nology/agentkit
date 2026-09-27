@@ -372,7 +372,7 @@ res, err := agentrun.PlanAndExecute(ctx, agentrun.PlanExecuteConfig{
     Executor: executorModel,
     Tools:    tools,
     MaxSteps: 10,
-    PlannerInstruction: "约束/背景（经输入整形注入，不覆盖格式提示词）",
+    PlannerInstruction: "约束/背景（前置注入：位于 eino 默认规划提示词之前，不覆盖它——v0.10.29 起真正兑现该语义）",
 }, goal)
 ```
 
@@ -742,6 +742,12 @@ lazy 建连缓存 + Initialize 握手；列举失败自动摘除坏连接（下�
   摘死连接→重连→解析同名工具重试一次；业务错误不触发。
 - **租约面**（v0.10.18）：`PingServer` 协议级探活（无声死亡摘除重建）+
   `ReapIdle/StartIdleReaper` 闲置回收；探活独立 5s 预算（v0.10.20）。
+  v0.10.29 起探活按协议代际分流：legacy 连接用协议 ping；现代协议
+  （2026-07-28）连接 ping 是 no-op，改发真实 tools/list；闲置回收与 evict
+  同构失效目录缓存。
+- **超时面**（v0.10.29）：`ServerConfig.Timeout` 仅作用于 dial+Initialize；
+  HTTP 传输的每请求挂死兜底是独立的 `RequestTimeout`（缺省 10 分钟）——
+  工具调用的正常时长控制归调用方 ctx。
 - **_meta 透传**（v0.10.20）：`Pool.RequestMeta func(ctx) map[string]any` 每笔
   调用注入请求侧 _meta（metaFn 在调用方 ctx 取值，池不感知业务键）。
 - **OAuth**（v0.10.21）：URL 传输 `ServerConfig.OAuth`（PKCE 恒开、TokenStore
