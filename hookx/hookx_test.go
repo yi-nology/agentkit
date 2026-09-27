@@ -65,11 +65,16 @@ func TestRunContinueFalse(t *testing.T) {
 	if !res.BlockRequested || res.StopReason != "拦截" {
 		t.Fatalf("continue:false: %+v", res)
 	}
-	// Stop 事件上 continue:true 表示「继续跑」
-	r2 := &Runner{Hooks: []Hook{shHook(t, "stop", `{"continue":true}`)}}
+	// Stop 事件上 continue:false 表示否决停止（继续跑）；continue:true 无意见
+	r2 := &Runner{Hooks: []Hook{shHook(t, "stop", `{"continue":false,"stopReason":"还有活"}`)}}
 	res2 := r2.Run(context.Background(), EventStop, Input{Event: EventStop})
-	if !res2.StopShouldContinue {
-		t.Fatalf("stop 事件 continue:true: %+v", res2)
+	if !res2.StopShouldContinue || res2.StopReason != "还有活" {
+		t.Fatalf("stop 事件 continue:false 应否决停止: %+v", res2)
+	}
+	r3 := &Runner{Hooks: []Hook{shHook(t, "stop", `{"continue":true}`)}}
+	res3 := r3.Run(context.Background(), EventStop, Input{Event: EventStop})
+	if res3.StopShouldContinue {
+		t.Fatalf("stop 事件 continue:true 应无意见: %+v", res3)
 	}
 }
 
@@ -149,6 +154,18 @@ func TestRunTimeout(t *testing.T) {
 	}
 	if res.BlockRequested {
 		t.Fatal("超时 hook 无决策")
+	}
+}
+
+// TestStdinPayloadDelivered 回归（procx StdinPipe 曾在 Start 后建——payload
+// 永远送不进子进程）：hook 读取 stdin 并按内容决策，stdin 断言真实可达。
+func TestStdinPayloadDelivered(t *testing.T) {
+	h := Hook{Command: []string{"sh", "-c",
+		`v=$(cat); case "$v" in *bash*) printf '%s' '{"decision":"approve"}';; esac`}, Events: "*"}
+	r := &Runner{Hooks: []Hook{h}}
+	res := r.Run(context.Background(), EventPreToolUse, Input{Event: EventPreToolUse, Tool: "bash"})
+	if res.PermissionBehavior != "allow" {
+		t.Fatalf("stdin 载荷未送达（hook 读不到 tool 名）: %+v", res)
 	}
 }
 

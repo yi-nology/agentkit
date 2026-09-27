@@ -90,6 +90,21 @@ func TestLatestAcrossWindows(t *testing.T) {
 	}
 }
 
+// TestSameSizeContentChangeRegression 回归：mtime 未前进+同 size 但内容变化
+// （cp -p/rsync -a 保留时间戳回灌）不得静默放行。
+func TestSameSizeContentChangeRegression(t *testing.T) {
+	tr := NewTracker()
+	tr.RecordRead("/a.go", 0, 0, base, 100, "AAAA")
+	// 同 mtime、同 size、不同内容 → ErrStale
+	if err := tr.CheckEdit("/a.go", base, 100, "BBBB"); !errors.Is(err, ErrStale) {
+		t.Fatalf("同 size 内容变化应 stale: %v", err)
+	}
+	// 同内容 → 放行
+	if err := tr.CheckEdit("/a.go", base, 100, "AAAA"); err != nil {
+		t.Fatalf("内容一致应放行: %v", err)
+	}
+}
+
 func TestPathNormalization(t *testing.T) {
 	tr := NewTracker()
 	// 同文件不同形态路径（./、重复分隔、大小写在 darwin/windows 折叠）

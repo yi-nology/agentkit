@@ -97,7 +97,8 @@ type RunResult struct {
 	// PreventContinuation 阻断且该事件不允许继续（PreToolUse/PermissionRequest）。
 	PreventContinuation bool
 	StopReason          string
-	// StopShouldContinue Stop 事件上 hook 否决停止（continue:true）。
+	// StopShouldContinue Stop 事件上 hook 否决停止（continue:false 或
+	// decision:block——block 分支沿用阻断语义）。
 	StopShouldContinue bool
 	// PermissionBehavior "" | "allow" | "deny"（deny 单调——保守合并）。
 	PermissionBehavior string
@@ -201,7 +202,9 @@ func processOutput(event Event, out *Output) RunResult {
 		}
 		res.PreventContinuation = true
 	}
-	if event == EventStop && out.Continue != nil && *out.Continue {
+	if event == EventStop && out.Continue != nil && !*out.Continue {
+		// 协议语义：Stop 事件上 continue:false = 否决停止（继续跑）；continue:true
+		// 等价缺省「无异议、允许停止」——不是否决（反着实现会造成无限续跑）
 		res.StopShouldContinue = true
 		res.StopReason = firstNonEmpty(out.StopReason, out.Reason)
 	}

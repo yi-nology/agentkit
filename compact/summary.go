@@ -78,11 +78,18 @@ func FormatSummary(modelOutput string) string {
 	if out == "" {
 		return ""
 	}
-	out = analysisRe.ReplaceAllString(out, "")
-	if m := summaryRe.FindStringSubmatch(out); m != nil {
-		out = summaryRe.ReplaceAllString(out, "Summary:\n"+strings.TrimSpace(m[1]))
+	out = analysisRe.ReplaceAllLiteralString(out, "")
+	// 摘要正文按字面替换（ReplaceAllString 会把 $name/$1 当模板展开——
+	// 代码摘要里的 ${VAR}/$HOME 会被静默清空）
+	if loc := summaryRe.FindStringSubmatchIndex(out); loc != nil {
+		var b strings.Builder
+		b.WriteString(out[:loc[0]])
+		b.WriteString("Summary:\n")
+		b.WriteString(strings.TrimSpace(out[loc[2]:loc[3]]))
+		b.WriteString(out[loc[1]:])
+		out = b.String()
 	}
-	return strings.TrimSpace(blankRe.ReplaceAllString(out, "\n\n"))
+	return strings.TrimSpace(blankRe.ReplaceAllLiteralString(out, "\n\n"))
 }
 
 // SummaryOptions 续接消息的可选声明段。

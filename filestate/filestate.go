@@ -46,14 +46,16 @@ type Entry struct {
 }
 
 // Tracker 读状态登记簿（并发安全）。零值不可用，经 NewTracker 构造。
+// 每路径只保留最新一条记录（豁免判定只需最新；历史与全量 Content 驻留是
+// 无界内存——编辑型 agent 每轮 Edit 前都 Read，长会话数百 MB 级）。
 type Tracker struct {
-	mu  sync.Mutex
-	byPath map[string][]Entry // 路径归一键 → 读取历史（Latest 取最新 ReadAt）
+	mu     sync.Mutex
+	byPath map[string]Entry // 路径归一键 → 最新读取
 }
 
 // NewTracker 创建登记簿。
 func NewTracker() *Tracker {
-	return &Tracker{byPath: map[string][]Entry{}}
+	return &Tracker{byPath: map[string]Entry{}}
 }
 
 // RecordRead 登记一次读取。offset/limit 为窗口（limit 0=全量）。
@@ -75,8 +77,7 @@ func (t *Tracker) RecordRead(path string, offset, limit int, mtime time.Time, si
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	key := normalizePath(path)
-	t.byPath[key] = append(t.byPath[key], e)
+	t.byPath[normalizePath(path)] = e
 	return e
 }
 
@@ -85,17 +86,8 @@ func (t *Tracker) RecordRead(path string, offset, limit int, mtime time.Time, si
 func (t *Tracker) Latest(path string) (Entry, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	entries := t.byPath[normalizePath(path)]
-	if len(entries) == 0 {
-		return Entry{}, false
-	}
-	latest := entries[0]
-	for _, e := range entries[1:] {
-		if e.ReadAt.After(latest.ReadAt) {
-			latest = e
-		}
-	}
-	return latest, true
+	e, ok := t.byPath[normalizePath(path)]
+	return e, ok
 }
 
 // CheckEdit 编辑/覆写前校验。curMtime/curSize/curContent 为此刻文件实测
@@ -105,10 +97,14 @@ func (t *Tracker) CheckEdit(path string, curMtime time.Time, curSize int64, curC
 	if !ok || last.Partial {
 		return fmt.Errorf("%w: %s", ErrNotRead, path)
 	}
-	// 未变化：mtime 未前进且 size 相同
+	// mtime 未前进且 size 相同：仍须内容比对兜底——保留 mtime 的同长覆盖
+	// （cp -p/rsync -a 回灌）在该分支静默放行是 staleness 检测的真实绕过面
 	mtimeAdvanced := curMtime.UnixMilli() > last.MtimeMs
 	if !mtimeAdvanced && curSize == last.Size {
-		return nil
+		if last.Content == "" || last.Content == curContent {
+			return nil
+		}
+		return fmt.Errorf("%w: %s", ErrStale, path)
 	}
 	// 变化但内容一致（formatter 重写/无实质修改）：仅全量读且读时内容保留时豁免
 	if !last.Partial && last.Offset <= 1 && last.Limit == 0 && last.Content == curContent {
@@ -121,11 +117,10 @@ func (t *Tracker) CheckEdit(path string, curMtime time.Time, curSize int64, curC
 func (t *Tracker) RecordEdit(path string, mtime time.Time, size int64, content string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	key := normalizePath(path)
-	t.byPath[key] = append(t.byPath[key], Entry{
+	t.byPath[normalizePath(path)] = Entry{
 		Path: path, Offset: 1, MtimeMs: mtime.UnixMilli(), Size: size,
 		ReadAt: time.Now(), Content: content,
-	})
+	}
 }
 
 // normalizePath 归一比较键：Clean + 大小写不敏感文件系统（darwin/windows）折叠

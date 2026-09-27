@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -103,14 +104,22 @@ func execCLI(ctx context.Context, dir string, argv []string, env []string,
 	}
 	cmd.Stderr = errBuf
 
+	// StdinPipe 必须在 Start 之前建（os/exec 守卫：进程启动后 StdinPipe 报错，
+	// 后建等于把 payload 丢进 /dev/null——子进程实际读到空 stdin）
+	var stdinPipe io.WriteCloser
+	if stdin != nil {
+		pipe, perr := cmd.StdinPipe()
+		if perr != nil {
+			return "", "", -1, fmt.Errorf("procx: stdin 管道建立失败: %w", perr)
+		}
+		stdinPipe = pipe
+	}
 	if err := cmd.Start(); err != nil {
 		return "", "", -1, fmt.Errorf("procx: 启动 %s 失败: %w", argv[0], err)
 	}
-	if stdin != nil {
-		if pipe, perr := cmd.StdinPipe(); perr == nil {
-			_, _ = pipe.Write(stdin) // 子进程不读 stdin 提前退出时 EPIPE 无害
-			_ = pipe.Close()
-		}
+	if stdinPipe != nil {
+		_, _ = stdinPipe.Write(stdin) // 子进程不读 stdin 提前退出时 EPIPE 无害
+		_ = stdinPipe.Close()
 	}
 	waitErr := cmd.Wait()
 	if waitErr != nil {

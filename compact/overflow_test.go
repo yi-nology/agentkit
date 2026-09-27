@@ -15,8 +15,10 @@ func TestTokenGap(t *testing.T) {
 		ok   bool
 	}{
 		{"This model's maximum context length is 128000 tokens. However, you requested 130500 tokens. ", 2500, true},
-		{"prompt is too long: 150000 tokens > 200000 maximum", 50000, true},
-		{"prompt is too long: 200000 tokens > 200000 maximum", 0, false}, // 非超差
+		// Anthropic 真实形态：requested 在前且必须大于 maximum 才是溢出
+		{"prompt is too long: 201329 tokens > 200000 maximum", 1329, true},
+		{"prompt is too long: 150000 tokens > 200000 maximum", 0, false}, // 未超差不报错
+		{"prompt is too long: 200000 tokens > 200000 maximum", 0, false}, // 等值非超差
 		{"some other error", 0, false},
 	}
 	for _, tc := range cases {
@@ -103,8 +105,8 @@ func TestTruncateForRetry(t *testing.T) {
 	if got == nil || len(got) >= len(msgs) {
 		t.Fatalf("应丢最旧组: %d → %d", len(msgs), len(got))
 	}
-	// attempt 超限
-	if got := TruncateForRetry(msgs, nil, MaxOverflowRetries); got != nil {
+	// attempt 超限（第 4 次）
+	if got := TruncateForRetry(msgs, nil, MaxOverflowRetries+1); got != nil {
 		t.Fatal("超限应 nil")
 	}
 	// 单组无从丢弃（leading-user 规则下 user+assistant+tool 是 2 组，此处构造真单组）
@@ -139,6 +141,27 @@ func TestEvaluateRapidRefill(t *testing.T) {
 	err := &ErrRapidRefill{ConsecutiveRapidRefills: 3, ToolTurnsSinceCompact: 1}
 	if !strings.Contains(err.Error(), "超大") {
 		t.Fatalf("错误文案应指引排查输出源: %s", err)
+	}
+}
+
+// TestFormatSummaryDollarRegression 回归：摘要正文含 $ 时不得被当替换模板展开。
+func TestFormatSummaryDollarRegression(t *testing.T) {
+	out := FormatSummary("<analysis>x</analysis><summary>set -e\nexport FOO=${HOME}/bin\ncost=$1</summary>")
+	for _, want := range []string{"${HOME}/bin", "$1", "set -e"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("摘要正文被模板展开腐蚀（缺 %q）: %q", want, out)
+		}
+	}
+}
+
+// TestTruncateRetryBudget 回归：第 3 次尝试仍在预算内（差一修复）。
+func TestTruncateRetryBudget(t *testing.T) {
+	msgs := mkRounds(10, 3)
+	if got := TruncateForRetry(msgs, nil, MaxOverflowRetries); got == nil {
+		t.Fatal("第 3 次尝试应在预算内")
+	}
+	if got := TruncateForRetry(msgs, nil, MaxOverflowRetries+1); got != nil {
+		t.Fatal("第 4 次应放弃")
 	}
 }
 

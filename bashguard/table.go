@@ -67,8 +67,8 @@ func defaultCommands() map[string]Policy {
 		"sha256sum": ro(bools("-b", "-c", "--tag", "-t", "-z", "--quiet", "--strict", "--status", "--warn")),
 		"sha1sum":   ro(bools("-b", "-c", "--tag", "-t", "-z", "--quiet", "--strict", "--status", "--warn")),
 		"base64":    ro(bools("-d", "-D", "-e", "-i", "-n", "-u")),
-		"sort":      ro(with(bools("-b", "-d", "-f", "-g", "-i", "-M", "-h", "-n", "-r", "-R", "-c", "-C", "-u", "-V", "-k", "-t", "-m", "-s", "-z", "-S"), "-o", "string", "-T", "string", "--parallel", "string"), "-o", "-o="), // -o 输出文件=写
-		"uniq":      ro(with(bools("-c", "-d", "-D", "-u", "-i", "-s", "-z"), "-f", "string", "-w", "string"), "-o"),
+		"sort":      ro(with(bools("-b", "-d", "-f", "-g", "-i", "-M", "-h", "-n", "-r", "-R", "-c", "-C", "-u", "-V", "-k", "-t", "-m", "-s", "-z", "-S"), "-T", "string", "--parallel", "string"), "-o", "-o="), // -o 输出文件=写（含折叠 -ro 形态）
+		"uniq":      ro(with(bools("-c", "-d", "-D", "-u", "-i", "-s", "-z"), "-f", "string", "-w", "string")),
 		"cut":       ro(with(bools("-b", "-c", "-f", "-d", "-s", "-z", "--complement"), "-n", "string", "--output-delimiter", "string")),
 		"tr":        ro(bools("-c", "-C", "-d", "-s", "-t", "-u")),
 		"rev":       ro(bools()),
@@ -92,9 +92,14 @@ func defaultCommands() map[string]Policy {
 		"describe":  ro(with(bools("--all", "--tags", "--contains", "--abbrev", "--candidates", "--exact-match", "--debug", "--long", "--match", "--always", "--first-parent", "--exclude", "--dirty", "--broken"), "--match", "string", "--exclude", "string", "--abbrev", "optional", "--candidates", "optional")),
 		"shortlog":  ro(bools("-n", "-s", "-e", "-w", "--summary", "--email", "--numbered", "--committer", "--group")),
 		"reflog":    ro(with(bools("--all", "--date", "--relative-date", "--oneline", "--no-abbrev"), "--since", "string", "--until", "string", "-n", "string")),
-		"remote":    roNoBare(with(bools("-v", "--verbose"), "show", "bool", "get-url", "bool")),
-		"branch":    roNoBare(with(bools("-a", "--all", "-v", "-vv", "--verbose", "--list", "-r", "--remotes", "--show-current", "--no-color", "--color", "-q", "--quiet"), "--contains", "string", "--merged", "string", "--no-merged", "string", "--sort", "string", "--points-at", "string")), // 裸=列表；git branch <名> 创建=写
-		"tag":       roNoBare(with(bools("-l", "--list"), "-n", "optional", "--sort", "optional", "--contains", "optional", "--points-at", "optional")),                                                                                                                                          // 裸=列表；git tag <名> 打标=写
+		"remote": Policy{ReadOnly: true,
+			SafeFlags: bools("-v", "--verbose"), // git remote -v = 列表（带 URL）
+			Subcommands: map[string]Policy{
+				"show":    ro(with(bools("-n"), "--prune", "bool", "--all", "bool")),
+				"get-url": ro(bools("--push", "--all")),
+			}}, // rename/set-url 等写形态不在子表则拒
+		"branch": roNoBare(with(bools("-a", "--all", "-v", "-vv", "--verbose", "--list", "-r", "--remotes", "--show-current", "--no-color", "--color", "-q", "--quiet"), "--contains", "string", "--merged", "string", "--no-merged", "string", "--sort", "string", "--points-at", "string")), // 裸=列表；git branch <名> 创建=写
+		"tag":    roNoBare(with(bools("-l", "--list"), "-n", "optional", "--sort", "optional", "--contains", "optional", "--points-at", "optional")),                                                                                                                                          // 裸=列表；git tag <名> 打标=写
 		"stash": Policy{ReadOnly: true, NoBareOperands: true, Subcommands: map[string]Policy{ // 裸=push（写）；list/show 只读
 			"list": ro(bools()),
 			"show": ro(with(bools("-p", "--patch", "--stat", "--name-only", "--name-status", "-u"), "--format", "optional", "--pretty", "optional")),
@@ -109,16 +114,17 @@ func defaultCommands() map[string]Policy {
 		"cat-file":      ro(with(bools("-t", "-s", "-e", "-p", "--batch", "--batch-check", "--batch-all-sha1s", "--buffer", "-z", "--follow-symlinks", "--textconv", "--filters"), "--path", "string", "--batch-command", "bool")),
 		"show-ref":      ro(bools("--head", "-d", "--dereference", "-s", "--hash", "--abbrev", "--tags", "--heads", "-q", "--verify", "--exclude-existing")),
 	}
-	// git branch/tag 裸列表与 git config --get 的写形态分歧在 evalPolicy 操作数
-	// 放行策略下有残余风险（git branch name 创建分支）——接受为已知局限：审计门
-	// 场景只读放行的代价是保守派生表可按需收紧（生产可覆写 branch/tag 策略）。
-	commands["git"] = Policy{ReadOnly: true, Subcommands: gitSubs}
+	commands["git"] = Policy{ReadOnly: true,
+		// git 全局前置 flag（git -C dir status / git -c k=v log）
+		SafeFlags: with(bools("--no-pager", "--no-optional-locks", "--no-replace-objects", "--literal-pathspecs"),
+			"-C", "string", "-c", "string", "--git-dir", "string", "--work-tree", "string"),
+		Subcommands: gitSubs}
 
 	// 安全包装：剥壳判定内核
 	wrapperFlags := func(kv ...string) Policy {
 		return Policy{Wrapper: true, SafeFlags: with(map[string]FlagKind{}, kv...)}
 	}
-	commands["env"] = Policy{Wrapper: true, SafeFlags: bools("-i", "-0", "-u")} // env KEY=V cmd / env cmd
+	commands["env"] = Policy{Wrapper: true, SafeFlags: with(bools("-i", "-0"), "-u", "string")} // env KEY=V cmd / env -u NAME cmd
 	commands["nice"] = wrapperFlags("-n", "string")
 	commands["nohup"] = Policy{Wrapper: true}
 	commands["time"] = Policy{Wrapper: true, SafeFlags: bools("-p")}

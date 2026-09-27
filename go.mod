@@ -10,6 +10,7 @@ require (
 	github.com/milvus-io/milvus-sdk-go/v2 v2.4.2
 	golang.org/x/sync v0.22.0
 	golang.org/x/time v0.15.0
+	mvdan.cc/sh/v3 v3.14.1
 )
 
 require (
@@ -18,7 +19,6 @@ require (
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
-	mvdan.cc/sh/v3 v3.14.1 // indirect
 )
 
 require (

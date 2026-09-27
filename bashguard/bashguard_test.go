@@ -155,6 +155,50 @@ func TestAnalyzeEdgeCases(t *testing.T) {
 	}
 }
 
+// TestCombinedFlagFoldingRegression 回归：值型 flag 折进联合 flag 的写路径
+// 漏判（sort -ro f = -r -o f 是写）；--flag=value 内联值形态。
+func TestCombinedFlagFoldingRegression(t *testing.T) {
+	if d := Analyze("sort -ro /tmp/out.txt in.txt", nil); d.ReadOnly {
+		t.Fatal("sort -ro 折叠写路径应拒绝")
+	}
+	if d := Analyze("sort -o /tmp/out.txt in.txt", nil); d.ReadOnly {
+		t.Fatal("sort -o 显式写路径应拒绝")
+	}
+	if d := Analyze("sort -rn in.txt", nil); !d.ReadOnly {
+		t.Fatalf("纯 bool 联合 flag 应放行: %s", d.Reason)
+	}
+	if d := Analyze("grep --color=auto -n x f", nil); !d.ReadOnly {
+		t.Fatalf("--flag=value（optional 内联）应放行: %s", d.Reason)
+	}
+}
+
+// TestGitGlobalFlagsAndRemote 回归：git 全局前置 flag 与 remote 子命令形态。
+func TestGitGlobalFlagsAndRemote(t *testing.T) {
+	readonly := []string{
+		"git -C /repo status",
+		"git -c core.pager=cat log --oneline",
+		"git --no-pager diff",
+		"git remote -v",
+		"git remote show origin",
+		"git remote get-url origin",
+		"env -u LC_ALL git status",
+	}
+	for _, cmd := range readonly {
+		if d := Analyze(cmd, nil); !d.ReadOnly {
+			t.Errorf("%q 应只读: %s", cmd, d.Reason)
+		}
+	}
+	unsafe := []string{
+		"git remote rename origin up", // 写形态不在子表
+		"git remote set-url origin x", // 写形态
+	}
+	for _, cmd := range unsafe {
+		if d := Analyze(cmd, nil); d.ReadOnly {
+			t.Errorf("%q 不应只读", cmd)
+		}
+	}
+}
+
 func TestCustomTable(t *testing.T) {
 	tbl := &Table{Commands: map[string]Policy{
 		"mytool": {ReadOnly: true, SafeFlags: map[string]FlagKind{"-v": FlagBool}},

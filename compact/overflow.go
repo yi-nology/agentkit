@@ -56,12 +56,18 @@ func EvaluateRapidRefill(toolTurnsSinceCompact, consecutiveRapidRefills int) Rap
 	}
 }
 
-// tokenGapPatterns provider 溢出报文的两类形态（OpenAI / Anthropic 系）。
-var tokenGapPatterns = []*regexp.Regexp{
-	// This model's maximum context length is 128000 tokens. However, you requested 130000 tokens
-	regexp.MustCompile(`maximum context length is (\d+) tokens\D{0,40}?requested (\d+) tokens`),
-	// prompt is too long: 150000 tokens > 200000 maximum
-	regexp.MustCompile(`prompt is too long: (\d+) tokens > (\d+) maximum`),
+// gapMatcher 单形态提取器：sub 匹配后计算超差。
+type gapMatcher struct {
+	re    *regexp.Regexp
+	first bool // true: m[1]=maximum、m[2]=requested（gap=m2−m1）；false: 反之
+}
+
+// tokenGapMatchers provider 溢出报文的两类形态（OpenAI / Anthropic 系）。
+var tokenGapMatchers = []gapMatcher{
+	// OpenAI: This model's maximum context length is 128000 tokens. However, you requested 130500 tokens
+	{regexp.MustCompile(`maximum context length is (\d+) tokens\D{0,40}?requested (\d+) tokens`), true},
+	// Anthropic: prompt is too long: 201329 tokens > 200000 maximum（requested 在前）
+	{regexp.MustCompile(`prompt is too long: (\d+) tokens > (\d+) maximum`), false},
 }
 
 // TokenGap 从 provider 的 prompt-too-long 错误报文提取超差 token 数
@@ -72,12 +78,18 @@ func TokenGap(cause error) (int, bool) {
 		return 0, false
 	}
 	msg := cause.Error()
-	for _, re := range tokenGapPatterns {
-		if m := re.FindStringSubmatch(msg); len(m) == 3 {
+	for _, g := range tokenGapMatchers {
+		if m := g.re.FindStringSubmatch(msg); len(m) == 3 {
 			a, err1 := strconv.Atoi(m[1])
 			b, err2 := strconv.Atoi(m[2])
-			if err1 == nil && err2 == nil && b > a {
+			if err1 != nil || err2 != nil {
+				continue
+			}
+			if g.first && b > a { // m1=maximum m2=requested
 				return b - a, true
+			}
+			if !g.first && a > b { // m1=requested m2=maximum
+				return a - b, true
 			}
 		}
 	}
@@ -166,7 +178,7 @@ func SelectAfterOverflow(msgs []Message, cause error, currentPreserved int) *Sel
 // 从摘要素材头部按 gap 覆盖丢最旧组（无 gap 按 20% 丢），保底留 1 组。
 // attempt 从 1 起，超过 MaxOverflowRetries 返回 nil（放弃）。
 func TruncateForRetry(entries []Message, cause error, attempt int) []Message {
-	if attempt >= MaxOverflowRetries {
+	if attempt > MaxOverflowRetries {
 		return nil
 	}
 	groups := GroupRounds(entries)

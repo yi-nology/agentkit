@@ -277,33 +277,58 @@ func evalPolicy(name string, argv []string, pol Policy) string {
 			i++
 			continue
 		}
-		kind, ok := pol.SafeFlags[a]
-		if !ok {
-			// 联合 flag（-rn 形态）：全部组成字符都安全才放行
-			if !strings.HasPrefix(a, "--") && len(a) > 2 {
-				allKnown := true
-				for _, ch := range a[1:] {
-					if _, ok := pol.SafeFlags["-"+string(ch)]; !ok {
-						allKnown = false
-						break
-					}
-				}
-				if allKnown {
-					i++
-					continue
-				}
+		if ok, kind := flagLookup(a, pol); ok {
+			i++
+			if kind != FlagBool && !strings.Contains(a, "=") &&
+				i < len(argv) && !strings.HasPrefix(argv[i], "-") {
+				i++ // 值参数
 			}
-			return fmt.Sprintf("%s 的 flag %q 不在安全表", name, a)
+			continue
 		}
-		i++
-		if kind != FlagBool && i < len(argv) && !strings.HasPrefix(argv[i], "-") {
-			i++ // 值参数
-		}
+		return fmt.Sprintf("%s 的 flag %q 不在安全表", name, a)
 	}
 	if pol.NoBareOperands && len(operands) > 0 {
 		return fmt.Sprintf("%s 带裸操作数 %q 是写形态（创建分支/标签/弹栈等）", name, operands[0])
 	}
 	return ""
+}
+
+// flagLookup 单 flag 解析：精确命中；`--flag=value` 形态（optional/string 型，
+// 值内联不吃下一参）；联合短 flag（-rn）：全部组成字符必须各自是 FlagBool 且
+// 不在 UnsafeFlags——值型 flag 折进联合 flag 后其参数会伪装成操作数（GNU getopt
+// 下 sort -ro f = -r -o f 是写路径），这是曾经的真实漏判面。
+func flagLookup(a string, pol Policy) (bool, FlagKind) {
+	if kind, ok := pol.SafeFlags[a]; ok {
+		return true, kind
+	}
+	// --flag=value：值内联，仅 optional/string 型放行
+	if base, val, found := strings.Cut(a, "="); found && strings.HasPrefix(base, "--") {
+		if kind, ok := pol.SafeFlags[base]; ok && (kind == FlagOptional || kind == FlagString) {
+			_ = val
+			return true, FlagBool // 值已内联，不吃下一参
+		}
+		return false, ""
+	}
+	// 联合短 flag：全组成 bool 才放行
+	if !strings.HasPrefix(a, "--") && len(a) > 2 && strings.HasPrefix(a, "-") {
+		for _, u := range pol.UnsafeFlags {
+			if u != "" && strings.HasPrefix(a, u) {
+				return false, ""
+			}
+		}
+		allBool := true
+		for _, ch := range a[1:] {
+			kind, ok := pol.SafeFlags["-"+string(ch)]
+			if !ok || kind != FlagBool {
+				allBool = false
+				break
+			}
+		}
+		if allBool {
+			return true, FlagBool
+		}
+	}
+	return false, ""
 }
 
 // splitSubcommand 在子命令策略表中定位子命令：按本层 flag 白名单消费（值型
@@ -321,27 +346,15 @@ func splitSubcommand(argv []string, pol Policy) (sub string, rest []string, reas
 			}
 			return "", nil, ""
 		}
-		kind, ok := pol.SafeFlags[a]
-		if !ok {
-			if !strings.HasPrefix(a, "--") && len(a) > 2 {
-				allKnown := true
-				for _, ch := range a[1:] {
-					if _, ok := pol.SafeFlags["-"+string(ch)]; !ok {
-						allKnown = false
-						break
-					}
-				}
-				if allKnown {
-					i++
-					continue
-				}
-			}
-			return "", nil, fmt.Sprintf("flag %q 不在本层安全表", a)
-		}
-		i++
-		if kind != FlagBool && i < len(argv) && !strings.HasPrefix(argv[i], "-") {
+		if ok, kind := flagLookup(a, pol); ok {
 			i++
+			if kind != FlagBool && !strings.Contains(a, "=") &&
+				i < len(argv) && !strings.HasPrefix(argv[i], "-") {
+				i++
+			}
+			continue
 		}
+		return "", nil, fmt.Sprintf("flag %q 不在本层安全表", a)
 	}
 	return "", nil, ""
 }
