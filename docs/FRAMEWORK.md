@@ -1,6 +1,6 @@
 # agentkit 框架完整文档
 
-> 版本：v0.10.25 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
+> 版本：v0.10.26 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
 > 配套文档：[架构模式支持矩阵](patterns.md)（七架构何时用/何时不用）· [README](../README.md)（快速上手）
 
 > 文中架构图使用 Mermaid：Forgejo/GitHub 等端原生渲染；不支持渲染的查看端，
@@ -690,6 +690,12 @@ MaxTurns/AllowedTools/Sandbox 五字段支持声明，编译期强制）；`Regi
 声明不支持的非零字段 **fail-fast 报错**——请求了即须兑现，拒绝静默降级
 （历史教训：kimi 收到 Sandbox=readonly 实则全自主裸跑）。GenericAgent 的能力由
 argv 模板占位符推导。
+
+**直连出口（v0.10.26）**：绕过 Registry 直连 `Agent.Run` 的嵌入方（整跑失败
+代价高、选择降级而非 fail-fast 的场景）共用两个单源——`UnsupportedFields(a, req)`
+返回非零但不支持的字段名单（降级裁决：剔除降级 / 保留透传+显式告警，绝不静默）；
+`CapsNames(c)` 返回支持/不支持双名单（能力展示面，如 agents 清单的
+「支持:… | 不支持:…」），`capsString` 即由它派生。
 
 **procx**（v0.7.1 acpx.RunProcess，v0.10.11 迁出为独立包）：只要进程组托管
 纪律、不需要 Agent 解析层的调用方（workcopy 跑 git / mcp spawn stdio server /

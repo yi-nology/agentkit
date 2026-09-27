@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.10.26 (2026-09-27)
+
+acpx 直连出口:能力核对与展示双单源导出(下游 preFlight 降级范式一等公民化)。
+
+### Added
+
+- **acpx `UnsupportedFields(a, req) []string`**(原私有 `unsupportedFields`
+  导出):非零但不支持的控制面字段名单(Go 字段名,声明序)。Registry.Run 的
+  fail-fast 与直连调用方的降级裁决共用——绕过 Registry 直连 `Agent.Run` 的
+  嵌入方(如 huginn preFlight:整跑失败代价高,选择降级而非 fail-fast)按
+  名单自行裁决「剔除降级 / 保留透传+显式告警,绝不静默」。
+- **acpx `CapsNames(c) (supported, unsupported []string)`**:能力五字段的
+  支持/不支持双名单(小写字段名,声明序)。原 `capsString`(仅支持侧)改由
+  它派生;直连调用方的能力展示面(如 huginn agents 清单「支持:… | 不支持:…」)
+  共用此单源,增删 Capability 字段时名单自动跟上。
+
 ## v0.10.25 (2026-09-27)
 
 ZCode 移植清单收官轮：剩余七项一次落地（5 新包 + 3 包扩展 + procx 单源增强）。

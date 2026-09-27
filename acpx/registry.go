@@ -59,7 +59,7 @@ func (r *Registry) Run(ctx context.Context, name string, req RunRequest) (*RunRe
 	if !ok {
 		return nil, fmt.Errorf("acpx: 未注册的 agent %q（可用: %s）", name, strings.Join(r.order, ","))
 	}
-	if ignored := unsupportedFields(a, req); len(ignored) > 0 {
+	if ignored := UnsupportedFields(a, req); len(ignored) > 0 {
 		return nil, fmt.Errorf("acpx: agent %q 不支持请求字段 %s（能力: %s）——请求了即须兑现，拒绝静默降级",
 			name, strings.Join(ignored, ","), capsString(a.Capabilities()))
 	}

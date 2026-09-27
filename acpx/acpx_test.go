@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -486,5 +487,46 @@ JSONL
 	}
 	if len(events) != 1 || events[0].Type != EventError {
 		t.Fatalf("is_error result 应以 EventError 转发: %v", events)
+	}
+}
+
+// capsStub 任意能力组合的桩 agent(UnsupportedFields/CapsNames 直连单源测试用)。
+type capsStub struct{ caps Capability }
+
+func (s capsStub) Name() string { return "caps-stub" }
+func (s capsStub) Run(context.Context, RunRequest) (*RunResult, error) {
+	return &RunResult{}, nil
+}
+func (s capsStub) Capabilities() Capability { return s.caps }
+
+// UnsupportedFields 直连单源:非零但不支持的字段按声明序返回 Go 字段名;
+// 零值字段与受支持字段不出现在名单里。Registry.Run(fail-fast)与直连降级
+// 裁决(huginn preFlight 范式)共用。
+func TestUnsupportedFields(t *testing.T) {
+	a := capsStub{caps: Capability{Model: true}}
+	got := UnsupportedFields(a, RunRequest{
+		Model: "m", SessionID: "s1", MaxTurns: 5, AllowedTools: []string{"Read"}, Sandbox: SandboxReadonly,
+	})
+	want := []string{"SessionID", "MaxTurns", "AllowedTools", "Sandbox"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("want %v, got %v", want, got)
+	}
+	if got := UnsupportedFields(a, RunRequest{}); got != nil {
+		t.Fatalf("零值请求应空名单: %v", got)
+	}
+}
+
+// CapsNames 双名单单源:支持/不支持互补且覆盖五字段全集,声明序。
+func TestCapsNames(t *testing.T) {
+	supported, unsupported := CapsNames(Capability{Model: true, Sandbox: true})
+	if want := []string{"model", "sandbox"}; !reflect.DeepEqual(supported, want) {
+		t.Fatalf("supported want %v, got %v", want, supported)
+	}
+	if want := []string{"session", "max_turns", "allowed_tools"}; !reflect.DeepEqual(unsupported, want) {
+		t.Fatalf("unsupported want %v, got %v", want, unsupported)
+	}
+	supported, unsupported = CapsNames(Capability{})
+	if supported != nil || len(unsupported) != 5 {
+		t.Fatalf("零能力: supported=%v unsupported=%d 项", supported, len(unsupported))
 	}
 }

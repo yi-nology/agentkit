@@ -83,7 +83,7 @@ func TestRegistryRunRejectsUnsupportedFields(t *testing.T) {
 
 func TestUnsupportedFieldsOrder(t *testing.T) {
 	// 字段按声明序输出（错误信息稳定可断言）。
-	got := unsupportedFields(NewKimi(), RunRequest{
+	got := UnsupportedFields(NewKimi(), RunRequest{
 		Prompt: "p", Model: "m", Sandbox: "full", MaxTurns: 2, AllowedTools: []string{"Bash"},
 	})
 	want := []string{"MaxTurns", "AllowedTools", "Sandbox"}

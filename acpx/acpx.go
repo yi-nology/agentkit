@@ -47,8 +47,12 @@ type Capability struct {
 	Sandbox      bool // 响应 Sandbox 沙箱级别
 }
 
-// unsupportedFields 返回 req 中非零但 agent 声明不支持的控制面字段名（字段声明序）。
-func unsupportedFields(a Agent, req RunRequest) []string {
+// UnsupportedFields 返回 req 中非零但 agent 声明不支持的控制面字段名（Go 字段
+// 名，字段声明序）。Registry.Run 的 fail-fast 与直连调用方的降级裁决共用此单源：
+// 经 Registry 的调用方无须自行调用（不支持的请求直接报错）；绕过 Registry 直连
+// Agent.Run 的嵌入方（如 huginn preFlight 范式——整跑失败代价高，选择降级而非
+// fail-fast）按返回名单自行裁决「剔除降级 / 保留透传+显式告警，绝不静默」。
+func UnsupportedFields(a Agent, req RunRequest) []string {
 	caps := a.Capabilities()
 	var out []string
 	if req.Model != "" && !caps.Model {
@@ -69,8 +73,10 @@ func unsupportedFields(a Agent, req RunRequest) []string {
 	return out
 }
 
-// capsString 能力的人类可读形态（固定字段序，错误信息用）。
-func capsString(c Capability) string {
+// CapsNames 能力五字段的支持/不支持双名单（小写字段名，声明序）。capsString
+// 与直连调用方的能力展示面（如 huginn agents 清单的「支持:… | 不支持:…」）共用
+// 此单源——字段表只此一份，增删 Capability 字段时名单自动跟上。
+func CapsNames(c Capability) (supported, unsupported []string) {
 	fields := []struct {
 		name string
 		on   bool
@@ -78,16 +84,23 @@ func capsString(c Capability) string {
 		{"model", c.Model}, {"session", c.Session}, {"max_turns", c.MaxTurns},
 		{"allowed_tools", c.AllowedTools}, {"sandbox", c.Sandbox},
 	}
-	var names []string
 	for _, f := range fields {
 		if f.on {
-			names = append(names, f.name)
+			supported = append(supported, f.name)
+		} else {
+			unsupported = append(unsupported, f.name)
 		}
 	}
-	if len(names) == 0 {
+	return supported, unsupported
+}
+
+// capsString 能力的人类可读形态（固定字段序，错误信息用）。
+func capsString(c Capability) string {
+	supported, _ := CapsNames(c)
+	if len(supported) == 0 {
 		return "（无控制面字段支持）"
 	}
-	return strings.Join(names, ",")
+	return strings.Join(supported, ",")
 }
 
 // RunRequest 统一运行请求。
