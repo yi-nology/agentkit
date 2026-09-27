@@ -1,6 +1,6 @@
 # agentkit 框架完整文档
 
-> 版本：v0.10.28 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
+> 版本：v0.10.29 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
 > 配套文档：[架构模式支持矩阵](patterns.md)（七架构何时用/何时不用）· [README](../README.md)（快速上手）
 
 > 文中架构图使用 Mermaid：Forgejo/GitHub 等端原生渲染；不支持渲染的查看端，
@@ -1424,3 +1424,9 @@ flowchart TD
   rc 泄漏/在用目录被删）、codex 错误吞没、claude init-only 空壳绕过兜底、
   Resilient 探测时限接线+取消走 Abandon、Milvus 先删后嵌、leader 停机有界、
   GenerateJSON 残留、skill 精确名守卫/BOM/rune 截断；全部带回归测试
+- **v0.10.29（审计盲区补全轮）**：agentrun + mcp 本体两路复查。修复：mcp
+  现代协议探活 no-op（Critical——代际分流，modern 用 tools/list 真探活）/
+  WithHTTPTimeout 误作每请求 30s 硬上限（拆 RequestTimeout）/并发自愈互杀
+  （实例比对 evict）/ReapIdle 目录不失效/OAuth 错误链 %v 吞没/Close 后
+  reaper 泄漏；agentrun P&E 默认规划提示词被 GenInputFn 丢弃（追加注入语义
+  兑现）；acpx Registry 并发守卫；pglease DB 时钟统一；breaker 配对契约显式化

@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.10.29 (2026-09-27)
+
+审计盲区补全轮：agentrun 与 mcp 包本体两路独立复查（此前两轮审计未覆盖的
+面）+ 上轮遗留次级项清零。修复 1 Critical + 6 Important。
+
+### Fixed
+
+- **mcp（Critical）**：现代协议（2026-07-28）连接上 `Client.Ping` 是 no-op
+  （协议移除了 ping RPC）——mcp-go v1.1 升级后 PingServer 对现代 server 虚报
+  存活、touch 给死连接续命、闲置回收永远收不走，「无声死亡只有探活才能暴露」
+  的租约面承诺被整体击穿。建连时记录协商代际（Initialize 后断言 concrete
+  client 的 ProtocolVersion），现代连接探活改发真实轻量 RPC（tools/list），
+  legacy 连接维持协议 ping；测试杀 server 实证现代代际下探活暴露死亡。
+- **mcp**：WithHTTPTimeout 误把连接级 Timeout（30s）设成该连接每一次 HTTP
+  请求的硬上限——任何执行超 30s 的 MCP 工具在 HTTP 传输下永远失败且无法按次
+  放宽。拆分 `ServerConfig.RequestTimeout`（缺省 10 分钟，挂死兜底；工具正常
+  时长控制归调用方 ctx）；连接 Timeout 回归 dial+Initialize 预算本义。
+- **mcp**：并发自愈互杀——redial 无条件 evict 缓存连接，会关掉别的自愈刚建好
+  且正在重试的新连接（健康 server 上并发自愈成功率不确定、伪失败+重复建连）。
+  evict 带实例比对（cached == 本工具失败的死连接才摘）。
+- **mcp**：ReapIdle 闲置回收不失效目录缓存——重建连接后命中旧目录不重新列举，
+  闲置期间 server 工具面/schema 变化永久不可见（违反 catalog.go 声明的不变量）。
+  回收与 evict 同构（clients/lastUsed/catalog/modern 四表齐删）。
+- **mcp**：自愈层 %v 包装吞掉 OAuthAuthorizationRequiredError 的错误链——
+  自愈重连撞上授权失效时调用方拿不到「需重新授权」确定态。改 %w 保链。
+- **mcp**：Close 后再调 StartIdleReaper 会启动永无人停的回收协程（泄漏）。
+  closed 守卫拒绝。
+- **agentrun**：PlanAndExecute 恒设 GenInputFn 把 eino 默认规划提示词
+  （PlannerPrompt——完整规划方法论与格式要求）整体丢弃——无指令时 planner
+  裸奔、有指令时默认提示词也不在场，与两处文档承诺相反。仅带指令时设置且
+  追加注入（指令前置 + 默认提示词保留），规划结构兜底掩盖了质量退化故测试
+  全绿未暴露。llmtest 桩补 Flats/Heads 记录支撑提示词组装断言。
+- **acpx**：Registry 的 agents map 无锁——Register 与 Run/Get/Names 并发是
+  map 读写 fatal（文档建议装配期注册，但一行守卫的成本远低于误用代价）。
+  RWMutex 全覆盖 + 并发回归测试。
+- **worker/pglease**：expires_at 用应用时钟写入、DB now() 判过期——多实例
+  时钟漂移等量放大/缩短租约，削弱「失联后 ≤ttl 换主」。改 DB 时钟
+  （now() + make_interval）统一。
+- **breaker**：Failure 的配对契约显式化（仅 Allow==true 放行过的调用上报；
+  被拒调用上报会被当探测失败重新熔断）。
+
 ## v0.10.28 (2026-09-27)
 
 老包深度审计轮：三路独立复查（acpx 解析面 / worker-workcopy 并发面 /
