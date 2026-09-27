@@ -2,7 +2,9 @@ package acpx
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -93,6 +95,33 @@ func TestUnsupportedFieldsOrder(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
+
+// TestRegistryConcurrentRegisterAndRun 回归（v0.10.29）：Register 与 Run/Get/Names
+// 并发安全——agents map 曾无锁（并发注册+调用是 map 读写 fatal）。
+func TestRegistryConcurrentRegisterAndRun(t *testing.T) {
+	r := NewRegistry()
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func(i int) { // 并发注册（同义 Agent 重复注册同名为覆盖语义）
+			defer wg.Done()
+			r.Register(&GenericAgent{AgentName: fmt.Sprintf("agent-%d", i%4)})
+		}(i)
+		go func() { // 并发查询
+			defer wg.Done()
+			r.Get("agent-0")
+			_ = r.Names()
+		}()
+	}
+	wg.Wait()
+	// NewRegistry 预注册 9 家内置——并发注册后 4 个自定义名全部在场且无重复
+	names := strings.Join(r.Names(), ",")
+	for i := 0; i < 4; i++ {
+		if !strings.Contains(names, fmt.Sprintf("agent-%d,", i)) && !strings.HasSuffix(names, fmt.Sprintf("agent-%d", i)) {
+			t.Fatalf("agent-%d 未注册: %v", i, r.Names())
 		}
 	}
 }

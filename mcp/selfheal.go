@@ -9,6 +9,8 @@ package mcp
 // 拿到后、调用时连接才死」的窗口（长会话里 tools 子进程中途死亡的真形态）。
 
 import (
+	"github.com/mark3labs/mcp-go/client"
+
 	"context"
 	"errors"
 	"fmt"
@@ -61,25 +63,29 @@ func (t *selfHealTool) InvokableRun(ctx context.Context, args string, opts ...to
 	}
 	fresh, ferr := t.redial(ctx)
 	if ferr != nil {
-		return "", fmt.Errorf("mcp: %s 自愈重连失败: %v（原始错误: %v）", t.name, ferr, err)
+		// %w 保链：OAuth 401 等可行动确定态须可被 errors.As 穿透（自愈重连
+		// 撞上授权失效时，调用方要能拿到「需重新授权」而非笼统失败）
+		return "", fmt.Errorf("mcp: %s 自愈重连失败: %w（原始错误: %v）", t.name, ferr, err)
 	}
 	out2, err2 := fresh.InvokableRun(ctx, args, opts...)
 	if err2 != nil {
-		return "", fmt.Errorf("mcp: %s 自愈重试仍失败: %v（原始错误: %v）", t.name, err2, err)
+		return "", fmt.Errorf("mcp: %s 自愈重试仍失败: %w（原始错误: %v）", t.name, err2, err)
 	}
 	return out2, nil
 }
 
 var _ tool.InvokableTool = (*selfHealTool)(nil)
 
-// selfHealRedial 生产侧重连闭包（Pool 提供装配）：摘死连接 → 重连 → GetTools →
-// 按名解析同名工具（errorAsObservation 包装保持与其他工具同形态）。
-func (p *Pool) selfHealRedial(ctx context.Context, cfg ServerConfig, allow []string, name string) func(context.Context) (tool.InvokableTool, error) {
+// selfHealRedial 生产侧重连闭包（Pool 提供装配）：摘「本工具失败的这条」连接 →
+// 重连 → GetTools → 按名解析同名工具（errorAsObservation 包装保持与其他工具
+// 同形态）。evict 带实例比对（cached == dead）——并发自愈时后来者不得摘除
+// 别的自愈刚建好的新连接（曾把健康连接关掉、造成伪失败与重复建连）。
+func (p *Pool) selfHealRedial(ctx context.Context, cfg ServerConfig, allow []string, name string, dead client.MCPClient) func(context.Context) (tool.InvokableTool, error) {
 	return func(ctx context.Context) (tool.InvokableTool, error) {
 		p.mu.Lock()
 		cached, ok := p.clients[cfg.Name]
 		p.mu.Unlock()
-		if ok {
+		if ok && cached == dead {
 			p.evict(cfg.Name, cached)
 		}
 		cli, err := p.client(ctx, cfg)

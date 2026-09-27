@@ -54,8 +54,16 @@ type ServerConfig struct {
 	URL string
 	// Headers HTTP 请求头（如 Bearer 鉴权）。
 	Headers map[string]string
-	// Timeout 连接 + Initialize 超时（默认 30s）。
+	// Timeout 连接 + Initialize 超时（默认 30s）。仅作用于建连期（dial +
+	// Initialize 的 ctx 预算），不约束后续请求——HTTP 传输的每请求兜底见
+	// RequestTimeout。
 	Timeout time.Duration
+	// RequestTimeout HTTP 传输的单请求兜底上限（默认 10 分钟）。mcp-go 的
+	// WithHTTPTimeout 直接设 httpClient.Timeout、作用于该连接的每一次请求
+	// （含 tools/call）——此前误用连接级 Timeout（30s）会让任何长工具调用
+	// 在 HTTP 传输下永远失败（v0.10.29 审计修复）；工具调用的正常时长控制
+	// 归调用方 ctx，这里只是挂死兜底。stdio 不受影响。
+	RequestTimeout time.Duration
 	// ProbeTimeout 探活（PingServer）独立预算（默认 5s；租约面 lease.go——
 	// 探活是轻量协议 ping，不该吃连接级 30s 预算）。
 	ProbeTimeout time.Duration
@@ -98,8 +106,11 @@ type Pool struct {
 	// lastUsed 连接最近使用时刻（建连/取工具/探活成功；闲置回收时钟，lease.go）。
 	lastUsed map[string]time.Time
 	// catalog 每连接的 tools/list 目录缓存（server → 条目，含注解；见 catalog.go）。
-	// 连接被 evict 时同 server 目录一并失效。
+	// 连接被 evict/闲置回收时同 server 目录一并失效。
 	catalog map[string][]toolEntry
+	// modern 建连时协商到现代协议（2026-07-28+）的 server 集合——该代际下
+	// Ping 是 no-op（协议移除了 ping RPC），探活须改发真实轻量 RPC（lease.go）。
+	modern map[string]bool
 	// reapStop 闲置回收协程停止信号（StartIdleReaper 置位；Close 关闭）。
 	reapStop chan struct{}
 	// OnError 建连/列举失败回调（nil 安全）。返回错误不中断其余 server——
@@ -121,7 +132,8 @@ type Pool struct {
 // 行为而非静默覆盖。
 func NewPool(cfgs ...ServerConfig) *Pool {
 	p := &Pool{cfgs: map[string]ServerConfig{}, clients: map[string]client.MCPClient{},
-		lastUsed: map[string]time.Time{}, catalog: map[string][]toolEntry{}}
+		lastUsed: map[string]time.Time{}, catalog: map[string][]toolEntry{},
+		modern: map[string]bool{}}
 	for _, c := range cfgs {
 		if c.Name == "" {
 			continue
@@ -198,7 +210,7 @@ func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) ([]tool.BaseTool, er
 				out = append(out, &selfHealTool{
 					name:   info.Name,
 					inner:  it,
-					redial: p.selfHealRedial(ctx, cfg, allow, info.Name),
+					redial: p.selfHealRedial(ctx, cfg, allow, info.Name, cli),
 				})
 				continue
 			}
@@ -246,6 +258,12 @@ func (p *Pool) client(ctx context.Context, cfg ServerConfig) (client.MCPClient, 
 		_ = cli.Close()
 		return nil, fmt.Errorf("mcp: %s Initialize 失败: %w", cfg.Name, err)
 	}
+	// 协商代际记录（Initialize 后才可知；包装前 concrete 类型仍可断言）——
+	// 现代协议 Ping 是 no-op，探活路径须分流（lease.go PingServer）
+	isModern := false
+	if cc, ok := cli.(*client.Client); ok {
+		isModern = mcp.IsModernProtocol(cc.ProtocolVersion())
+	}
 
 	p.mu.Lock()
 	// 双检：并发建连时保留先到者，关闭后来者；池已关闭则立即回收新建连接
@@ -266,6 +284,11 @@ func (p *Pool) client(ctx context.Context, cfg ServerConfig) (client.MCPClient, 
 	}
 	p.clients[cfg.Name] = cli
 	p.lastUsed[cfg.Name] = time.Now()
+	if isModern {
+		p.modern[cfg.Name] = true
+	} else {
+		delete(p.modern, cfg.Name)
+	}
 	p.mu.Unlock()
 	return cli, nil
 }
@@ -278,6 +301,7 @@ func (p *Pool) evict(name string, cli client.MCPClient) {
 	if ok && cached == cli {
 		delete(p.clients, name)
 		delete(p.catalog, name)
+		delete(p.modern, name)
 	} else {
 		cli = nil
 	}
@@ -320,7 +344,9 @@ func (p *Pool) dial(ctx context.Context, cfg ServerConfig) (client.MCPClient, er
 	case cfg.URL != "":
 		httpOpts := []transport.StreamableHTTPCOption{
 			transport.WithHTTPHeaders(cfg.Headers),
-			transport.WithHTTPTimeout(cfg.timeoutOr(DefaultTimeout)),
+			// 每请求兜底（含 tools/call）：与建连预算 Timeout 分离——误用连接级
+			// 30s 会让长工具调用在 HTTP 传输下永远失败
+			transport.WithHTTPTimeout(cfg.requestTimeoutOr(DefaultRequestTimeout)),
 		}
 		if cfg.OAuth != nil {
 			if cfg.OAuth.TokenStore == nil {
@@ -353,6 +379,16 @@ func (p *Pool) dial(ctx context.Context, cfg ServerConfig) (client.MCPClient, er
 func (c ServerConfig) timeoutOr(d time.Duration) time.Duration {
 	if c.Timeout > 0 {
 		return c.Timeout
+	}
+	return d
+}
+
+// DefaultRequestTimeout HTTP 传输单请求兜底缺省。
+const DefaultRequestTimeout = 10 * time.Minute
+
+func (c ServerConfig) requestTimeoutOr(d time.Duration) time.Duration {
+	if c.RequestTimeout > 0 {
+		return c.RequestTimeout
 	}
 	return d
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -14,6 +15,9 @@ type Registry struct {
 	// OnRun 每次经本 Registry 发起的运行结束后的回调（nil 安全）。
 	// 观测入口：接结构化日志/Prometheus/trace 均可，本包不硬依赖任何观测后端。
 	OnRun func(RunEvent)
+
+	mu sync.RWMutex // Register（装配期）与 Run/Get/Names（运行期）并发安全的兜底：
+	//              文档仍建议装配期完成注册（热插拔 Agent 不是支持场景）
 }
 
 // NewRegistry 创建注册表并注册缺省 agent
@@ -34,6 +38,8 @@ func NewRegistry() *Registry {
 
 // Register 注册 agent（重名覆盖）。
 func (r *Registry) Register(a Agent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if _, exists := r.agents[a.Name()]; !exists {
 		r.order = append(r.order, a.Name())
 	}
@@ -42,12 +48,16 @@ func (r *Registry) Register(a Agent) {
 
 // Get 按名查找。
 func (r *Registry) Get(name string) (Agent, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	a, ok := r.agents[name]
 	return a, ok
 }
 
 // Names 返回全部注册名（注册序）。
 func (r *Registry) Names() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return append([]string(nil), r.order...)
 }
 
@@ -55,9 +65,12 @@ func (r *Registry) Names() []string {
 // fail-fast 报错（请求了即须兑现，拒绝静默降级——直连 Agent.Run 的调用方
 // 应自行经 Capabilities 判断）。执行结束后发 RunEvent。
 func (r *Registry) Run(ctx context.Context, name string, req RunRequest) (*RunResult, error) {
-	a, ok := r.agents[name]
+	a, ok := r.Get(name)
 	if !ok {
-		return nil, fmt.Errorf("acpx: 未注册的 agent %q（可用: %s）", name, strings.Join(r.order, ","))
+		r.mu.RLock()
+		order := append([]string(nil), r.order...)
+		r.mu.RUnlock()
+		return nil, fmt.Errorf("acpx: 未注册的 agent %q（可用: %s）", name, strings.Join(order, ","))
 	}
 	if ignored := UnsupportedFields(a, req); len(ignored) > 0 {
 		return nil, fmt.Errorf("acpx: agent %q 不支持请求字段 %s（能力: %s）——请求了即须兑现，拒绝静默降级",

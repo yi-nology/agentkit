@@ -6,6 +6,7 @@ package llmtest
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,7 +56,12 @@ type Model struct {
 	FirstInput string   // 最近一次 Generate 的首条消息文本
 	LastInput  string   // 最近一次 Generate 的末条消息文本
 	Inputs     []string // 每次 Generate 的末条消息文本（调用序历史）
-	Calls      int
+	// Heads 每次调用的首条消息文本（首条通常是 system 提示词——按调用序断言用）。
+	Heads []string
+	// Flats 每次调用的全部消息按 "role:content" 扁平拼接（多 system 消息共存的
+	// 提示词组装断言用）。
+	Flats []string
+	Calls int
 }
 
 // Generate 按 Script 依次响应。
@@ -66,6 +72,8 @@ func (m *Model) Generate(_ context.Context, in []*schema.Message, _ ...model.Opt
 		m.FirstInput = in[0].Content
 		m.LastInput = in[len(in)-1].Content
 		m.Inputs = append(m.Inputs, m.LastInput)
+		m.Heads = append(m.Heads, in[0].Content)
+		m.Flats = append(m.Flats, flatMsgs(in))
 	}
 	resp, err := m.next()
 	if err != nil {
@@ -94,9 +102,17 @@ func (m *Model) Generate(_ context.Context, in []*schema.Message, _ ...model.Opt
 // Stream 按同一脚本响应（Generate/Stream 共享调用序）：条目带 ToolCalls 时
 // 发带工具调用的消息，否则发 Content。StreamContent 非空时优先恒定内容
 // （简洁的单内容流场景）。
-func (m *Model) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+func (m *Model) Stream(_ context.Context, in []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// 与 Generate 同口径记录输入（提示词断言用——adk 部分路径走 Stream）
+	if len(in) > 0 {
+		m.FirstInput = in[0].Content
+		m.LastInput = in[len(in)-1].Content
+		m.Inputs = append(m.Inputs, m.LastInput)
+		m.Heads = append(m.Heads, in[0].Content)
+		m.Flats = append(m.Flats, flatMsgs(in))
+	}
 	if m.StreamContent != "" {
 		m.Calls++
 		return singleMsgStream(m.StreamContent, nil), nil
@@ -110,6 +126,15 @@ func (m *Model) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option
 		return nil, resp.Err
 	}
 	return singleMsgStream(resp.Content, resp.ToolCalls), nil
+}
+
+// flatMsgs 消息序列扁平串（提示词组装断言用）。
+func flatMsgs(in []*schema.Message) string {
+	parts := make([]string, 0, len(in))
+	for _, m := range in {
+		parts = append(parts, string(m.Role)+":"+m.Content)
+	}
+	return strings.Join(parts, "\n")
 }
 
 // singleMsgStream 单块消息流。

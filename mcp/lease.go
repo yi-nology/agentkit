@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // ErrNotConnected PingServer 探活时该 server 无缓存连接——懒建连模型下属正常态
@@ -24,9 +25,16 @@ var ErrNotConnected = errors.New("mcp: server 无缓存连接（未建连或已�
 // 连接级 30s 预算；对标 ZCode MCP_PING_TIMEOUT_MS=5s）。
 const DefaultProbeTimeout = 5 * time.Second
 
-// PingServer 探活指定 server 的缓存连接（MCP 协议 ping）。死亡连接立即摘除出缓存
-// 并关闭，下次调用透明重建——HTTP server 被停掉不派发断连回调，「无声死亡」只有
-// 显式探活才能暴露（ZCode pool 同款问题与解法）。
+// PingServer 探活指定 server 的缓存连接。死亡连接立即摘除出缓存并关闭，下次
+// 调用透明重建——HTTP server 被停掉不派发断连回调，「无声死亡」只有显式探活
+// 才能暴露（ZCode pool 同款问题与解法）。
+//
+// 探活方法按建连协商的协议代际分流（v0.10.29 审计修复——mcp-go v1.1 起现代
+// 协议 2026-07-28 移除了 ping RPC，Client.Ping 在该代际是 no-op，曾让探活
+// 虚报存活且 touch 给死连接续命、闲置回收永远收不走）：
+//   - legacy（≤2025-11-25）：协议 ping；
+//   - modern（2026-07-28+）：改发真实轻量 RPC（tools/list）——比 ping 重，
+//     但这是该代际下唯一能证明连接活着的信号。
 //
 // 返回 ErrNotConnected = 无缓存连接（不算失败）；其余错误 = 探活失败（连接已摘除）。
 func (p *Pool) PingServer(ctx context.Context, name string) error {
@@ -37,6 +45,7 @@ func (p *Pool) PingServer(ctx context.Context, name string) error {
 		return ErrNotConnected
 	}
 	cfg := p.cfgs[name]
+	isModern := p.modern[name]
 	p.mu.Unlock()
 
 	budget := cfg.ProbeTimeout
@@ -45,7 +54,14 @@ func (p *Pool) PingServer(ctx context.Context, name string) error {
 	}
 	cctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	if err := cli.Ping(cctx); err != nil {
+	var err error
+	if isModern {
+		// 现代协议：ping 是 no-op，用 tools/list 作真实探活
+		_, err = cli.ListTools(cctx, mcp.ListToolsRequest{})
+	} else {
+		err = cli.Ping(cctx)
+	}
+	if err != nil {
 		p.evict(name, cli)
 		return fmt.Errorf("mcp: %s 探活失败（连接已摘除，下次调用重建）: %w", name, err)
 	}
@@ -79,6 +95,10 @@ func (p *Pool) ReapIdle(maxIdle time.Duration) int {
 		if cli, ok := p.clients[name]; ok {
 			delete(p.clients, name)
 			delete(p.lastUsed, name)
+			// 目录一并失效（与 evict 同构）：否则回收重建后命中旧目录不重新
+			// 列举，闲置期间 server 工具面/schema 变化永久不可见（v0.10.29）
+			delete(p.catalog, name)
+			delete(p.modern, name)
 			closing = append(closing, victim{name, cli})
 		}
 	}
@@ -96,7 +116,8 @@ func (p *Pool) ReapIdle(maxIdle time.Duration) int {
 // Close 停止；重复启动幂等（只起一个）。
 func (p *Pool) StartIdleReaper(interval, maxIdle time.Duration) {
 	p.mu.Lock()
-	if p.reapStop != nil {
+	if p.reapStop != nil || p.closed {
+		// 已在跑；或池已 Close——Close 后再启动的协程永无人停（泄漏），拒绝
 		p.mu.Unlock()
 		return
 	}

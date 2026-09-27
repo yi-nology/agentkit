@@ -153,3 +153,48 @@ func TestPlanAndExecuteStreamErrBeforeFirstChunk(t *testing.T) {
 		t.Fatal("Planner 失败应上抛")
 	}
 }
+
+// TestPlanAndExecutePlannerPromptPreserved 回归（v0.10.29 审计）：恒设
+// GenInputFn 曾把 eino 默认规划提示词整体丢弃（PlannerInstruction 为空时
+// planner 裸奔、非空时默认提示词也不在场）。锁死两形态：
+// 无指令 → 默认规划提示词在场；有指令 → 指令前置 + 默认提示词仍在其后。
+func TestPlanAndExecutePlannerPromptPreserved(t *testing.T) {
+	newFixture := func() (*llmtest.ToolModel, *llmtest.ToolModel) {
+		planner := &llmtest.ToolModel{Model: &llmtest.Model{RepeatLast: false, Script: []llmtest.Resp{
+			planCall("s1"),
+			respondCall("done"),
+		}}}
+		executor := &llmtest.ToolModel{Model: &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{
+			{Content: "ok"},
+		}}}
+		return planner, executor
+	}
+
+	// 无指令：默认规划提示词必须进入 planner 输入（eino PlannerPrompt 特征词）
+	planner, executor := newFixture()
+	if _, err := PlanAndExecute(context.Background(), PlanExecuteConfig{
+		Planner: planner, Executor: executor, MaxSteps: 5,
+	}, "目标"); err != nil {
+		t.Fatalf("无指令跑: %v", err)
+	}
+	flat := planner.Flats[0]
+	if !strings.Contains(strings.ToLower(flat), "plan") {
+		t.Fatalf("默认规划提示词未进入 planner 首轮输入（曾被 GenInputFn 丢弃）: %.80s", flat)
+	}
+
+	// 有指令：指令前置 + 默认提示词在场
+	planner2, executor2 := newFixture()
+	if _, err := PlanAndExecute(context.Background(), PlanExecuteConfig{
+		Planner: planner2, Executor: executor2, MaxSteps: 5,
+		PlannerInstruction: "只规划检索类步骤",
+	}, "目标"); err != nil {
+		t.Fatalf("带指令跑: %v", err)
+	}
+	flat2 := planner2.Flats[0]
+	if !strings.Contains(flat2, "只规划检索类步骤") {
+		t.Fatalf("调用方指令未前置: %.80s", flat2)
+	}
+	if !strings.Contains(strings.ToLower(flat2), "plan") {
+		t.Fatalf("默认规划提示词被指令覆盖丢弃: %.120s", flat2)
+	}
+}

@@ -38,13 +38,16 @@ func (s *PGLeaseStore) WithTable(name string) *PGLeaseStore {
 }
 
 // TryAcquire 原子获取或续约：空闲/已过期/本人持有 → true。
+// expires_at 用 DB 时钟（now() + make_interval）而非应用时钟——写入与过期判定
+// 必须同钟：多实例应用时钟漂移会等量放大/缩短租约实际时长，削弱「失联后
+// ≤ttl 换主」的承诺（v0.10.29 审计修复）。
 func (s *PGLeaseStore) TryAcquire(ctx context.Context, key, holder string, ttl time.Duration) (bool, error) {
-	exp := time.Now().Add(ttl)
 	res, err := s.db.ExecContext(ctx, fmt.Sprintf(`
-INSERT INTO %s (key, holder, expires_at) VALUES ($1, $2, $3)
+INSERT INTO %s (key, holder, expires_at)
+VALUES ($1, $2, now() + make_interval(secs => $3))
 ON CONFLICT (key) DO UPDATE SET holder = EXCLUDED.holder, expires_at = EXCLUDED.expires_at
 WHERE %s.expires_at < now() OR %s.holder = EXCLUDED.holder`, s.table, s.table, s.table),
-		key, holder, exp)
+		key, holder, ttl.Seconds())
 	if err != nil {
 		return false, err
 	}

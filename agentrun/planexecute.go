@@ -55,15 +55,22 @@ func PlanAndExecute(ctx context.Context, cfg PlanExecuteConfig, goal string) (*P
 	}
 	maxSteps := maxStepsOr(cfg.MaxSteps)
 
-	planner, err := planexecute.NewPlanner(ctx, &planexecute.PlannerConfig{
-		ToolCallingChatModel: cfg.Planner,
-		GenInputFn: func(ctx context.Context, userInput []adk.Message) ([]adk.Message, error) {
-			if cfg.PlannerInstruction == "" {
-				return userInput, nil
+	// GenInputFn 仅在调用方带 PlannerInstruction 时设置：eino 的 defaultGenPlanner-
+	// InputFn（PlannerPrompt.Format——完整规划方法论与格式要求）仅在 nil 时生效，
+	// 恒传非 nil 会把它整体丢弃（规划器裸奔，v0.10.29 审计修复）。带指令时在默认
+	// 提示词之前追加调用方约束——兑现「追加注入、不覆盖格式提示词」的文档承诺。
+	plannerCfg := &planexecute.PlannerConfig{ToolCallingChatModel: cfg.Planner}
+	if cfg.PlannerInstruction != "" {
+		instr := cfg.PlannerInstruction
+		plannerCfg.GenInputFn = func(ctx context.Context, userInput []adk.Message) ([]adk.Message, error) {
+			base, err := planexecute.PlannerPrompt.Format(ctx, map[string]any{"input": userInput})
+			if err != nil {
+				return nil, err
 			}
-			return append([]adk.Message{schema.SystemMessage(cfg.PlannerInstruction)}, userInput...), nil
-		},
-	})
+			return append([]adk.Message{schema.SystemMessage(instr)}, base...), nil
+		}
+	}
+	planner, err := planexecute.NewPlanner(ctx, plannerCfg)
 	if err != nil {
 		return nil, fmt.Errorf("agentrun: 构造 Planner 失败: %w", err)
 	}

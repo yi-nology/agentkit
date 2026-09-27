@@ -91,7 +91,9 @@ func (b *Breaker) Abandon() {
 	b.probeDeadline = time.Time{}
 }
 
-// Failure 记录失败；达阈值开熔断，半开探测失败重新熔断。
+// Failure 记录一次真实发起且失败的调用；达阈值开熔断，半开探测失败重新熔断。
+// 配对契约：仅对 Allow==true 放行过的调用上报（被拒调用从未发起，上报 Failure
+// 会被当作探测失败而重新熔断）；结果未知（取消/放弃）上报 Abandon。
 // 熔断 open 期间被拒请求记录的 Failure 不续期冷却（否则高流量下 openUntil 被
 // 无限顺延，永远进不了半开）。
 func (b *Breaker) Failure(now time.Time) {
