@@ -1,5 +1,60 @@
 # Changelog
 
+## v0.10.25 (2026-09-27)
+
+ZCode 移植清单收官轮：剩余七项一次落地（5 新包 + 3 包扩展 + procx 单源增强）。
+
+### Added
+
+- **filestate（第 39 包）**：读后写一致性状态——编辑/覆写前必须读过且读后无
+  外部改动。ErrNotRead（未读/部分读不满足编辑前提）/ErrStale（整数毫秒 mtime
+  前进或 size 变化——亚毫精度差不误报）；全量读+内容一致豁免（formatter 重写
+  场景）；RecordEdit 回写防连锁误报；路径归一（Clean+大小写不敏感盘折叠）。
+  对标 ZCode read-file-state.ts。
+- **permgate（第 40 包）**：工具调用许可判定链（allow/ask/deny + 结构化
+  ruleId 审计）。优先级：交互型→ask；alwaysAsk 硬阻断段（disallowed/项目
+  deny 仍压过「问」）→会话授权→ask；一切「禁」压过 yolo（与 ZCode 的历史
+  差异：其 yolo 先于硬禁是兼容遗留，新装配「yolo 跳过的是问不是禁」）；项目
+  deny→deny、ask→ask；只读模式拦写入；项目 allow→预批钩子→配置白名单→会话
+  授权→只读兜底→默认 ask。规则内容匹配（精确/`prefix:*` 边界前缀/`*` 通配）
+  + 输入对象提取（command/url/file_path/path/pattern/patch_text）+ Edit 规则
+  匹配 Write + 会话授权生命周期。与 policy（操作审计门）正交。
+- **hookx（第 41 包）**：外部 hook 拦截协议——7 拦截点 + 子进程 stdin JSON/
+  stdout JSON 决策协议 + 多 hook 单调归并（deny 单调、阻断置位不撤销、
+  updatedInput 后者胜）。决策面：continue:false/decision:block→阻断（权限
+  事件同时 deny）、decision:approve→权限升格、additionalContext 累积、
+  updatedInput 改写（消费方须以改写输入重走许可链）。hook 故障按「无意见」
+  容错+OnError 可观测。执行经 procx（进程组终止——sh 孙进程握管道写端会让
+  裸 exec 的 Wait 挂死）。
+- **bashguard（第 42 包）**：bash 命令静态风险解析——mvdan.cc/sh 真 AST 解析
+  → 调用提取 → 表驱动只读判定，**权限判定不执行命令**。保守原则：解析失败/
+  动态词（$()/反引号/$VAR）/写重定向/控制流（if/for/while/函数）一律非只读；
+  不在表=非只读；未知 flag=非只读；危险 flag 显式优先。值型 flag 消费
+  （bool/string/number/optional）、联合 flag（-rn）全组成安全才放行、子命令
+  递归（git 表：log/diff/status/branch 列表形态等；`git branch <名>` 创建/
+  `git stash` 裸 push/`git tag <名>` 打标经 NoBareOperands 守卫拒绝）、安全
+  包装剥壳（env/nice/nohup/time/timeout/stdbuf/xargs）。10K 长度上限。
+  新外部依赖 mvdan.cc/sh/v3。
+- **steering（第 43 包）**：运行中转向队列——guide（模型请求边界注入，不打断
+  工具执行）/queued（turn 后消费）双投递语义；guide 不丢（窗口关闭降级排队）。
+- **compact 扩展（二期）**：溢出自适应重试（TokenGap 从 provider 报文提取
+  超差；SelectAfterOverflow 按 gap 上移保留组数；TruncateForRetry 丢最旧组
+  兜底，上限 3 次）；rapid-refill 熔断（压缩后 <3 工具轮又满连续 3 次→
+  ErrRapidRefill，指引排查大输出源）；GroupRounds 轮次分组（对标
+  groupByAssistantStartedRounds 含 leading-user 自成组语义）；摘要 prompt
+  模板（9 段结构+安全约束逐字保留+前后 no-tools 围栏）+ FormatSummary
+  （剥 analysis/展开 summary）+ SummaryMessage 续接引导；中断补洞
+  RepairInterrupted（调用无结果插占位、与调用同序——恢复回放不被 provider 拒）。
+- **llm 扩展**：流恢复原语——IsTransientStreamError（瞬态原因码双写兼容）/
+  SuspiciousEmptyResult（零文本+零调用+非 stop+零用量=可重试空终态）/
+  IsContextExceededFinish|Error（溢出锚点，接 compact reactive）/busy 准入
+  （3008/3009/3010 + 1s/2s 两档退避）+ MaxStreamRecoveryRetries=10。
+
+### Changed
+
+- **procx**：RunRequest 新增 Stdin（启动后写子进程 stdin 并关闭；子进程不读
+  stdin 提前退出的 EPIPE 静默容忍）——hookx 的交互式协议驱动，进程纪律仍单源。
+
 ## v0.10.24 (2026-09-27)
 
 ### Added

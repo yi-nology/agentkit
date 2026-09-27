@@ -1,7 +1,7 @@
 # agentkit
 
 AI Agent 开发工具箱 —— 从生产项目提炼的通用组件库：代码审查平台 **Argus** + 智能运维多智能体平台 **bianque** + LLM 评测/观测平台 **heimdallr**。
-当前版本 **v0.10.24** · Go ≥ 1.26 · 38 个包。
+当前版本 **v0.10.25** · Go ≥ 1.26 · 43 个包。
 
 > 📖 **完整框架文档**：[docs/FRAMEWORK.md](docs/FRAMEWORK.md) —— 设计原则、六层架构、
 > 各包逐一详解（API/示例/边界契约）、横向能力专题（可靠性/成本/多副本/安全）、
@@ -66,7 +66,7 @@ git.enjoye.top/enjoydream/agentkit
 | 包 | 说明 | 外部依赖 |
 |---|---|---|
 | `acpx` | CLI 编码 agent 统一调用（9 家 + GenericAgent，执行纪律经 procx） | eino |
-| `llm` | LLM 客户端（重试/限速/预算/fitInput/JSON + Resilient 降级链 + StageRouter 路由 + CostTracker + UsageHandler 完整用量采集） | eino, eino-ext openai, x/time |
+| `llm` | LLM 客户端（重试/限速/预算/fitInput/JSON + Resilient 降级链 + StageRouter + CostTracker + UsageHandler + 流恢复原语/空终态检测/busy 退避 v0.10.25） | eino, eino-ext openai, x/time |
 | `toolprior` | 工具优先级决策层（提示词/排序/限流三层约束） | eino |
 | `toolsched` | 工具并发调度器（注解驱动并行判定 + 依赖拓扑分组执行，v0.10.23） | 无 |
 | `mcp` | MCP server 工具池（lazy 建连 + 白名单 + 工具目录缓存/注解归一 + OAuth + elicitation + 调用期自愈 + UnwrapMCPText） | eino, mcp-go |
@@ -100,6 +100,11 @@ git.enjoye.top/enjoydream/agentkit
 | `egress` | 出口围栏：LLM 可控 URL 字面量 SSRF 防护（NAT64/IPv4-mapped 还原，v0.10.23） | 无 |
 | `compact` | 会话压缩策略：auto-compact 判定（output 预留/token 双轨/熔断）+ microcompact 旧工具结果占位（v0.10.24） | 无 |
 | `sysprompt` | system prompt 分段组装：stable/dynamic 缓存边界 + env/git/date 段 + DetectEnv（v0.10.24） | procx |
+| `permgate` | 工具许可判定链：allow/ask/deny 优先级状态机 + 会话授权 + 规则内容匹配（v0.10.25） | 无 |
+| `bashguard` | bash 静态风险解析：AST → 表驱动只读判定，权限判定不执行命令（v0.10.25） | mvdan.cc/sh |
+| `hookx` | 外部 hook 拦截协议：7 拦截点 + 子进程 JSON 决策（v0.10.25） | procx |
+| `filestate` | 读后写一致性：先读后改 + staleness 判定（v0.10.25） | 无 |
+| `steering` | 运行中转向队列：guide/queued 双投递（v0.10.25） | 无 |
 
 ## 快速使用
 

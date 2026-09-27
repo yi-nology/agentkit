@@ -1,6 +1,6 @@
 # agentkit 框架完整文档
 
-> 版本：v0.10.24 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
+> 版本：v0.10.25 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
 > 配套文档：[架构模式支持矩阵](patterns.md)（七架构何时用/何时不用）· [README](../README.md)（快速上手）
 
 > 文中架构图使用 Mermaid：Forgejo/GitHub 等端原生渲染；不支持渲染的查看端，
@@ -56,11 +56,11 @@
 ┌──────────────────────────────────────────────────────────────┐
 │ L2 编排层  agentrun(ReAct/P&E)  reflection  router  blackboard │
 │            dispatch(派发守卫: allow矩阵+深度上限+自派发拒绝)     │
-│            policy(操作审计门: 四模式裁决+例外规则+fail-safe仲裁) │
-│            clarify(澄清词表: term_map模型+回答消解)             │
+│            policy(操作审计门)  permgate(许可判定链)             │
+│            clarify(澄清词表)  steering(转向队列)                 │
 ├──────────────────────────────────────────────────────────────┤
 │ L3 决策层  toolprior(工具优先级/限流)    skill(渐进披露)         │
-│            toolsched(注解驱动并发调度)                          │
+│            toolsched(注解驱动并发调度)   bashguard(bash风险解析)  │
 ├──────────────────────────────────────────────────────────────┤
 │ L1 模型层  llm(Client/Resilient 降级链/Budget/StageRouter/成本)  │
 ├──────────────────────────────────────────────────────────────┤
@@ -68,14 +68,15 @@
 │                 knowledge/rag(双后端检索)  websearch  textutil   │
 │                 pack(包契约清单)  lineage(装配血缘图)             │
 │                 fence(数据区围栏)  egress(出口围栏/SSRF)         │
-│                 conversation(会话窗口)  compact(压缩策略)         │
-│                 sysprompt(分段组装)                               │
+│                 conversation(会话窗口)  compact(压缩策略+中断补洞) │
+│                 sysprompt(分段组装)  filestate(读后写状态)        │
 │                 procx(子进程纪律)  httpx(HTTP+JSON纪律)           │
 ├──────────────────────────────────────────────────────────────┤
 │ L5 运行时  breaker(熔断)  worker+pglease(队列+选主+PG租约)      │
 │            progress(总线)  hotplug(插拔/热替换)                 │
 │            logredact(脱敏)  jsonrepair(宽容JSON+解析链)          │
-│            fence(注入卫生) reportutil(严重度/聚簇/统计)           │
+│            fence(注入卫生) egress(出口围栏) reportutil(统计)       │
+│            hookx(hook拦截协议)                                    │
 │            audit(审计)                                           │
 ├──────────────────────────────────────────────────────────────┤
 │ L6 可观测  obsx(eino callbacks 追踪/真实 usage 回流)             │
@@ -90,6 +91,7 @@
 | `agentrun` | ReAct 运行样板 + Plan-and-Execute 样板（ADK 封装） | eino adk | v0.6.0（v0.8.0 P&E） |
 | `toolprior` | 工具优先级决策层：提示词/排序/限流三层约束 | eino | v0.5.2 |
 | `toolsched` | 工具并发调度器：注解驱动并行判定+依赖拓扑+分组执行（StopAfter 停轮门/失败不截断） | 无 | v0.10.23 |
+| `bashguard` | bash 命令静态风险解析：mvdan/sh AST → 调用提取 → 表驱动只读判定（动态词/写重定向/控制流/未知命令一律非只读；git 子命令递归+裸操作数写形态守卫+安全包装剥壳） | mvdan.cc/sh | v0.10.25 |
 | `skill` | SKILL.md 解析 + 多根 Library（热替换）+ 决策使用（渐进披露）+ 版本化契约（maturity/弃用窗口/Validate/写回/区间/requires_config） | eino（decision）、yaml.v3（Library）、semver（区间） | v0.5.1（v0.9.0 Library，v0.9.2 契约，v0.9.3 requires_config） |
 | `pack` | 领域包 MCP 工具面契约清单（_shared 基线 / 包整文件覆盖 / 字典序冲突） | yaml.v3 | v0.9.2 |
 | `lineage` | 装配血缘图（used_by 单源 + reload 影响面 Diff + 焦点子图 + Hub） | skill, pack | v0.9.2 |
@@ -121,6 +123,10 @@
 
 | `fence` | 提示词数据区围栏：不可信内容显式包裹 + 逃逸序列中和（返回中和计数作注入特征信号） | 无 | v0.10.5 |
 | `egress` | 出口围栏：LLM 可控 URL 的字面量层 SSRF 防护（localhost/私网/保留段 + IPv4-mapped/NAT64 还原；域名不 preflight） | 无 | v0.10.23 |
+| `permgate` | 工具调用许可判定链：allow/ask/deny 优先级状态机（alwaysAsk/会话授权/预批钩子）+ 规则内容匹配 + 结构化 ruleId 审计 | 无 | v0.10.25 |
+| `hookx` | 外部 hook 拦截协议：7 拦截点 + 子进程 stdin/stdout JSON 决策 + 单调归并（执行经 procx 进程组纪律） | procx | v0.10.25 |
+| `filestate` | 读后写一致性状态：编辑前必须读过 + mtime/size staleness 判定（整数毫秒口径）+ 内容一致豁免 + 编辑后回写 | 无 | v0.10.25 |
+| `steering` | 运行中转向队列：guide（模型请求边界注入）/queued（turn 后消费）双投递 + guide 降级不丢 | 无 | v0.10.25 |
 | `conversation` | 多轮会话历史原语：Turn / Split 滚动窗口切分 / Render 截断渲染 / Combine 摘要拼装（确定性，摘要生成归调用方） | textutil | v0.10.5 |
 | `compact` | 会话压缩策略面：auto-compact 判定（output 预留/token 双轨/熔断）+ microcompact（旧工具结果占位清除，保最近 N 组） | 无 | v0.10.24 |
 | `sysprompt` | system prompt 分段组装：stable/dynamic 缓存边界分块 + 计量 + env/git/date 内置段 + DetectEnv 采集 | procx | v0.10.24 |
@@ -564,6 +570,24 @@ res := s.Execute(ctx, tasks)    // 结果恒按输入序；组内失败不截断
 `StopAfter` 停轮门（plan 批准类）：独占单例组，成功后剩余组以 Skipped 呈现、
 失败不停轮；ctx 取消在组间检查、在途任务透传取消。ID 重复/依赖悬空/依赖环
 确定性报错（调用图来自模型输出，越界显式暴露）。
+
+### compact/steering/permgate/bashguard/hookx/filestate —— ZCode 移植收官（v0.10.25 六件）
+
+- **compact 二期**：TokenGap（provider 溢出报文提取超差）+ SelectAfterOverflow
+  （按 gap 上移保留组数）+ TruncateForRetry（丢最旧组兜底，上限 3）；rapid-refill
+  熔断（<3 工具轮又满连续 3 次 → ErrRapidRefill 指引排查大输出源）；摘要模板
+  SummaryPrompt（9 段+安全约束逐字保留+no-tools 围栏）/FormatSummary/
+  SummaryMessage；RepairInterrupted 中断补洞（调用无结果插占位、与调用同序）。
+- **steering**：Queue 的 Steer（guide，模型请求边界注入）/Enqueue（queued，
+  turn 后消费）；DrainGuides/DequeueQueued/DemoteGuidesToQueued（窗口关闭
+  降级不丢）。
+- **permgate**：见包表。语义骨架「禁压过 yolo、alwaysAsk 只被硬阻断与会话
+  授权短路、hook/规则只能收窄或按表匹配」。
+- **bashguard**：Analyze(cmd, table)——保守判定矩阵见包注释；DefaultTable
+  起步集含 git 子命令递归表与安全包装，生产经 Table 覆写扩展。
+- **hookx**：Runner.Run 派发；决策协议与归并语义见包注释；改写输入后由
+  消费方重走 permgate。
+- **filestate**：Tracker 的 RecordRead/CheckEdit/RecordEdit 三态循环。
 
 ```mermaid
 flowchart TD
@@ -1377,3 +1401,9 @@ flowchart TD
   对标 ZCode 压缩策略面，摘要生成归调用方）；新包 sysprompt（第 38 包——
   stable/dynamic 缓存边界分段组装 + env/git/date 内置段 + DetectEnv 采集，
   对标 ZCode context/builder）
+- **v0.10.25（ZCode 移植清单收官）**：新包 filestate（39，读后写状态）/
+  permgate（40，许可判定链）/hookx（41，hook 拦截协议）/bashguard（42，bash
+  静态风险解析，引入 mvdan.cc/sh 依赖）/steering（43，转向队列）；compact
+  二期（溢出自适应+rapid-refill+摘要模板+中断补洞）；llm 流恢复原语；
+  procx Stdin 单源增强。ZCode 12 项扫描清单至此全部落地（#6/#10/#11 的完整
+  turn 机集成属产品运行时，工具箱提供其全部可移植原语）
