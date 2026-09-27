@@ -19,7 +19,11 @@ func newEchoMetaServer(t *testing.T) *server.MCPServer {
 			var parts []string
 			if req.Params.Meta != nil {
 				for k, v := range req.Params.Meta.AdditionalFields {
-					parts = append(parts, k+"="+v.(string))
+					// mcp-go v1.1+ 现代协议会在 _meta 附带协议自身键
+					// （clientCapabilities 等非 string 值），只回显业务键。
+					if s, ok := v.(string); ok {
+						parts = append(parts, k+"="+s)
+					}
 				}
 			}
 			return mcp.NewToolResultText(strings.Join(parts, ",")), nil

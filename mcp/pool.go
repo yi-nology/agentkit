@@ -109,6 +109,11 @@ type Pool struct {
 	// request-context）。metaFn 在调用方 ctx 上取值，池不感知业务键；经 metaClient
 	// 装饰器注入 req.Params.Meta（见 meta.go）。返回 nil/空 = 不注入。
 	RequestMeta func(ctx context.Context) map[string]any
+	// Elicitation server→client 征集输入处理器（mcp-go v1.1 SEP-2322）：工具执行中
+	// server 反向请求补充输入（表单/URL 模式）时回调；nil 时该类请求得到
+	// "no elicitation handler configured" 错误（调用失败呈现，与不声明能力的服务端
+	// 行为一致）。池级单点——建连/自愈 redial/Initialize 能力声明共用。
+	ElicitationHandler client.ElicitationHandler
 }
 
 // NewPool 创建连接池（建连延后到 Tools 调用时——允许启动期 MCP server 未就绪）。
@@ -224,7 +229,7 @@ func (p *Pool) client(ctx context.Context, cfg ServerConfig) (client.MCPClient, 
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cli, err := dial(cctx, cfg)
+	cli, err := p.dial(cctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: %s 建连失败: %w", cfg.Name, err)
 	}
@@ -233,6 +238,10 @@ func (p *Pool) client(ctx context.Context, cfg ServerConfig) (client.MCPClient, 
 	initReq := mcp.InitializeRequest{}
 	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 	initReq.Params.ClientInfo = mcp.Implementation{Name: "agentkit", Version: "1.0"}
+	if p.ElicitationHandler != nil {
+		// 能力声明与 handler 同装（不声明则支持 elicitation 的 server 不会发起）
+		initReq.Params.Capabilities.Elicitation = &mcp.ElicitationCapability{}
+	}
 	if _, err := cli.Initialize(cctx, initReq); err != nil {
 		_ = cli.Close()
 		return nil, fmt.Errorf("mcp: %s Initialize 失败: %w", cfg.Name, err)
@@ -279,7 +288,16 @@ func (p *Pool) evict(name string, cli client.MCPClient) {
 }
 
 // dial 按配置构造 MCP client（stdio 或 streamable http）。
-func dial(ctx context.Context, cfg ServerConfig) (client.MCPClient, error) {
+// transport 直构 + client.NewClient 装配（mcp-go v1.1 起 client 级选项——elicitation
+// 等——只能在 NewClient 时挂，便捷构造器不接收）；stdio 便捷构造器自动 Start 的行为
+// 在此显式化（直构不 Start 子进程不会拉起）。
+func (p *Pool) dial(ctx context.Context, cfg ServerConfig) (client.MCPClient, error) {
+	clientOpts := func() []client.ClientOption {
+		if p.ElicitationHandler == nil {
+			return nil
+		}
+		return []client.ClientOption{client.WithElicitationHandler(p.ElicitationHandler)}
+	}
 	switch {
 	case len(cfg.Command) > 0:
 		// argv[0] 只允许是可执行名：以 "-" 开头会落入下游参数解析当选项
@@ -289,20 +307,29 @@ func dial(ctx context.Context, cfg ServerConfig) (client.MCPClient, error) {
 		}
 		// 经 CommandFunc 接管 exec.Cmd：环境只给白名单（procx.ChildEnv，
 		// 全仓库子进程环境纪律单一事实源），绝不继承全量 os.Environ()
-		return client.NewStdioMCPClientWithOptions(cfg.Command[0], cfg.Env, cfg.Command[1:],
+		t := transport.NewStdioWithOptions(cfg.Command[0], cfg.Env, cfg.Command[1:],
 			transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
 				cmd := exec.CommandContext(ctx, command, args...)
 				cmd.Env = procx.ChildEnv(env)
 				return cmd, nil
 			}))
+		if err := t.Start(ctx); err != nil {
+			return nil, fmt.Errorf("mcp: server %s stdio 启动失败: %w", cfg.Name, err)
+		}
+		return client.NewClient(t, clientOpts()...), nil
 	case cfg.URL != "":
+		httpOpts := []transport.StreamableHTTPCOption{
+			transport.WithHTTPHeaders(cfg.Headers),
+			transport.WithHTTPTimeout(cfg.timeoutOr(DefaultTimeout)),
+		}
 		if cfg.OAuth != nil {
 			if cfg.OAuth.TokenStore == nil {
 				return nil, fmt.Errorf("mcp: server %s OAuth 配置缺 TokenStore（缺省内存 store 会在重连后丢授权态）", cfg.Name)
 			}
 			// OAuth 客户端（批次五十六 C）：静态 headers 保留（可与 Bearer 共存——
-			// 代理网关类附加头），token 注入由 transport 内 oauthHandler 承担。
-			return client.NewOAuthStreamableHttpClient(cfg.URL, client.OAuthConfig{
+			// 代理网关类附加头），token 注入由 transport 内 oauthHandler 承担
+			// （PKCE 恒开）。
+			httpOpts = append(httpOpts, transport.WithHTTPOAuth(client.OAuthConfig{
 				ClientID:              cfg.OAuth.ClientID,
 				ClientSecret:          cfg.OAuth.ClientSecret,
 				RedirectURI:           cfg.OAuth.RedirectURI,
@@ -310,12 +337,13 @@ func dial(ctx context.Context, cfg ServerConfig) (client.MCPClient, error) {
 				TokenStore:            cfg.OAuth.TokenStore,
 				AuthServerMetadataURL: cfg.OAuth.MetadataURL,
 				PKCEEnabled:           true,
-			}, transport.WithHTTPHeaders(cfg.Headers),
-				transport.WithHTTPTimeout(cfg.timeoutOr(DefaultTimeout)))
+			}))
 		}
-		return client.NewStreamableHttpClient(cfg.URL,
-			transport.WithHTTPHeaders(cfg.Headers),
-			transport.WithHTTPTimeout(cfg.timeoutOr(DefaultTimeout)))
+		t, err := transport.NewStreamableHTTP(cfg.URL, httpOpts...)
+		if err != nil {
+			return nil, fmt.Errorf("mcp: server %s http transport 构造失败: %w", cfg.Name, err)
+		}
+		return client.NewClient(t, clientOpts()...), nil
 	default:
 		return nil, fmt.Errorf("mcp: server %s stdio（command）与 http（url）均未配置", cfg.Name)
 	}

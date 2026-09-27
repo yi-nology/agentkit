@@ -73,7 +73,7 @@ func TestRetryAfterTransportCaptures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if got := RetryAfterFrom(ctx); got != 7*time.Second {
 		t.Fatalf("sink 应捕获 7s: %v", got)
 	}
@@ -84,7 +84,7 @@ func TestRetryAfterTransportCaptures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp2.Body.Close()
+	_ = resp2.Body.Close()
 	if calls.Load() != 2 {
 		t.Fatalf("服务端应被调用两次: %d", calls.Load())
 	}
@@ -100,11 +100,11 @@ func TestGenerateRetryHonorsRetryAfter(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Retry-After", "1")
 			w.WriteHeader(http.StatusTooManyRequests)
-			w.Write([]byte(`{"error":{"message":"rate limited","type":"requests","code":"1305"}}`))
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited","type":"requests","code":"1305"}}`))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"id":"x","object":"chat.completion","created":1,"model":"m",` +
+		_, _ = w.Write([]byte(`{"id":"x","object":"chat.completion","created":1,"model":"m",` +
 			`"choices":[{"index":0,"message":{"role":"assistant","content":"恢复后作答"},"finish_reason":"stop"}],` +
 			`"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`))
 	}))

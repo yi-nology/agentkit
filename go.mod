@@ -5,15 +5,16 @@ go 1.26.0
 require (
 	git.enjoye.top/enjoydream/ekit v0.27.2
 	github.com/Masterminds/semver/v3 v3.3.1
-	github.com/cloudwego/eino v0.9.18
-	github.com/mark3labs/mcp-go v0.43.0
+	github.com/cloudwego/eino v0.9.21
+	github.com/mark3labs/mcp-go v1.1.1
 	github.com/milvus-io/milvus-sdk-go/v2 v2.4.2
 	golang.org/x/sync v0.22.0
 	golang.org/x/time v0.15.0
 )
 
 require (
-	github.com/invopop/jsonschema v0.13.0 // indirect
+	github.com/google/jsonschema-go v0.4.2 // indirect
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
@@ -52,7 +53,7 @@ require (
 	github.com/nikolalohinski/gonja v1.5.3 // indirect
 	github.com/pelletier/go-toml/v2 v2.0.9 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/rogpeppe/go-internal v1.9.0 // indirect
+	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/slongfield/pyfmt v0.0.0-20220222012616-ea85ff4c361f // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect

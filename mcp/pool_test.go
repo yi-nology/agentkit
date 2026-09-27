@@ -168,7 +168,8 @@ func TestStdioDialFailure(t *testing.T) {
 }
 
 func TestDialBothEmpty(t *testing.T) {
-	if _, err := dial(context.Background(), ServerConfig{Name: "x"}); err == nil ||
+	p := NewPool()
+	if _, err := p.dial(context.Background(), ServerConfig{Name: "x"}); err == nil ||
 		!strings.Contains(err.Error(), "均未配置") {
 		t.Fatalf("stdio/http 均空应报错: %v", err)
 	}
@@ -177,15 +178,16 @@ func TestDialBothEmpty(t *testing.T) {
 // TestDialRejectsOptionCommand 锁死 exec 层守卫：command[0] 以 "-" 开头即
 // argument injection 面（Command 来自装配配置，越界即配置错误）。
 func TestDialRejectsOptionCommand(t *testing.T) {
-	if _, err := dial(context.Background(), ServerConfig{Name: "x", Command: []string{"-evil"}}); err == nil ||
+	p := NewPool()
+	if _, err := p.dial(context.Background(), ServerConfig{Name: "x", Command: []string{"-evil"}}); err == nil ||
 		!strings.Contains(err.Error(), "非法 command") {
 		t.Fatalf("command[0] 以 - 开头应被拒绝: %v", err)
 	}
-	if _, err := dial(context.Background(), ServerConfig{Name: "x", Command: []string{""}}); err == nil {
+	if _, err := p.dial(context.Background(), ServerConfig{Name: "x", Command: []string{""}}); err == nil {
 		t.Fatal("空 command[0] 应被拒绝")
 	}
 	// 均 nil/空切片：落到"stdio 与 http 均未配置"分支
-	if _, err := dial(context.Background(), ServerConfig{Name: "x"}); err == nil ||
+	if _, err := p.dial(context.Background(), ServerConfig{Name: "x"}); err == nil ||
 		!strings.Contains(err.Error(), "均未配置") {
 		t.Fatalf("无 command 无 url 应报配置错误: %v", err)
 	}
