@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.10.27 (2026-09-27)
+
+深度回归审计轮：对新移植的十个面做独立复查 + 跨包组合验证，修复 3 Critical +
+4 Important（全部带回归测试锁死）。
+
+### Fixed
+
+- **procx（Critical）**：Stdin 管道在 Start 之后才建——os/exec 守卫使整段成为
+  死代码，子进程实际拿到空 stdin（hookx 全部 hook 派发受影响：遵循协议的
+  hook 静默失效）。StdinPipe 移到 Start 前、建立失败 fail-fast；新增
+  TestStdinPayloadDelivered 断言 payload 真实可达。
+- **hookx（Critical）**：Stop 事件 continue 布尔与协议相反——continue:false
+  （否决停止）被忽略、continue:true（无异议）反被当否决可造成无限续跑。
+  修正为 continue:false→StopShouldContinue；continue:true 无意见。
+- **bashguard（Critical）**：联合 flag 折叠校验不查 FlagKind——值型 flag 折进
+  联合形态后其参数伪装成操作数（`sort -ro f` = `-r -o f` 写路径被判只读）。
+  折叠现在要求全部组成为 FlagBool 且不在 UnsafeFlags；支持 `--flag=value`
+  内联值（optional/string 型）；sort 的 -o 矛盾条目移除。
+- **compact**：FormatSummary 用 ReplaceAllString 把摘要正文当替换模板——
+  `${VAR}`/`$1` 被展开腐蚀（代码摘要高频面）。改字面拼接；TokenGap 的
+  Anthropic 形态符号反了（真实报文 requested 在前，原实现恒解析失败）；
+  TruncateForRetry 重试预算差一（第 3 次被拒）。
+- **filestate**：mtime 未前进+同 size 时先于内容比对返回——保留时间戳的同长
+  覆盖（cp -p/rsync -a 回灌）静默绕过 staleness；现在该分支先比对内容。
+  读取历史无界增长（全量 Content 永久驻留，编辑型 agent 长会话数百 MB 级）
+  ——每路径只保留最新一条。
+- **bashguard 表**：git remote 改子命令形态（show/get-url 原是永不命中的
+  死条目）、env -u 转 FlagString（原必拒）、git 全局前置 flag（-C/-c/
+  --no-pager 等）入顶层 SafeFlags、branch/tag 陈旧注释清理。
+
+### Added
+
+- **integration_test**（仓库根）：跨包组合验证——bashguard 静态解析 →
+  permgate 许可判定 → hookx 改写输入后重走链 → toolsched 注解直转调度 →
+  compact 压力面，验证五件套接缝语义（新原语拼成完整工具调用治理故事）。
+
 ## v0.10.26 (2026-09-27)
 
 acpx 直连出口:能力核对与展示双单源导出(下游 preFlight 降级范式一等公民化)。

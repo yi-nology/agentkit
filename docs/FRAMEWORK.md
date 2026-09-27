@@ -1,6 +1,6 @@
 # agentkit 框架完整文档
 
-> 版本：v0.10.26 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
+> 版本：v0.10.27 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
 > 配套文档：[架构模式支持矩阵](patterns.md)（七架构何时用/何时不用）· [README](../README.md)（快速上手）
 
 > 文中架构图使用 Mermaid：Forgejo/GitHub 等端原生渲染；不支持渲染的查看端，
@@ -1413,3 +1413,9 @@ flowchart TD
   二期（溢出自适应+rapid-refill+摘要模板+中断补洞）；llm 流恢复原语；
   procx Stdin 单源增强。ZCode 12 项扫描清单至此全部落地（#6/#10/#11 的完整
   turn 机集成属产品运行时，工具箱提供其全部可移植原语）
+- **v0.10.27（深度回归审计轮）**：独立复查十个新增面 + 跨包组合验证
+  （integration_test）。修复：procx Stdin 死代码（Critical，StdinPipe 须在
+  Start 前）/hookx Stop 事件 continue 语义反（可致无限续跑）/bashguard 联合
+  flag 折叠写路径漏判（sort -ro）/FormatSummary 模板腐蚀 $/TokenGap 符号反/
+  filestate 同 size 绕过与历史无界/表死条目（git remote/env -u）与 git 全局
+  flag 缺失；全部带回归测试锁死
