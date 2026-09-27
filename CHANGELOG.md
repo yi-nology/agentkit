@@ -1,5 +1,57 @@
 # Changelog
 
+## v0.10.28 (2026-09-27)
+
+老包深度审计轮：三路独立复查（acpx 解析面 / worker-workcopy 并发面 /
+llm-skill-检索面）+ 覆盖率盲区调查，修复 1 Critical + 6 Important + 4 次级
+（全部带回归测试）。
+
+### Fixed
+
+- **workcopy（Critical）**：增量刷新窗口的领用不摘牌——claimStale 领用保留
+  目录时未从 entries 摘除旧 key 条目，刷新（fetch + checkout --force，
+  秒到分钟级）期间并发 Ensure(旧head) 会命中正被重写的工作树（撕裂读）、
+  Release(旧key) no-op 导致 rc 永久泄漏 Sweep 永不回收、竞争窗口的
+  RemoveAll 会删掉在用目录。领用即摘牌（rc++ 与 delete 同临界区）；刷新
+  失败不回挂（可能撕裂的树不再可命中，交 Sweep/孤儿扫描兜底）。
+- **acpx/codex**：error 事件被 lastText 条件吞没——exit=0 且事件流含 error
+  且有部分 assistant 文本时错误完全丢弃（部分输出后配额耗尽/流中断的实弹
+  形态，mimo 纪律曾明确锁定此教训）。有错如实报错。
+- **acpx/claude**：init-only 空壳 result 绕过全文兜底——init 事件把 result
+  置非 nil 空壳，result 事件丢失（超长行 >1MB 被限容丢弃/流尾 8MB 截断）
+  时返回空文本成功。sawResult 跟踪区分「result 到达但文本为空」（合法
+  空成功）与「result 未到达」（走兜底）。
+- **llm/resilient**：熔断半开探测时限未接线——Breakers 缺省 1 分钟 <
+  单模型一次完整尝试的最坏在途（≈3 分钟），超时探测被判失联、并发新探测
+  全放行，半开单探测隔离失效。ResilientConfig.BreakerProbeTimeout 缺省按
+  (RetriesPerModel+1)×(MaxDelay+90s) 推导并接线 WithProbeTimeout。
+- **llm/resilient**：用户取消计熔断失败——连续 3 次主动取消（Esc/关页/请求
+  超时）即把模型熔断 5 分钟全员降级。取消走 breaker.Abandon（v0.10.4 为
+  此场景设计的原语：结果未知不计统计、解除半开占位）。
+- **knowledge/rag（Milvus）**：Index 先删后嵌——embedding 失败（外部网络
+  调用，抖动/限流/超时是常规事件）时该文件旧索引已清，从检索面静默消失
+  且检索侧无信号。调序为 chunk → Embed 成功 → Delete → Upsert。
+- **worker/leader**：tick 的 TryAcquire 无独立限时——存储挂起时 Stop 永久
+  阻塞在 <-e.done（优雅停机悬挂）。acquireTimeout=5s（与 releaseTimeout
+  同口径），超时按存储抖动处理（保守失主、下周期重试）。
+- **llm/client**：GenerateJSON 重试共用同一 out——encoding/json 失败/合并
+  不清零已解码字段，上次部分解码残留泄入重试成功的结果。解进临时零值、
+  成功后整体赋回（Resilient 的 JSON 路径同受益）。
+- **skill**：FileProvider.CanonicalName 缺精确名优先守卫——技能 A 的
+  frontmatter name 恰与技能 B 目录名相同时 use_skill("B") 被别名表重定向
+  到 A（allowed 误拒/拿错全文）。精确路径可达即短路（同 loadName 的防穿越
+  归一）。
+- **skill**：ParseRichFrontmatter 不容忍 BOM/前导空白（parseFrontmatter
+  容忍）——带前导空行或 UTF-8 BOM 的 SKILL.md 被整份当正文、元数据静默
+  丢失；capContent 字节截断可切非法 UTF-8（rune 安全回退，与 httpx 口径
+  一致）。
+
+### Changed
+
+- **审计确认项**：acpx 事件流健壮性（半行/超长行/UTF-8/goroutine 生命周期）、
+  procx 竞选/熔断语义、hotplug/progress、logredact ReDoS（RE2 线性）、
+  skill 路径遍历、usage 记账防重、failover 并发、httpx 限容——均复核无问题。
+
 ## v0.10.27 (2026-09-27)
 
 深度回归审计轮：对新移植的十个面做独立复查 + 跨包组合验证，修复 3 Critical +

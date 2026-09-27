@@ -1,6 +1,6 @@
 # agentkit 框架完整文档
 
-> 版本：v0.10.27 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
+> 版本：v0.10.28 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
 > 配套文档：[架构模式支持矩阵](patterns.md)（七架构何时用/何时不用）· [README](../README.md)（快速上手）
 
 > 文中架构图使用 Mermaid：Forgejo/GitHub 等端原生渲染；不支持渲染的查看端，
@@ -1419,3 +1419,8 @@ flowchart TD
   flag 折叠写路径漏判（sort -ro）/FormatSummary 模板腐蚀 $/TokenGap 符号反/
   filestate 同 size 绕过与历史无界/表死条目（git remote/env -u）与 git 全局
   flag 缺失；全部带回归测试锁死
+- **v0.10.28（老包深度审计轮）**：三路独立复查（acpx/worker-workcopy/
+  llm-skill-检索）。修复：workcopy 领用即摘牌（Critical——刷新窗口撕裂读/
+  rc 泄漏/在用目录被删）、codex 错误吞没、claude init-only 空壳绕过兜底、
+  Resilient 探测时限接线+取消走 Abandon、Milvus 先删后嵌、leader 停机有界、
+  GenerateJSON 残留、skill 精确名守卫/BOM/rune 截断；全部带回归测试
