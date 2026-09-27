@@ -1,6 +1,6 @@
 # agentkit 框架完整文档
 
-> 版本：v0.10.15 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
+> 版本：v0.10.23 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
 > 配套文档：[架构模式支持矩阵](patterns.md)（七架构何时用/何时不用）· [README](../README.md)（快速上手）
 
 > 文中架构图使用 Mermaid：Forgejo/GitHub 等端原生渲染；不支持渲染的查看端，
@@ -60,13 +60,15 @@
 │            clarify(澄清词表: term_map模型+回答消解)             │
 ├──────────────────────────────────────────────────────────────┤
 │ L3 决策层  toolprior(工具优先级/限流)    skill(渐进披露)         │
+│            toolsched(注解驱动并发调度)                          │
 ├──────────────────────────────────────────────────────────────┤
 │ L1 模型层  llm(Client/Resilient 降级链/Budget/StageRouter/成本)  │
 ├──────────────────────────────────────────────────────────────┤
 │ L4 工具与上下文  acpx(9家CLI agent)  mcp(工具池)  workcopy(副本) │
 │                 knowledge/rag(双后端检索)  websearch  textutil   │
 │                 pack(包契约清单)  lineage(装配血缘图)             │
-│                 fence(数据区围栏)  conversation(会话窗口)          │
+│                 fence(数据区围栏)  egress(出口围栏/SSRF)         │
+│                 conversation(会话窗口)                           │
 │                 procx(子进程纪律)  httpx(HTTP+JSON纪律)           │
 ├──────────────────────────────────────────────────────────────┤
 │ L5 运行时  breaker(熔断)  worker+pglease(队列+选主+PG租约)      │
@@ -78,7 +80,7 @@
 │ L6 可观测  obsx(eino callbacks 追踪/真实 usage 回流)             │
 │            langfuse(Public API 只读客户端/trace 读回)             │
 └──────────────────────────────────────────────────────────────┘
-        底座：eino v0.9.18 · eino-ext · mcp-go · milvus-sdk-go · ekit
+        底座：eino v0.9.21 · eino-ext · mcp-go v1.1 · milvus-sdk-go · ekit
 ```
 
 | 包 | 职责 | 外部依赖 | 版本引入 |
@@ -86,6 +88,7 @@
 | `llm` | LLM 客户端：重试/限速/预算/fitInput/JSON + Resilient 降级链 + StageRouter + UsageHandler + PriceOf 定价估算 | eino, eino-ext openai, x/time | v0.1.0（v0.2 降级链，v0.8.1 路由，v0.9.0 UsageHandler，v0.9.5 PriceOf） |
 | `agentrun` | ReAct 运行样板 + Plan-and-Execute 样板（ADK 封装） | eino adk | v0.6.0（v0.8.0 P&E） |
 | `toolprior` | 工具优先级决策层：提示词/排序/限流三层约束 | eino | v0.5.2 |
+| `toolsched` | 工具并发调度器：注解驱动并行判定+依赖拓扑+分组执行（StopAfter 停轮门/失败不截断） | 无 | v0.10.23 |
 | `skill` | SKILL.md 解析 + 多根 Library（热替换）+ 决策使用（渐进披露）+ 版本化契约（maturity/弃用窗口/Validate/写回/区间/requires_config） | eino（decision）、yaml.v3（Library）、semver（区间） | v0.5.1（v0.9.0 Library，v0.9.2 契约，v0.9.3 requires_config） |
 | `pack` | 领域包 MCP 工具面契约清单（_shared 基线 / 包整文件覆盖 / 字典序冲突） | yaml.v3 | v0.9.2 |
 | `lineage` | 装配血缘图（used_by 单源 + reload 影响面 Diff + 焦点子图 + Hub） | skill, pack | v0.9.2 |
@@ -116,6 +119,7 @@
 | `audit` | 审计日志 | ekit | v0.1.0 |
 
 | `fence` | 提示词数据区围栏：不可信内容显式包裹 + 逃逸序列中和（返回中和计数作注入特征信号） | 无 | v0.10.5 |
+| `egress` | 出口围栏：LLM 可控 URL 的字面量层 SSRF 防护（localhost/私网/保留段 + IPv4-mapped/NAT64 还原；域名不 preflight） | 无 | v0.10.23 |
 | `conversation` | 多轮会话历史原语：Turn / Split 滚动窗口切分 / Render 截断渲染 / Combine 摘要拼装（确定性，摘要生成归调用方） | textutil | v0.10.5 |
 | `textutil` | rune 安全截断/等分块/TruncEllipsis + 近重复检测（bigram Jaccard） | 无 | v0.1.0（v0.9.0 Ellipsis，v0.10.0 近重复） |
 
@@ -540,6 +544,24 @@ limited := toolprior.LimitCalls(invokableTool, 5) // 每次包装新建实例（
 档位：Core(0) < Support(1) < External(2)，自定义数值可插中间。`Table` 构建期写入、
 构建后只读；`Add(nil Tool)` 直接 panic（注册期 fail fast）。
 
+### toolsched —— 注解驱动并发调度（v0.10.23）
+
+一条模型消息返回多个 tool call 时按注解与依赖分组执行：组内并发（MaxConcurrency
+上限切组）、组间有序。并行判定链：destructive 一票否决 → idempotent（≈
+concurrentSafe）显式优先 → readOnly → 具名未声明查 ReadOnlyTools 兜底表（缺省
+保守不并行）；匿名无声明放行。Hints 与 `mcp.ToolHints` 字段同构——`Pool.Hints`
+快照直转，非 MCP 工具同形态声明。
+
+```go
+s := &toolsched.Scheduler{MaxConcurrency: 10, ReadOnlyTools: map[string]bool{"grep": true}}
+sched, err := s.Schedule(calls) // 纯函数：Groups 分组可断言
+res := s.Execute(ctx, tasks)    // 结果恒按输入序；组内失败不截断后续组
+```
+
+`StopAfter` 停轮门（plan 批准类）：独占单例组，成功后剩余组以 Skipped 呈现、
+失败不停轮；ctx 取消在组间检查、在途任务透传取消。ID 重复/依赖悬空/依赖环
+确定性报错（调用图来自模型输出，越界显式暴露）。
+
 ```mermaid
 flowchart TD
     T["Table（注册期）"] --> L1["层1 软：StrategyPrompt<br/>优先级序/何时用/成本 → 注入 instruction"]
@@ -670,10 +692,30 @@ defer pool.Close()
 ```
 
 lazy 建连缓存 + Initialize 握手；列举失败自动摘除坏连接（下次重建）；Close 后拒绝
-新建；Allow 全部未命中经 OnError 告警。schema 转换委托 eino-ext，无自造轮子。
-出口统一经 `WrapErrorAsObservation` 包装（v0.10.15）：isError:true 的 MCP 业务
-失败降级为文本观察回传 LLM（修正参数/换路径由模型自行决定），不再以
-NodeRunError 炸掉整个 agent 步骤；传输层等其他错误原样上抛。
+新建；Allow 全部未命中经 OnError 告警。
+
+能力面（按版本累积）：
+
+- **工具目录缓存**（v0.10.19）：tools/list 建连后仅走线一次并缓存，`Tools()` 不再
+  全量走线；目录随连接 evict 一并失效。mcp.Tool → eino tool 转换自持（口径与
+  eino-ext components/tool/mcp v0.9 一致，本包不依赖 eino-ext）。
+- **注解归一**（v0.10.19）：`ToolHints{ReadOnly,Idempotent,Destructive}` +
+  `Pool.Hints(server)` 快照——`ConcurrentSafe()`（readOnly+idempotent）与
+  `RiskLevel()` 供并发调度（toolsched）与审计门消费。
+- **出口语义**（v0.10.15）：`WrapErrorAsObservation` 包装——isError:true 的 MCP
+  业务失败降级为文本观察回传 LLM，不再以 NodeRunError 炸掉整个 agent 步骤；
+  传输层等其他错误原样上抛。
+- **调用期自愈**（v0.10.17）：`selfHealTool` 传输层死亡（连接关闭/管道断裂）时
+  摘死连接→重连→解析同名工具重试一次；业务错误不触发。
+- **租约面**（v0.10.18）：`PingServer` 协议级探活（无声死亡摘除重建）+
+  `ReapIdle/StartIdleReaper` 闲置回收；探活独立 5s 预算（v0.10.20）。
+- **_meta 透传**（v0.10.20）：`Pool.RequestMeta func(ctx) map[string]any` 每笔
+  调用注入请求侧 _meta（metaFn 在调用方 ctx 取值，池不感知业务键）。
+- **OAuth**（v0.10.21）：URL 传输 `ServerConfig.OAuth`（PKCE 恒开、TokenStore
+  必填 fail-fast）；401 经 `client.OAuthAuthorizationRequiredError` 直通调用方。
+- **elicitation**（v0.10.23）：`Pool.ElicitationHandler`——server 工具执行中
+  反向征集输入（SEP-2322 多往返；现代协议 2026-07-28 与 legacy 同装），
+  Initialize 同步声明能力；未装 handler 时该类请求如实报错。
 
 ### workcopy —— Git 工作副本沙箱
 
@@ -750,6 +792,25 @@ v0.10.9 自 severity 迁入）。
 去空白、单字有指纹）+ `Jaccard`（皆空视为相同）→ `Similarity` / `NearDuplicate`。
 选集合 Jaccard 而非 SimHash：小文本（~10 个特征）下 SimHash 噪声过大——尾部加
 一个字就能推离阈值。百~千候选规模直接比对足够快，不必上向量库。
+
+### egress —— 出口围栏（v0.10.23）
+
+LLM 可控 URL（webfetch 类工具）的字面量层 SSRF 防护：阻断 localhost/.localhost
+域与落非公网段的 IP 字面量（回环/私网/链路本地含云元数据 169.254.169.254/
+CGNAT/benchmark/文档段/保留段；IPv6 ULA/ORCHID/discard/6to4/Teredo）；
+**IPv4-mapped IPv6 与 NAT64 well-known prefix 先还原内嵌 IPv4 再套同一策略**
+（经典逃逸路径）；域名不做 DNS preflight（部分网络 1s 内解析不完会误杀公网，
+解析层防护由消费方按需叠加）。URL 解析失败/空 host fail-closed。
+
+```go
+if err := egress.Check(targetURL); err != nil {
+    var be *egress.BlockedError
+    if errors.As(err, &be) { /* be.Reason / be.Addr 结构化呈现 */ }
+}
+```
+
+与 fence 正交：fence 管提示词注入卫生（内容进模型前），egress 管网络出口边界
+（请求出机器前）。
 
 ### fence —— 提示词注入卫生（v0.10.5 数据区围栏；v0.10.9 吸收 safejson）
 
@@ -1254,3 +1315,14 @@ flowchart TD
   acpx.tokenPair 收敛；全仓错误前缀补齐（skill/clarify/policy/worker/mcp/
   langfuse/rag 约 30 处）；llm 包三份 package doc 合一；jsonrepair
   Flatten*/CoerceString 收为非导出
+
+- **v0.10.12~v0.10.22**：版本史条目以 CHANGELOG.md 为单源（记账单源化/Replanner
+  修复/Retry-After 消费/mcp 自愈/租约面/目录层/RequestMeta/OAuth 连续批次，
+  此处不重复）
+- **v0.10.23**：deps 深升级（eino v0.9.21；mcp-go v0.43→v1.1.1 跨大版本——
+  2026-07-28 现代协议 + SEP-2322 多往返输入解锁，in-process 改真实 JSON 往返）；
+  mcp dial 直构 transport + `Pool.ElicitationHandler`（Initialize 能力同声明，
+  现代协议征集全链测试）；新包 toolsched（注解驱动并发调度，第 35 包——对标
+  ZCode scheduler/batch-runner，StopAfter 停轮门独占组、失败不截断后续组）；
+  新包 egress（出口围栏/字面量 SSRF 防护，第 36 包——NAT64/IPv4-mapped 还原后
+  套同一策略，域名不 preflight）；llm 存量 errcheck 修复（lint 门禁全绿）

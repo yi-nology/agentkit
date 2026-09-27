@@ -1,5 +1,48 @@
 # Changelog
 
+## v0.10.23 (2026-09-27)
+
+### Changed
+
+- **deps 深升级**：eino v0.9.18 → v0.9.21（ADK filesystem/cancel/checkpoint 修复面，
+  无 API 破坏）；**mcp-go v0.43.0 → v1.1.1（跨大版本）**——2026-07-28 现代协议
+  （server/discover 无状态握手、请求级 `_meta` 协议键）、SEP-2322 多往返输入、
+  异步 Task、server 侧入参 schema 校验全量解锁。适配点：in-process 传输改为
+  真实 JSON 往返（meta_test 只回显业务键，协议自注入的 `_meta` 键不再断言
+  string）。
+- **mcp**：dial 改 transport 直构 + `client.NewClient` 选项装配（client 级选项
+  只能在 NewClient 挂载；stdio 便捷构造器隐含的 Start 显式化）。新增
+  `Pool.ElicitationHandler client.ElicitationHandler`——server 工具执行中反向
+  征集输入（表单/URL 模式）时回调；Initialize 同步声明 elicitation 能力。
+  测试覆盖现代协议全链（真实 streamable HTTP：InputRequests 征集 → handler
+  应答 → 重试回显）；未装 handler 时协议错误如实冒泡。
+
+### Added
+
+- **toolsched（第 35 包）**：工具并发调度器，对标 ZCode tool/scheduler.ts +
+  batch-runner.ts——一条模型消息里的多个工具调用按注解与依赖分组：组内并发
+  （`MaxConcurrency` 上限切组）、组间有序。并行判定链：destructive 一票否决 →
+  idempotent（≈concurrentSafe）显式优先 → readOnly → 具名未声明查
+  `ReadOnlyTools` 兜底表（缺省保守不并行）；匿名无声明放行。`StopAfter`
+  停轮门声明（plan 批准类）独占单例组，成功后剩余组以 Skipped 呈现、失败不停轮；
+  组内失败不截断后续组（ZCode 踩坑语义：本地失败误截断后续 Agent 已固化教训）；
+  结果恒按输入序返回。`Schedule` 纯函数可测，`Execute` 并发执行；ID 重复/依赖
+  悬空/依赖环确定性报错。Hints 与 mcp.ToolHints 字段同构（解耦：非 MCP 工具
+  同形态入调度）。
+- **egress（第 36 包）**：出口围栏——LLM 可控 URL 的字面量层 SSRF 防护，对标
+  ZCode webfetch-egress-guard.ts。阻断：localhost/.localhost 域、IPv4/IPv6
+  字面量落非公网段（回环/私网/链路本地含云元数据 169.254.169.254/组播/
+  CGNAT/benchmark/文档段/保留段、ULA/ORCHID/discard/6to4/Teredo）；
+  **IPv4-mapped IPv6（::ffff:0:0/96）与 NAT64 well-known prefix（64:ff9b::/96）
+  先还原内嵌 IPv4 再套同一策略**（经典逃逸路径）；域名不做 DNS preflight
+  （部分网络 1s 内解析不完会误杀公网——取舍对标 ZCode 注释）。`BlockedError`
+  结构化命中（原因+地址）；URL 解析失败/空 host fail-closed。
+
+### Fixed
+
+- **llm**：retryafter_test 存量 errcheck（Body.Close/w.Write 返回值显式丢弃）——
+  `make check` lint 门禁恢复全绿。
+
 ## v0.10.21 (2026-09-25)
 
 ### Added

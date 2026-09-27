@@ -1,7 +1,7 @@
 # agentkit
 
 AI Agent 开发工具箱 —— 从生产项目提炼的通用组件库：代码审查平台 **Argus** + 智能运维多智能体平台 **bianque** + LLM 评测/观测平台 **heimdallr**。
-当前版本 **v0.10.15** · Go ≥ 1.26 · 34 个包。
+当前版本 **v0.10.23** · Go ≥ 1.26 · 36 个包。
 
 > 📖 **完整框架文档**：[docs/FRAMEWORK.md](docs/FRAMEWORK.md) —— 设计原则、六层架构、
 > 各包逐一详解（API/示例/边界契约）、横向能力专题（可靠性/成本/多副本/安全）、
@@ -68,7 +68,8 @@ git.enjoye.top/enjoydream/agentkit
 | `acpx` | CLI 编码 agent 统一调用（9 家 + GenericAgent，执行纪律经 procx） | eino |
 | `llm` | LLM 客户端（重试/限速/预算/fitInput/JSON + Resilient 降级链 + StageRouter 路由 + CostTracker + UsageHandler 完整用量采集） | eino, eino-ext openai, x/time |
 | `toolprior` | 工具优先级决策层（提示词/排序/限流三层约束） | eino |
-| `mcp` | MCP server 工具池（lazy 建连 + 白名单 + eino 工具适配 + UnwrapMCPText 信封剥离） | eino, eino-ext tool/mcp, mcp-go |
+| `toolsched` | 工具并发调度器（注解驱动并行判定 + 依赖拓扑分组执行，v0.10.23） | 无 |
+| `mcp` | MCP server 工具池（lazy 建连 + 白名单 + 工具目录缓存/注解归一 + OAuth + elicitation + 调用期自愈 + UnwrapMCPText） | eino, mcp-go |
 | `agentrun` | ReAct 样板 + Plan-and-Execute 样板（ADK 封装 + 事件流 + 重试） | eino adk |
 | `reflection` | Reflection 架构原语（生成→批判→修订收敛循环） | eino |
 | `router` | Router 架构原语（LLM 意图分类→选路→分发） | eino |
@@ -96,6 +97,7 @@ git.enjoye.top/enjoydream/agentkit
 | `audit` | 审计日志 | ekit |
 | `textutil` | rune 安全截断 + 等分块 + TruncEllipsis + 近重复检测（bigram 集合 + Jaccard） | 无 |
 | `workcopy` | Git 工作副本沙箱（singleflight + 引用计数 + TTL 回收） | ekit, x/sync |
+| `egress` | 出口围栏：LLM 可控 URL 字面量 SSRF 防护（NAT64/IPv4-mapped 还原，v0.10.23） | 无 |
 
 ## 快速使用
 
