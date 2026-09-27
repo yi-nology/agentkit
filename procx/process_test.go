@@ -14,7 +14,7 @@ import (
 // argument injection 面，必须 fail-fast（可执行名来自装配配置，越界即配置错误）。
 func TestExecCLIRejectsOptionBinary(t *testing.T) {
 	_, _, _, err := execCLI(context.Background(), "", []string{"-evil", "x"}, nil,
-		time.Second, func(string) {}, 0)
+		time.Second, func(string) {}, 0, nil)
 	if err == nil || !strings.Contains(err.Error(), "非法可执行名") {
 		t.Fatalf("argv[0] 以 - 开头应被拒绝: %v", err)
 	}

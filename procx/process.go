@@ -62,7 +62,7 @@ func (c *cappedBuffer) Write(p []byte) (int, error) {
 // leader（cmd.WaitDelay）→ Wait 返回后兜底 KILL 整组清残留孙进程。
 // maxStdout stdout 采集上限（0 = maxChildStdout 缺省）。
 func execCLI(ctx context.Context, dir string, argv []string, env []string,
-	timeout time.Duration, onLine func(string), maxStdout int) (stdout, stderr string, exitCode int, err error) {
+	timeout time.Duration, onLine func(string), maxStdout int, stdin []byte) (stdout, stderr string, exitCode int, err error) {
 
 	if len(argv) == 0 {
 		return "", "", -1, fmt.Errorf("procx: 命令为空")
@@ -105,6 +105,12 @@ func execCLI(ctx context.Context, dir string, argv []string, env []string,
 
 	if err := cmd.Start(); err != nil {
 		return "", "", -1, fmt.Errorf("procx: 启动 %s 失败: %w", argv[0], err)
+	}
+	if stdin != nil {
+		if pipe, perr := cmd.StdinPipe(); perr == nil {
+			_, _ = pipe.Write(stdin) // 子进程不读 stdin 提前退出时 EPIPE 无害
+			_ = pipe.Close()
+		}
 	}
 	waitErr := cmd.Wait()
 	if waitErr != nil {
@@ -164,6 +170,9 @@ type RunRequest struct {
 	OnLine func(string)
 	// MaxStdout stdout 采集上限（0 = 8MB 缺省）。
 	MaxStdout int
+	// Stdin 可选：启动后写入子进程 stdin 并关闭（hookx 等交互式协议用）。
+	// 子进程不读 stdin 提前退出时写入失败静默容忍（printf 类命令无害）。
+	Stdin []byte
 }
 
 // defaultTimeout 单次执行缺省超时。
@@ -178,7 +187,7 @@ func Run(ctx context.Context, req RunRequest) (stdout, stderr string, exitCode i
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
-	return execCLI(ctx, req.Dir, req.Argv, ChildEnv(req.Env), timeout, req.OnLine, req.MaxStdout)
+	return execCLI(ctx, req.Dir, req.Argv, ChildEnv(req.Env), timeout, req.OnLine, req.MaxStdout, req.Stdin)
 }
 
 // exitStatus 从 Wait 错误提取退出码。

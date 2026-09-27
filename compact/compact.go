@@ -161,41 +161,41 @@ func HasEnoughToCompact(msgs []Message) bool {
 type TokenSource string
 
 const (
-	SourceEstimate      TokenSource = "estimate"        // 本地估算
-	SourceProviderUsage TokenSource = "provider_usage"  // provider 真实用量
+	SourceEstimate      TokenSource = "estimate"       // 本地估算
+	SourceProviderUsage TokenSource = "provider_usage" // provider 真实用量
 )
 
 // TokenOverride provider 真实用量（ShouldCompact 优先于本地估算——provider 口径
 // 覆盖 cache 读写与嵌入内容，本地估算必然低估）。
 type TokenOverride struct {
-	TokenCount  int // 必填：provider 报告的输入侧总量
-	CacheRead   int // 可观测用
-	CacheWrite  int
-	Output      int
+	TokenCount int // 必填：provider 报告的输入侧总量
+	CacheRead  int // 可观测用
+	CacheWrite int
+	Output     int
 }
 
 // Reason 决策原因（可观测；语义对标 ZCode AutoCompactDecision.reason）。
 type Reason string
 
 const (
-	ReasonDisabled       Reason = "disabled"         // 策略关闭
-	ReasonNotEnough      Reason = "not_enough"       // 消息量不足
-	ReasonCircuitBreaker Reason = "circuit_breaker"  // 连续失败熔断
-	ReasonBelowThreshold Reason = "below_threshold"  // 未到阈值
-	ReasonAboveThreshold Reason = "above_threshold"  // 触发压缩
+	ReasonDisabled       Reason = "disabled"        // 策略关闭
+	ReasonNotEnough      Reason = "not_enough"      // 消息量不足
+	ReasonCircuitBreaker Reason = "circuit_breaker" // 连续失败熔断
+	ReasonBelowThreshold Reason = "below_threshold" // 未到阈值
+	ReasonAboveThreshold Reason = "above_threshold" // 触发压缩
 )
 
 // Decision 压缩判定（含全量计量供观测与审计）。
 type Decision struct {
-	ShouldCompact bool
-	Reason        Reason
-	TokenCount    int
-	TokenSource   TokenSource
+	ShouldCompact   bool
+	Reason          Reason
+	TokenCount      int
+	TokenSource     TokenSource
 	EstimatedTokens int
-	Threshold     int
-	ContextWindow int
+	Threshold       int
+	ContextWindow   int
 	EffectiveWindow int
-	OutputReserve int
+	OutputReserve   int
 }
 
 // ShouldCompact auto-compact 判定。consecutiveFailures 为此前连续压缩失败次数
@@ -261,7 +261,7 @@ func BuildDefaultThreshold(autoCompactThreshold int) int {
 type MicroTrigger string
 
 const (
-	TriggerIdle  MicroTrigger = "idle"           // 空闲超时
+	TriggerIdle   MicroTrigger = "idle"            // 空闲超时
 	TriggerTokens MicroTrigger = "token_threshold" // token 压力
 )
 
@@ -269,12 +269,12 @@ const (
 type MicroReason string
 
 const (
-	MicroDisabled      MicroReason = "disabled"        // 关闭
-	MicroNotTriggered  MicroReason = "not_triggered"   // 无触发（未到阈值且不空闲）
-	MicroNoCandidates  MicroReason = "no_candidates"   // 无可清除工具结果
-	MicroNothingToClear MicroReason = "nothing_to_clear" // 组数 ≤ 保留数
-	MicroBelowSavings  MicroReason = "below_min_savings" // 节省不足门槛
-	MicroApplied       MicroReason = "applied"          // 已清除
+	MicroDisabled       MicroReason = "disabled"          // 关闭
+	MicroNotTriggered   MicroReason = "not_triggered"     // 无触发（未到阈值且不空闲）
+	MicroNoCandidates   MicroReason = "no_candidates"     // 无可清除工具结果
+	MicroNothingToClear MicroReason = "nothing_to_clear"  // 组数 ≤ 保留数
+	MicroBelowSavings   MicroReason = "below_min_savings" // 节省不足门槛
+	MicroApplied        MicroReason = "applied"           // 已清除
 )
 
 // MicroConfig microcompact 配置。零值字段落缺省。
@@ -299,13 +299,13 @@ type MicroConfig struct {
 // MicroResult microcompact 结果：Messages 恒为完整转写（未触发时原样返回），
 // 计量与清除明细供观测。
 type MicroResult struct {
-	Reason        MicroReason
-	Trigger       MicroTrigger
-	Messages      []Message
-	TokensBefore  int
-	TokensAfter   int
-	TokensSaved   int
-	ClearedIDs    []string
+	Reason          MicroReason
+	Trigger         MicroTrigger
+	Messages        []Message
+	TokensBefore    int
+	TokensAfter     int
+	TokensSaved     int
+	ClearedIDs      []string
 	ThresholdTokens int
 }
 

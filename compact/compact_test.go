@@ -8,7 +8,7 @@ import (
 
 func TestEstimateTokensCountsToolCallArgs(t *testing.T) {
 	msgs := []Message{
-		{Role: "user", Text: "abcd"},                                   // 4 chars → 2 tokens
+		{Role: "user", Text: "abcd"}, // 4 chars → 2 tokens
 		{Role: "assistant", Text: "", ToolCalls: []ToolCall{
 			{ID: "1", Name: "read_file", ArgsJSON: `{"path":"aaaaaaaaaaaaaaaa"}`}, // 10+24=34 chars → 12
 		}},
