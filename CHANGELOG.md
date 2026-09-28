@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.10.31 (2026-09-28)
+
+pi 会话续聊 + 第五轮审计（1 确认 + 1 前四轮漏网绕过）。
+
+### Added
+
+- **acpx/pi**：会话续聊能力——`req.SessionID` → `--session-id <id>`（精确
+  按项目会话 ID 续，缺省仍 `--no-session` 一次性）；session 事件的 id 回填
+  `RunResult.SessionID`（新会话首跑即拿 id 续聊，三条返回路径全覆盖）。
+  真机往返验证：首跑存暗号 → 续聊正确回忆（跨进程会话状态持久）。Capabilities
+  增 Session。
+
+### Fixed（第五轮审计）
+
+- **bashguard（前四轮漏网的绕过面）**：前置环境赋值的动态展开未检查——
+  `X=$(rm -rf build) ls` 曾被判只读：赋值右值的命令替换在真实 shell 里先于
+  内核命令执行，判定面完全看不到（自动放行路径上可执行任意副作用）。
+  Assigns 右值逐词 literalWord 检查，含动态展开即非只读；字面前置
+  （`LC_ALL=C grep`）不受影响。
+- **skill**：CRLF 行尾的起始围栏分歧——parseFrontmatter 要求围栏后紧跟 \n，
+  `\r\n` 直接 bail（整份当正文、元数据丢失、与 Library 路径的 Content/
+  Checksum 分歧）；闭合围栏本就容忍 CRLF，两路径围栏语义现真正对齐
+  （BOM 同源家族的另一半）。
+
 ## v0.10.30 (2026-09-28)
 
 acpx 扩员 + 第四轮「修复的修复」审计。

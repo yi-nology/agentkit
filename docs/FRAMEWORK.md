@@ -1,6 +1,6 @@
 # agentkit 框架完整文档
 
-> 版本：v0.10.30 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
+> 版本：v0.10.31 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
 > 配套文档：[架构模式支持矩阵](patterns.md)（七架构何时用/何时不用）· [README](../README.md)（快速上手）
 
 > 文中架构图使用 Mermaid：Forgejo/GitHub 等端原生渲染；不支持渲染的查看端，
@@ -1441,3 +1441,6 @@ flowchart TD
   预设）——真机核实+冒烟，缺省注册 11 家；第四轮「修复的修复」审计：skill
   BOM 双路径对齐/bashguard 内联值两级查表/探测时限计入 AttemptTimeout/
   GenerateJSON 入口校验/permgate 交互段补项目 deny 等 4I+3 次级
+- **v0.10.31**：pi 会话续聊（--session-id，真机往返验证）；第五轮审计：
+  bashguard 前置赋值动态展开绕过（X=$(rm -rf build) ls 曾判只读——前四轮
+  漏网）/skill CRLF 起始围栏对齐
