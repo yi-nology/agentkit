@@ -48,7 +48,10 @@ func parseFrontmatter(content string) (name, desc, ver, body string) {
 		return "", "", "", content
 	}
 	// 定位首个 ---（起始）与结束 ---
-	rest := trimmed[3:]
+	// CRLF 容忍：起始围栏后是 \r\n 时先吃 \r（闭合围栏已容忍 CRLF，两路径
+	// 围栏语义须一致——否则 Windows 编辑器保存的文件元数据静默丢失且两
+	// Provider 的 Content/Checksum 分歧）
+	rest := strings.TrimPrefix(trimmed[3:], "\r")
 	if !strings.HasPrefix(rest, "\n") {
 		return "", "", "", content
 	}

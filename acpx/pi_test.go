@@ -114,3 +114,41 @@ func TestDshPreset(t *testing.T) {
 		}
 	}
 }
+
+// TestPiSessionResume 会话续聊：req.SessionID → --session-id（去掉 --no-session）；
+// session 事件的 id 回填 RunResult.SessionID（新会话首跑→调用方拿 id 续聊）。
+func TestPiSessionResume(t *testing.T) {
+	bin := fakeCLI(t, `echo "$@" > "$FAKE_ARGS_FILE"
+cat <<'JSONL'
+{"type":"session","id":"sess-abc"}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"续聊答复"}]}}
+JSONL`)
+	p := NewPi()
+	p.Bin = bin
+	argsFile := t.TempDir() + "/args"
+	t.Setenv("FAKE_ARGS_FILE", argsFile)
+
+	res, err := p.Run(context.Background(), RunRequest{Prompt: "x", SessionID: "sess-abc",
+		Env: []string{"FAKE_ARGS_FILE"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := readFileTrim(argsFile)
+	if !strings.Contains(raw, "--session-id sess-abc") || strings.Contains(raw, "--no-session") {
+		t.Fatalf("续聊 argv: %s", raw)
+	}
+	if res.SessionID != "sess-abc" {
+		t.Fatalf("session id 回填: %q", res.SessionID)
+	}
+	if res.Text != "续聊答复" {
+		t.Fatalf("text: %q", res.Text)
+	}
+
+	// 首跑（无 SessionID）：--no-session 在场
+	if _, err := p.Run(context.Background(), RunRequest{Prompt: "x", Env: []string{"FAKE_ARGS_FILE"}}); err != nil {
+		t.Fatal(err)
+	}
+	if raw := readFileTrim(argsFile); !strings.Contains(raw, "--no-session") {
+		t.Fatalf("首跑应一次性: %s", raw)
+	}
+}

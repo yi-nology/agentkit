@@ -52,15 +52,16 @@ func (p *Pi) Name() string {
 	return "pi"
 }
 
-// Capabilities 支持 Model（--model）；会话固定不落（--no-session），沙箱/
-// 轮数/工具白名单无对应参数。
+// Capabilities 支持 Model（--model）与 Session（--session-id 精确续聊，
+// 缺省则 --no-session 一次性）；沙箱/轮数/工具白名单无对应参数。
 func (p *Pi) Capabilities() Capability {
-	return Capability{Model: true}
+	return Capability{Model: true, Session: true}
 }
 
 type piEvent struct {
-	Type    string `json:"type"`
-	Message *struct {
+	Type      string `json:"type"`
+	SessionID string `json:"id"`
+	Message   *struct {
 		Role    string `json:"role"`
 		Model   string `json:"model"`
 		Content []struct {
@@ -80,7 +81,14 @@ type piEvent struct {
 
 // Run 执行 pi（--mode json 事件流解析）。
 func (p *Pi) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
-	argv := []string{p.bin(), "--mode", "json", "-p", "--no-session"}
+	argv := []string{p.bin(), "--mode", "json", "-p"}
+	if req.SessionID != "" {
+		// 精确续聊：--session-id 按项目会话 ID 续（不存在则创建）
+		argv = append(argv, "--session-id", req.SessionID)
+	} else {
+		// 一次性任务：不落会话（不在 ~/.pi 留状态）
+		argv = append(argv, "--no-session")
+	}
 	if m := req.Model; m != "" {
 		argv = append(argv, "--model", m)
 	} else if p.DefaultModel != "" {
@@ -91,12 +99,16 @@ func (p *Pi) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	var usage Usage
 	var cost float64
 	var lastText string
+	var sessionID string
 	var sawAssistant bool
 	var abortLine string
 	onLine := func(line string) {
 		var ev piEvent
 		if err := json.Unmarshal([]byte(line), &ev); err != nil {
 			return // 非事件行（插件告警等到 stderr，stdout 内杂行忽略）
+		}
+		if ev.Type == "session" && ev.SessionID != "" {
+			sessionID = ev.SessionID
 		}
 		switch {
 		case ev.Type == "message_end" && ev.Message != nil && ev.Message.Role == "assistant":
@@ -136,7 +148,7 @@ func (p *Pi) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		// 有 assistant 终态（agent 正常完成但退出码非零）：以结果为准
 		if sawAssistant && lastText != "" {
 			usage.CostUSD = cost
-			return &RunResult{Text: lastText, Usage: usage, ExitCode: code, Raw: []byte(stdout)}, nil
+			return &RunResult{Text: lastText, SessionID: sessionID, Usage: usage, ExitCode: code, Raw: []byte(stdout)}, nil
 		}
 		return nil, err
 	}
@@ -144,10 +156,12 @@ func (p *Pi) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		return nil, fmt.Errorf("acpx: pi 中止: %s", textutil.TruncEllipsis(abortLine, 400))
 	}
 	if !sawAssistant || lastText == "" {
-		return fallbackResult(stdout, code), nil
+		r := fallbackResult(stdout, code)
+		r.SessionID = sessionID
+		return r, nil
 	}
 	usage.CostUSD = cost
-	return &RunResult{Text: lastText, Usage: usage, ExitCode: code, Raw: []byte(stdout)}, nil
+	return &RunResult{Text: lastText, SessionID: sessionID, Usage: usage, ExitCode: code, Raw: []byte(stdout)}, nil
 }
 
 func (p *Pi) bin() string {

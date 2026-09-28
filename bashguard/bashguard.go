@@ -161,6 +161,23 @@ func (t *Table) evalCall(call *mvdan.CallExpr, invocations *[]Invocation) string
 		}
 		argv = append(argv, s)
 	}
+	// 前置环境赋值（FOO=… cmd）的右值同样必须字面：赋值里的命令替换/参数展开
+	// 在真实 shell 里先于内核命令执行——X=$(rm -rf build) ls 的副作用判定面
+	// 曾完全看不到（第五轮审计修复）
+	for _, a := range call.Assigns {
+		if a.Naked || a.Value == nil {
+			continue
+		}
+		if _, dyn := literalWord(a.Value); dyn {
+			name := ""
+			if len(call.Args) > 0 {
+				n, _ := literalWord(call.Args[0])
+				name = n
+			}
+			invocationsAdd(invocations, Invocation{Name: name, Args: argv, Dynamic: true})
+			return fmt.Sprintf("前置赋值 %s=… 含动态展开（命令替换/参数展开先于命令执行）", a.Name.Value)
+		}
+	}
 	// 命令名本身动态 = 无法判定目标
 	name := ""
 	if len(call.Args) > 0 {
