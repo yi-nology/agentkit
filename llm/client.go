@@ -244,6 +244,12 @@ func backoffDelay(attempt int, base, ceil time.Duration, err error) time.Duratio
 // 会改变输出内容，而本方法的失败路径要回喂重试，lastErr 须是纯解析错误。
 // 宽容回收半损坏输出归 jsonrepair.Unmarshal（无重试回喂的场景用）。
 func (c *Client) GenerateJSON(ctx context.Context, stage string, msgs []*schema.Message, out any) error {
+	// 入口校验（reflect 改写前）：out 必须是非 nil 指针——原 json.Unmarshal 对
+	// 误用返回 InvalidUnmarshalError，reflect 路径不校验会 panic
+	rv := reflect.ValueOf(out)
+	if rv.Kind() != reflect.Pointer || rv.IsNil() {
+		return fmt.Errorf("llm: %s GenerateJSON 的 out 必须是非 nil 指针（got %T）", stage, out)
+	}
 	ctx = obsx.WithStage(ctx, stage)
 	msgs = copyMsgs(msgs)
 	var lastErr error

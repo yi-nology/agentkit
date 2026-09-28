@@ -1,5 +1,5 @@
 // Package acpx 统一调用 CLI Coding Agent（claude / zcode / codex / opencode /
-// minimax / kimi / gemini / qwen / mimo 共 9 家，另有 GenericAgent 通用出口）。
+// minimax / kimi / gemini / qwen / mimo / pi / dsh 共 11 家，另有 GenericAgent 通用出口）。
 //
 // 核心抽象：Agent 接口把各家 headless 模式收敛为统一契约——
 //

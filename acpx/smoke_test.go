@@ -48,3 +48,39 @@ func TestSmokeMimoReal(t *testing.T) {
 		t.Fatal("Text 不应为空")
 	}
 }
+
+func TestSmokePiReal(t *testing.T) {
+	if !smokeEnabled() {
+		t.Skip("ACPX_SMOKE 未设置，跳过真实 agent 冒烟")
+	}
+	p := NewPi()
+	res, err := p.Run(context.Background(), RunRequest{
+		Prompt:  "只回复两个字符：ok",
+		Timeout: 180 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("真实 pi 冒烟失败: %v", err)
+	}
+	t.Logf("Text=%q Usage=%+v", res.Text, res.Usage)
+	if res.Text == "" {
+		t.Fatal("Text 不应为空")
+	}
+}
+
+func TestSmokeDshReal(t *testing.T) {
+	if !smokeEnabled() {
+		t.Skip("ACPX_SMOKE 未设置，跳过真实 agent 冒烟")
+	}
+	d := NewDsh()
+	res, err := d.Run(context.Background(), RunRequest{
+		Prompt:  "只回复两个字符：ok",
+		Timeout: 180 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("真实 dsh 冒烟失败: %v", err)
+	}
+	t.Logf("Text=%q", res.Text)
+	if res.Text == "" {
+		t.Fatal("Text 不应为空")
+	}
+}

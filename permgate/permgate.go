@@ -108,8 +108,13 @@ func (s *Service) Check(ctx context.Context, tool string, input any, mode Mode, 
 		return Decision{Behavior: b, RuleID: ruleID, Reason: reason}
 	}
 	if cap.RequiresUserInteraction {
+		// 硬禁与项目 deny 同样压过交互段——被 deny 的交互型工具不该退化成
+		// 「弹窗一点就能跑」（与 alwaysAsk 段同纪律）
 		if s.DisallowedTools[tool] {
 			return d(Deny, "rule.disallowedTools", "工具被显式禁用: "+tool)
+		}
+		if s.matchRules(&s.ProjectRules.Deny, tool, input) {
+			return d(Deny, "rule.project.deny", "项目规则拒绝: "+tool)
 		}
 		return d(Ask, "tool.userInteraction", "交互型工具需要用户参与: "+tool)
 	}

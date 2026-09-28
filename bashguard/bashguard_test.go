@@ -213,3 +213,20 @@ func TestCustomTable(t *testing.T) {
 		t.Fatal("不在自定义表应拒绝")
 	}
 }
+
+// TestInlineValueStringFlagRegression 回归（v0.10.30 第四轮审计）：bool 型
+// flag 的内联值形态（git log --format=%H / blame --date=iso）经 base+"=" 表键
+// 放行——曾被「只查 optional/string」分支拒绝，readonly 快路径对 git log 失效。
+func TestInlineValueStringFlagRegression(t *testing.T) {
+	readonly := []string{
+		"git log --format=%H -5",
+		"git log --pretty=oneline",
+		"git blame --date=iso main.go",
+		"git reflog --date=iso",
+	}
+	for _, cmd := range readonly {
+		if d := Analyze(cmd, nil); !d.ReadOnly {
+			t.Errorf("%q 应只读: %s", cmd, d.Reason)
+		}
+	}
+}

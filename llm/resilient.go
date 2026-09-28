@@ -120,7 +120,7 @@ type ResilientConfig struct {
 	BreakerProbeTimeout time.Duration
 }
 
-func (c *ResilientConfig) fillDefaults() {
+func (c *ResilientConfig) fillDefaults(attemptBudget time.Duration) {
 	if c.RetriesPerModel <= 0 {
 		c.RetriesPerModel = 2
 	}
@@ -137,8 +137,8 @@ func (c *ResilientConfig) fillDefaults() {
 		c.MaxDelay = 30 * time.Second
 	}
 	if c.BreakerProbeTimeout <= 0 {
-		// 单模型最坏在途 = (重试+1) 次 × (退避上限 + 单次尝试预算余量 90s)
-		c.BreakerProbeTimeout = time.Duration(c.RetriesPerModel+1) * (c.MaxDelay + 90*time.Second)
+		// 单模型最坏在途 = (重试+1) 次 × (退避上限 + 单次尝试预算)。尝试预算
+		c.BreakerProbeTimeout = time.Duration(c.RetriesPerModel+1) * (c.MaxDelay + attemptBudget)
 	}
 }
 
@@ -176,7 +176,17 @@ func NewResilient(chain *FallbackChain, cfg ResilientConfig) (*Resilient, error)
 	if chain == nil || len(chain.Providers) == 0 {
 		return nil, fmt.Errorf("llm: Resilient 需要至少一个 Provider")
 	}
-	cfg.fillDefaults()
+	// 尝试预算 = max(90s, 链上 provider 声明的单次尝试限时)——探测时限推导须
+	// 覆盖最坏在途（长超时配置下半开隔离才不失效）
+	budget := 90 * time.Second
+	for _, p := range chain.Providers {
+		if tp, ok := p.(timeoutProvider); ok {
+			if d := tp.AttemptTimeout(); d > budget {
+				budget = d
+			}
+		}
+	}
+	cfg.fillDefaults(budget)
 	return &Resilient{
 		chain: chain,
 		cfg:   cfg,

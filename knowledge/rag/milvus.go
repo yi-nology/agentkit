@@ -123,9 +123,11 @@ func (s *MilvusStore) ensureCollection(ctx context.Context) error {
 // 幂等：成功路径上先清该文件旧数据再写入——文件变短（删章节/内容精简）时
 // chunk 数变少，只 Upsert 新块会残留 chunk_M..N-1 旧行携带过期内容参与检索
 // 挤占 topK（与 Local.Rescan 的全量重建同语义）。
-// 顺序：chunk → Embed 成功 → Delete → Upsert。Embed 是外部网络调用，先删后
-// 嵌的失败路径会把旧索引一并清掉（该文件从检索面静默消失，比调用前更糟）；
-// 倒序后失败只发生在写入前，旧数据完好。
+// 顺序：chunk → Embed 成功 → Delete → Upsert。Embed 是外部网络调用（抖动/
+// 限流/超时是常规事件），先删后嵌会把旧索引一并清掉；倒序后最常见的失败
+// （embedding）不再动旧数据。残余窗口：Delete 成功而 Upsert/Flush 失败时旧
+// 数据已删新数据未写（该文件暂时从检索面消失，直到下次 Index 重建）——
+// 该窗口远小于原形态且失败以错误上抛，调用方可重试。
 func (s *MilvusStore) Index(ctx context.Context, file string, content string) error {
 	chunks := chunkMarkdown(content)
 	if len(chunks) == 0 {

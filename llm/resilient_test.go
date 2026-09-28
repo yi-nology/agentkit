@@ -49,7 +49,7 @@ func TestNewResilientEmptyChain(t *testing.T) {
 
 func TestResilientConfigDefaults(t *testing.T) {
 	cfg := ResilientConfig{}
-	cfg.fillDefaults()
+	cfg.fillDefaults(90 * time.Second)
 	if cfg.RetriesPerModel != 2 {
 		t.Fatalf("默认重试应为 2，得到 %d", cfg.RetriesPerModel)
 	}
@@ -490,7 +490,7 @@ func TestChainFailoverModel(t *testing.T) {
 // 推导并接线 WithProbeTimeout（此前用 Breakers 缺省 1 分钟，半开隔离必然失效）。
 func TestResilientProbeTimeoutDerived(t *testing.T) {
 	cfg := ResilientConfig{MaxDelay: 30 * time.Second}
-	cfg.fillDefaults()
+	cfg.fillDefaults(90 * time.Second)
 	if cfg.RetriesPerModel != 2 {
 		t.Fatalf("默认重试: %d", cfg.RetriesPerModel)
 	}
@@ -500,7 +500,7 @@ func TestResilientProbeTimeoutDerived(t *testing.T) {
 	}
 	// 显式配置直传
 	cfg2 := ResilientConfig{BreakerProbeTimeout: 7 * time.Second}
-	cfg2.fillDefaults()
+	cfg2.fillDefaults(90 * time.Second)
 	if cfg2.BreakerProbeTimeout != 7*time.Second {
 		t.Fatalf("显式配置应直传: %v", cfg2.BreakerProbeTimeout)
 	}

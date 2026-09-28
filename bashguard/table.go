@@ -55,7 +55,6 @@ func defaultCommands() map[string]Policy {
 		"hostname":  ro(bools("-f", "-s", "-i", "-I", "-a", "-d", "-y", "-n")),
 		"pwd":       ro(bools("-L", "-P")),
 		"date":      ro(with(bools("-u", "-R", "-r", "-q", "-I", "-U"), "-d", "string", "-s", "string", "+FORMAT", "string", "-v", "string", "-j", "string", "-f", "string")),
-		"env":       ro(with(bools("-i", "-0"), "-", "bool")), // 裸 env=打印环境（只读）
 		"printenv":  ro(bools("-0")),
 		"echo":      ro(bools("-n", "-e")),
 		"printf":    ro(bools()),
@@ -82,16 +81,16 @@ func defaultCommands() map[string]Policy {
 	// git 子命令表（核心只读集；不在表=非只读）
 	gitSubs := map[string]Policy{
 		"status":    ro(with(bools("-s", "-b", "--porcelain", "--short", "--long", "-z", "-v", "--ignored", "--no-renames", "--find-renames"), "-u", "bool", "--untracked-files", "optional", "--column", "optional", "--ahead-behind", "bool")),
-		"log":       ro(with(bools("--oneline", "-p", "--stat", "--shortstat", "--graph", "--decorate", "--all", "--follow", "--name-only", "--name-status", "-z", "--no-merges", "--merges", "--first-parent", "--reverse", "--color", "-i", "-g", "--raw", "--numstat", "--dirstat", "--compact-summary", "--format", "-1", "-2", "-3", "-4", "-5", "--relative-date", "--date", "--pretty", "-n"), "--since", "string", "--until", "string", "--author", "string", "--grep", "string", "-G", "string", "-S", "string", "--max-count", "string", "--skip", "string", "-L", "string", "--format=", "string")),
+		"log":       ro(with(bools("--oneline", "-p", "--stat", "--shortstat", "--graph", "--decorate", "--all", "--follow", "--name-only", "--name-status", "-z", "--no-merges", "--merges", "--first-parent", "--reverse", "--color", "-i", "-g", "--raw", "--numstat", "--dirstat", "--compact-summary", "--format", "-1", "-2", "-3", "-4", "-5", "--relative-date", "--date", "--pretty", "-n"), "--since", "string", "--until", "string", "--author", "string", "--grep", "string", "-G", "string", "-S", "string", "--max-count", "string", "--skip", "string", "-L", "string", "--format=", "string", "--pretty=", "string")),
 		"diff":      ro(with(bools("--stat", "--shortstat", "--cached", "--staged", "-p", "-u", "--name-only", "--name-status", "--raw", "--numstat", "-z", "--no-color", "--color", "--word-diff", "--check", "--summary", "--exit-code", "--quiet", "-M", "-C", "--find-renames", "--find-copies", "--abbrev", "--full-index", "--binary", "--patch-with-stat", "-R", "-a", "--text", "--ignore-all-space", "--ignore-space-change", "-b", "-w", "--ignore-blank-lines", "--ignore-cr-at-eol", "-U", "--unified", "--function-context", "-W"), "-U", "optional", "--unified", "optional", "--anchored", "string", "--diff-filter", "string", "-l", "string", "--inter-hunk-context", "string", "--output-indicator-new", "string")),
 		"show":      ro(with(bools("--stat", "--shortstat", "-s", "--format", "--oneline", "--name-only", "--name-status", "--raw", "--numstat", "-p", "-u", "--no-patch", "--abbrev-commit", "--no-notes", "--notes", "--pretty"), "--format", "optional", "--pretty", "optional", "-S", "string", "-G", "string")),
-		"blame":     ro(with(bools("-p", "--porcelain", "--line-porcelain", "-c", "-f", "-n", "-e", "-w", "-M", "-C", "--no-abbrev", "--root", "--show-stats", "--date", "-t", "-l"), "-L", "string", "--since", "string", "-S", "string", "--contents", "string")),
+		"blame":     ro(with(bools("-p", "--porcelain", "--line-porcelain", "-c", "-f", "-n", "-e", "-w", "-M", "-C", "--no-abbrev", "--root", "--show-stats", "--date", "-t", "-l"), "-L", "string", "--since", "string", "-S", "string", "--contents", "string", "--date=", "string")),
 		"rev-parse": ro(bools("--short", "--verify", "--quiet", "-q", "--git-dir", "--show-toplevel", "--is-inside-work-tree", "--is-bare-repository", "--abbrev-ref", "--symbolic-full-name", "--show-prefix", "--show-cdup", "--absolute-git-dir", "--all", "--branches", "--tags", "--remotes", "--default", "--sq", "--revs-only", "--no-revs", "--flags", "--no-flags", "--local-env-vars")),
 		"ls-files":  ro(with(bools("-c", "--cached", "-d", "--deleted", "-m", "--modified", "-o", "--others", "-i", "--ignored", "-s", "--stage", "-u", "--unmerged", "-k", "--killed", "-z", "-x", "-X", "--full-name", "--abbrev", "--debug", "-t", "-v", "-f", "--eol", "--sparse"), "--exclude", "string", "--exclude-from", "string", "--exclude-per-directory", "string", "--error-unmatch", "bool")),
 		"ls-remote": ro(with(bools("--heads", "-h", "--tags", "-t", "--refs", "--quiet", "-q", "--exit-code", "--get-url", "--symref", "--sort"), "--sort", "optional", "-o", "string")),
 		"describe":  ro(with(bools("--all", "--tags", "--contains", "--abbrev", "--candidates", "--exact-match", "--debug", "--long", "--match", "--always", "--first-parent", "--exclude", "--dirty", "--broken"), "--match", "string", "--exclude", "string", "--abbrev", "optional", "--candidates", "optional")),
 		"shortlog":  ro(bools("-n", "-s", "-e", "-w", "--summary", "--email", "--numbered", "--committer", "--group")),
-		"reflog":    ro(with(bools("--all", "--date", "--relative-date", "--oneline", "--no-abbrev"), "--since", "string", "--until", "string", "-n", "string")),
+		"reflog":    ro(with(bools("--all", "--date", "--relative-date", "--oneline", "--no-abbrev"), "--since", "string", "--until", "string", "-n", "string", "--date=", "string")),
 		"remote": Policy{ReadOnly: true,
 			SafeFlags: bools("-v", "--verbose"), // git remote -v = 列表（带 URL）
 			Subcommands: map[string]Policy{

@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"errors"
 	"testing"
 )
@@ -103,5 +104,23 @@ func TestRetryableLLMError(t *testing.T) {
 	}
 	if !RetryableLLMError(errors.New("500 internal error")) {
 		t.Error("500 应可重试")
+	}
+}
+
+// TestGenerateJSONMisuseReturnsError 回归（v0.10.30 第四轮审计）：out 非指针/
+// nil 指针返回可捕获错误而非 panic（reflect 改写曾把 InvalidUnmarshalError
+// 退化成击穿 panic）。
+func TestGenerateJSONMisuseReturnsError(t *testing.T) {
+	c := NewClient(nil, "stub", nil)
+	if err := c.GenerateJSON(context.Background(), "t", nil, struct{}{}); err == nil {
+		t.Fatal("值类型 out 应报错")
+	}
+	var m map[string]any
+	if err := c.GenerateJSON(context.Background(), "t", nil, m); err == nil {
+		t.Fatal("非指针 out 应报错")
+	}
+	var ptr *struct{ A int }
+	if err := c.GenerateJSON(context.Background(), "t", nil, ptr); err == nil {
+		t.Fatal("nil 指针 out 应报错")
 	}
 }

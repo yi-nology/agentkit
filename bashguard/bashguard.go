@@ -301,11 +301,16 @@ func flagLookup(a string, pol Policy) (bool, FlagKind) {
 	if kind, ok := pol.SafeFlags[a]; ok {
 		return true, kind
 	}
-	// --flag=value：值内联，仅 optional/string 型放行
+	// --flag=value：值内联。两级查表：先查 base 本键（optional/string 型放行）；
+	// miss 或 bool 型再查 base+"=" 显式内联键（表里 "--format=" 形态的键——
+	// 登记 bool 的 flag（git log --format/%H 这类）经此路径支持内联值）
 	if base, val, found := strings.Cut(a, "="); found && strings.HasPrefix(base, "--") {
 		if kind, ok := pol.SafeFlags[base]; ok && (kind == FlagOptional || kind == FlagString) {
 			_ = val
 			return true, FlagBool // 值已内联，不吃下一参
+		}
+		if _, ok := pol.SafeFlags[base+"="]; ok {
+			return true, FlagBool
 		}
 		return false, ""
 	}

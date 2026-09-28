@@ -42,6 +42,7 @@ func findClosingFence(rest string) (blockEnd, bodyStart int, ok bool) {
 // 最小子集：--- 围栏内的 name/description/version 行）。零依赖：不引 yaml 解析器，
 // 不认识的键忽略——skill 正文才是消费主体，元数据只服务发现与决策。
 func parseFrontmatter(content string) (name, desc, ver, body string) {
+	content = stripBOM(content)
 	trimmed := strings.TrimLeft(content, " \t\r\n")
 	if !strings.HasPrefix(trimmed, "---") {
 		return "", "", "", content
@@ -93,6 +94,12 @@ func trimQuoted(v string) string {
 	return v
 }
 
+// stripBOM 剥 UTF-8 BOM（Windows 编辑器常见产物；带 BOM 的 SKILL.md 若不剥，
+// "---" 前缀判定失败、整份被当正文、元数据静默丢失）。
+func stripBOM(content string) string {
+	return strings.TrimPrefix(content, "\ufeff")
+}
+
 // ParseRichFrontmatter 用 yaml 解析 SKILL.md frontmatter（name/description/mode/
 // version/maturity/requires_mcp/deprecated/compatibility）。返回元数据与正文。
 // frontmatter name 写入 Title（展示名）；目录名仍作规范 Name。
@@ -101,7 +108,7 @@ func ParseRichFrontmatter(dirName, content string) (LibMeta, string, error) {
 	body := content
 	// BOM/前导空白容忍（与 parseFrontmatter 口径对齐）：带前导空行或 UTF-8 BOM
 	// 的 SKILL.md 曾被整份当正文，元数据静默丢失
-	content = strings.TrimPrefix(content, "\ufeff")
+	content = stripBOM(content)
 	trimmed := strings.TrimLeft(content, "\r\n\t ")
 	if !strings.HasPrefix(trimmed, "---") {
 		return meta, body, nil

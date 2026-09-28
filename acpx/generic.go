@@ -35,6 +35,13 @@ func NewMinimax() *GenericAgent {
 	return NewGenericAgent("minimax", []string{"minimax-code", "run", "{prompt}"}, false)
 }
 
+// NewDsh dsh（DeepSeek Harness）预设：headless profile 单任务出口——
+// `dsh --profile headless "<task>"` 打印最终 assistant 消息后退出（2026-09-28
+// 本机真实 CLI 核实：stdout 即最终答复、exit 0；无 JSON/会话/模型参数面）。
+func NewDsh() *GenericAgent {
+	return NewGenericAgent("dsh", []string{"dsh", "--profile", "headless", "{prompt}"}, false)
+}
+
 func (g *GenericAgent) Name() string {
 	if g.AgentName != "" {
 		return g.AgentName

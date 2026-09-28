@@ -33,6 +33,8 @@ func NewRegistry() *Registry {
 	r.Register(NewGemini())
 	r.Register(NewQwen())
 	r.Register(NewMimo())
+	r.Register(NewPi())
+	r.Register(NewDsh())
 	return r
 }
 
