@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.10.30 (2026-09-28)
+
+acpx 扩员 + 第四轮「修复的修复」审计。
+
+### Added
+
+- **acpx**：新 agent 两家（均经本机真实 CLI 核实 + 真机冒烟通过）——
+  - **pi**（pi-coding-agent，专用适配器）：`pi --mode json -p --no-session`
+    JSONL 事件流解析——assistant message_end 的 text 内容块聚合正文（thinking
+    块不计入）、usage/cost 提取、abort 类事件如实报错（exit=0 中止不静默）、
+    `--model provider/id` 支持 + DefaultModel 回退、无事件流走全文兜底。
+    保留本机扩展/技能/AGENTS.md 发现（编码任务需要环境）。
+  - **dsh**（DeepSeek Harness，GenericAgent 预设）：`dsh --profile headless
+    "<task>"` 单任务出口（stdout 即最终答复，真机核实 exit 0）。
+  缺省注册 9→11 家。
+
+### Fixed（第四轮审计：修复的修复）
+
+- **skill**：BOM 修复只落了 ParseRichFrontmatter——parseFrontmatter（FileProvider
+  主加载路径）仍不剥 BOM，带 BOM 的 SKILL.md 整份被当正文、元数据静默丢失、
+  `---` 围栏泄漏进提示词。共用 stripBOM 双路径对齐 + FileProvider 级回归。
+- **bashguard**：内联值修复不完整——bool 型 flag 的 `--flag=value` 形态
+  （`git log --format=%H`/`--pretty=oneline`/`blame --date=iso`）仍被拒，
+  readonly 快路径对 git log 基本失效。flagLookup 两级查表（base 本键 +
+  base+"=" 显式内联键，后者让表里既有死键活过来）。
+- **llm**：BreakerProbeTimeout 推导硬编码 90s 每尝试预算——provider 配置
+  600s AttemptTimeout 时半开探测仍会被判失联、并发第二探测放行（v0.10.28
+  修的隔离在长配置下复现）。预算改为 max(90s, 链上 AttemptTimeout 最大值)。
+- **llm**：GenerateJSON 的 reflect 改写把误用（值类型/nil 指针 out）从
+  InvalidUnmarshalError 可捕获错误退化成 panic。入口校验恢复错误语义。
+- **permgate**：交互型工具段补项目 deny——被 deny 的交互型工具曾退化为
+  「弹窗一点就能跑」的 ask（与 alwaysAsk 段纪律对齐）。
+- **bashguard**：env 的死只读配置删除（被 wrapper 定义覆盖，内含永不匹配键）。
+- **rag/Milvus**：Index 注释修正（Delete 成功后 Upsert 失败的残余窗口如实
+  声明，不再宣称「旧数据完好」）。
+
+### 备注
+
+- eino v0.10 仍无正式版（最新 v0.10.0-alpha.35），维持 v0.9.21——工具箱
+  不上 alpha；eino-ext 组件无更新。
+
 ## v0.10.29 (2026-09-27)
 
 审计盲区补全轮：agentrun 与 mcp 包本体两路独立复查（此前两轮审计未覆盖的

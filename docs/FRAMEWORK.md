@@ -1,6 +1,6 @@
 # agentkit 框架完整文档
 
-> 版本：v0.10.29 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
+> 版本：v0.10.30 · Go ≥ 1.26 · 模块路径 `git.enjoye.top/enjoydream/agentkit`
 > 配套文档：[架构模式支持矩阵](patterns.md)（七架构何时用/何时不用）· [README](../README.md)（快速上手）
 
 > 文中架构图使用 Mermaid：Forgejo/GitHub 等端原生渲染；不支持渲染的查看端，
@@ -64,7 +64,7 @@
 ├──────────────────────────────────────────────────────────────┤
 │ L1 模型层  llm(Client/Resilient 降级链/Budget/StageRouter/成本)  │
 ├──────────────────────────────────────────────────────────────┤
-│ L4 工具与上下文  acpx(9家CLI agent)  mcp(工具池)  workcopy(副本) │
+│ L4 工具与上下文  acpx(11家CLI agent) mcp(工具池)  workcopy(副本) │
 │                 knowledge/rag(双后端检索)  websearch  textutil   │
 │                 pack(包契约清单)  lineage(装配血缘图)             │
 │                 fence(数据区围栏)  egress(出口围栏/SSRF)         │
@@ -101,7 +101,7 @@
 | `dispatch` | 通用派发守卫：allow 矩阵 + 深度上限 + 自派发拒绝（EdgeSource 拓扑注入，DenyError 结构化拒绝） | 无 | v0.9.5 |
 | `policy` | 操作审计门：四模式统一操作裁决（例外规则→矩阵→fail-safe 兜底 + Arbiter 灰区仲裁 + AuditGate 工具装饰器） | eino, yaml | v0.9.6 |
 | `clarify` | 澄清/标准化词表内核：term_map 模型/加载/内在校验 + OrdinalIndex 序数指代 + ResolveAnswer 回答消解 | yaml | v0.9.7 |
-| `acpx` | 9 家 CLI 编码 agent 统一调用（执行纪律经 procx） | eino | v0.1.0 后（v0.10.11 进程托管迁 procx） |
+| `acpx` | 11 家 CLI 编码 agent 统一调用（执行纪律经 procx） | eino | v0.1.0 后（v0.10.11 进程托管迁 procx；v0.10.30 增 pi/dsh） |
 | `mcp` | MCP server 工具池（lazy 建连/env 白名单/工具白名单）+ UnwrapMCPText | eino, eino-ext tool/mcp, mcp-go | v0.5.0（v0.9.0 unwrap） |
 | `workcopy` | Git 工作副本沙箱（singleflight + 引用计数 + 保留复用/增量刷新 + TTL 兜底回收） | ekit, x/sync | v0.1.0（v0.10.6 保留复用+增量刷新） |
 | `knowledge/rag` | 双后端 RAG：Local TF-IDF + Milvus 向量 | eino, milvus-sdk-go | v0.1.0 |
@@ -660,11 +660,12 @@ type Decl struct{ Name, Version string; Optional bool }    // agent.yaml skills 
 
 ### acpx —— CLI 编码 agent 统一调用
 
-9 家 CLI agent（claude/zcode/codex/opencode/minimax/kimi/gemini/qwen/mimo）+
+11 家 CLI agent（claude/zcode/codex/opencode/minimax/kimi/gemini/qwen/mimo/
+pi/dsh）+
 GenericAgent 通用出口，统一契约：
 
 ```go
-reg := acpx.NewRegistry() // 缺省注册 9 家
+reg := acpx.NewRegistry() // 缺省注册 11 家
 res, err := reg.Run(ctx, "claude", acpx.RunRequest{
     Prompt: "修复 X", WorkDir: repo, Sandbox: acpx.SandboxReadonly,
     MaxTurns: 20, Timeout: 10 * time.Minute,
@@ -1254,7 +1255,7 @@ webhook/poller ──▶ worker pool（多副本，ClaimNextPending 分片 + 心
                       │   R2 变更理解（长 diff 分块 textutil.SplitRunes）
                       │   R3 完成度判定（agentrun ReAct + toolprior 工具表：
                       │        get_file/get_diff → search_knowledge/use_skill → MCP 限 5 次）
-                      │   R4 专家 fan-out（builtin ReAct / cli=procx.Run / acpx=9 家 CLI；
+                      │   R4 专家 fan-out（builtin ReAct / cli=procx.Run / acpx=11 家 CLI；
                       │        squads 交叉编队；预算裁剪；熔断门）
                       │   R5 Merger（severity 指纹去重 + 跨轮抑制 + 交叉分歧标注）
                       ├─ workcopy 沙箱（引用计数；实例隔离目录）
@@ -1436,3 +1437,7 @@ flowchart TD
   （实例比对 evict）/ReapIdle 目录不失效/OAuth 错误链 %v 吞没/Close 后
   reaper 泄漏；agentrun P&E 默认规划提示词被 GenInputFn 丢弃（追加注入语义
   兑现）；acpx Registry 并发守卫；pglease DB 时钟统一；breaker 配对契约显式化
+- **v0.10.30**：acpx 增员 pi（专用适配器，JSONL 事件流）+ dsh（GenericAgent
+  预设）——真机核实+冒烟，缺省注册 11 家；第四轮「修复的修复」审计：skill
+  BOM 双路径对齐/bashguard 内联值两级查表/探测时限计入 AttemptTimeout/
+  GenerateJSON 入口校验/permgate 交互段补项目 deny 等 4I+3 次级

@@ -1,7 +1,7 @@
 # agentkit
 
 AI Agent 开发工具箱 —— 从生产项目提炼的通用组件库：代码审查平台 **Argus** + 智能运维多智能体平台 **bianque** + LLM 评测/观测平台 **heimdallr**。
-当前版本 **v0.10.29** · Go ≥ 1.26 · 43 个包。
+当前版本 **v0.10.30** · Go ≥ 1.26 · 43 个包。
 
 > 📖 **完整框架文档**：[docs/FRAMEWORK.md](docs/FRAMEWORK.md) —— 设计原则、六层架构、
 > 各包逐一详解（API/示例/边界契约）、横向能力专题（可靠性/成本/多副本/安全）、
@@ -65,7 +65,7 @@ git.enjoye.top/enjoydream/agentkit
 
 | 包 | 说明 | 外部依赖 |
 |---|---|---|
-| `acpx` | CLI 编码 agent 统一调用（9 家 + GenericAgent，执行纪律经 procx） | eino |
+| `acpx` | CLI 编码 agent 统一调用（11 家 + GenericAgent，执行纪律经 procx） | eino |
 | `llm` | LLM 客户端（重试/限速/预算/fitInput/JSON + Resilient 降级链 + StageRouter + CostTracker + UsageHandler + 流恢复原语/空终态检测/busy 退避 v0.10.25） | eino, eino-ext openai, x/time |
 | `toolprior` | 工具优先级决策层（提示词/排序/限流三层约束） | eino |
 | `toolsched` | 工具并发调度器（注解驱动并行判定 + 依赖拓扑分组执行，v0.10.23） | 无 |
@@ -113,7 +113,7 @@ git.enjoye.top/enjoydream/agentkit
 ```go
 import "git.enjoye.top/enjoydream/agentkit/acpx"
 
-// 缺省注册 9 家：claude/zcode/codex/opencode/minimax/kimi/gemini/qwen/mimo
+// 缺省注册 11 家：claude/zcode/codex/opencode/minimax/kimi/gemini/qwen/mimo/pi/dsh
 reg := acpx.NewRegistry()
 
 // 直接调用
