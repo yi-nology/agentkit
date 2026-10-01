@@ -1,5 +1,50 @@
 # Changelog
 
+## v0.10.38 (2026-10-01)
+
+第七轮：重构收口轮——第六轮审计「留观察」的结构性重构清单落地（破坏式）。
+
+### Changed（破坏式）
+
+- **agentrun**：入口族收敛——`Run`/`RunWithEvents`/`RunWithRetry`/
+  `RunWithEventsAndRetry` 四个导出入口 → 唯一入口
+  `Run(ctx, cfg, query, ...RunOption)` + `WithOnEvent` / `WithRetry` 正交
+  组合。此前 retryQuery 是独立参数而 RetryAfterMutation 却在 Config，签名
+  不对称；收敛后守卫逻辑单源。文档示例（README/FRAMEWORK/patterns）同步。
+- **mcp**：`Pool.Tools` 返回 `ToolsResult{Tools; Failed map[string]error}`——
+  被容忍的失败面（建连/列举失败、白名单未命中）程序化可见，调用方无须
+  消费 OnError 副作用即可区分「失败被容忍」与「真的没工具」；调用方取消
+  不记入 Failed（本地取消 ≠ server 失败，缓存冷时仍返回 ctx.Err()）。
+- **lineage**：`Hub.Set` 去返回值（返回的一直是调用方传入的 lin，零信息量
+  还暗示不存在的语义）。
+- **acpx**：`RunResult.Stderr` 新增（≤400 rune 尾巴）——runCLI 此前把 stderr
+  整条丢弃，CLI 告警/弃用提示在 transcript 上不可见；namedAgent 注册身份
+  单源（ClaudeCode/Gemini/Mimo/Pi 四家 Name/bin 兜底逐字重复收敛，零值
+  适配器的可执行名有兜底）；GenericAgent 模板内联占位符 fail-fast
+  （`--model={model}` 不展开、能力推导不到，曾以字面量泄漏进 argv 静默错跑）。
+
+### Fixed / 改进
+
+- **llm**：estimateTokens 收敛 `textutil.EstTokensOf` 单源（此前 bytes/4 与
+  包内 chars/3 两套口径并存，中文场景估算漂移 4~5 倍）；backoffDelay 的
+  jitter 改按当次 delay 幅度（base/2 基准在高 attempt 档抖动占比趋近于零，
+  打散失效）；「已重试 N 次」错误文案改真实计数（此前按 policy 上限谎报，
+  401 首败也报「已重试 2 次」）。
+- **permgate**：hardDeny 硬阻断单源（checkUserInteraction/checkAlwaysAsk/
+  checkStandard 三段逐字重复）；subjects 多面匹配——同一输入的
+  command/url/file_path 全部参与匹配（此前命中首字段即返回，command 与
+  file_path 并存的输入里路径规则永不生效）。
+- **toolsched**：plan/Schedule/Execute 拆分——Execute 的 runner 用依赖计数
+  放行、不消费层级分组，此前内部整跑一遍 Schedule 白算 Groups。
+- **rag**：Milvus 索引行 milvusRow 结构化（id/content/heading/file 四平行
+  切片靠约定对齐的下标错位面消除）；`Local.Rescan` 并发收敛单份（scanning
+  标志让位——多 goroutine 同时判过期此前各扫一遍，大目录内存峰值按并发数
+  放大；换入后对所有人可见）。
+- **compact**：Role 词表常量化（RoleUser/RoleAssistant/RoleTool——魔法字符
+  串散落两文件，拼错即静默改变分组行为；值不变零迁移）。
+- **acpx/pi**：`"error":null` 的事件不再转发字面 "null" 文案（仅回调文本
+  面，判定不受影响）。
+
 ## v0.10.37 (2026-10-01)
 
 diffx unified diff 解析纯函数（新包）+ textutil.FirstNonEmpty——收编自 argus。

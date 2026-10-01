@@ -1,7 +1,7 @@
 # agentkit
 
 AI Agent 开发工具箱 —— 从生产项目提炼的通用组件库：代码审查平台 **Argus** + 智能运维多智能体平台 **bianque** + LLM 评测/观测平台 **heimdallr**。
-当前版本 **v0.10.36** · Go ≥ 1.26 · 46 个包。
+当前版本 **v0.10.38** · Go ≥ 1.26 · 47 个包。
 
 > 📖 **完整框架文档**：[docs/FRAMEWORK.md](docs/FRAMEWORK.md) —— 设计原则、六层架构、
 > 各包逐一详解（API/示例/边界契约）、横向能力专题（可靠性/成本/多副本/安全）、
@@ -263,9 +263,10 @@ pool := mcp.NewPool(
 defer pool.Close()
 pool.OnError = func(server string, err error) { log.Warn("mcp", "server", server, "err", err) }
 
-tools, err := pool.Tools(ctx, []mcp.ToolSpec{
+res, err := pool.Tools(ctx, []mcp.ToolSpec{
     {Server: "docs", Allow: []string{"search_docs"}}, // 工具白名单
 })
+// res.Tools = 装配成功的工具；res.Failed = 被容忍的失败面（server → 原因）
 // 安全模型：stdio 子进程环境绝不继承密钥（基础集 + Env 白名单）
 ```
 
@@ -274,18 +275,18 @@ tools, err := pool.Tools(ctx, []mcp.ToolSpec{
 ```go
 import "git.enjoye.top/enjoydream/agentkit/agentrun"
 
-out, err := agentrun.RunWithEvents(ctx, agentrun.Config{
+out, err := agentrun.Run(ctx, agentrun.Config{
     Name:        "reviewer",
     Instruction: instruction,
     Model:       chatModel,
     Tools:       tools, // 或 ToolsFactory: func() []tool.BaseTool { ... }（重试时重建，限流预算按尝试重置）
     MaxIterations: 12,
-}, query, func(e agentrun.Event) {
+}, query, agentrun.WithOnEvent(func(e agentrun.Event) {
     // e.Type: text | tool_call | tool_result
-})
+}))
 
-// 失败回喂重试（重试过程也可观测）
-out, err = agentrun.RunWithEventsAndRetry(ctx, cfg, query, retryQuery, onEvent)
+// 失败回喂重试（与事件回调正交组合；重试过程也可观测）
+out, err = agentrun.Run(ctx, cfg, query, agentrun.WithRetry(retryQuery), agentrun.WithOnEvent(onEvent))
 ```
 
 **PlanAndExecute**（计划先行编排，适合目标明确、步骤可预规划的长链路任务）：
@@ -625,7 +626,7 @@ focus, _ := lin.Focus("skill-x", 2)                 // 焦点邻接子图（dept
 **agentrun**
 - 出口判定 = assistant 消息且无 tool_calls；空内容答复报错文案区分"空答复"与"没答复"。
 - `MaxIterations` 默认 12（比 ADK 缺省 20 更收紧）。
-- `RunWithRetry` 两次尝试**共用 Tools 实例**——有状态包装（限流）跨尝试累计，
+- `WithRetry` 两次尝试**共用 Tools 实例**——有状态包装（限流）跨尝试累计，
   需要重置请用 `ToolsFactory`。
 
 **reflection**
@@ -786,7 +787,7 @@ Argus 内部包改为 import agentkit：
 | bianque 旧路径 | agentkit 新路径 |
 |---|---|
 | `bianque/internal/llm/failover.go`（failoverModel） | `agentkit/llm.NewFailoverModel`（OnFailover 回调替代全局钩子） |
-| `bianque/internal/engine/runner` mutatingToolSegments | `agentrun.MutatingVerbs` + `IsMutatingTool` + `SideEffectTracker`（重试守卫内建于 RunWithRetry） |
+| `bianque/internal/engine/runner` mutatingToolSegments | `agentrun.MutatingVerbs` + `IsMutatingTool` + `SideEffectTracker`（重试守卫内建于 Run+WithRetry） |
 | `bianque/internal/agents/routing.go` 词表匹配内核 | `agentkit/router.KeywordHit` 四件套（否定守门/词边界/排除构式） |
 | `bianque/internal/logredact`（副本分叉） | `agentkit/logredact`（凭证词 `: ` 空格形态 + PEM 整段规则已合入） |
 | `bianque/internal/strutil.Truncate` | `agentkit/textutil.TruncEllipsis`（v0.9.0 挂账清账） |

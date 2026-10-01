@@ -325,7 +325,7 @@ cost := llm.PriceOf(map[string]llm.Price{
 （assistant 无 tool_calls 即最终答复）、重试样板。
 
 ```go
-out, err := agentrun.RunWithEvents(ctx, agentrun.Config{
+out, err := agentrun.Run(ctx, agentrun.Config{
     Name: "reviewer", Description: "审查专家",
     Instruction: instruction,
     Model: chatModel,                       // 或 RawModel()
@@ -333,18 +333,19 @@ out, err := agentrun.RunWithEvents(ctx, agentrun.Config{
         return buildTools()
     },
     MaxIterations: 12,
-}, query, func(e agentrun.Event) {
+}, query, agentrun.WithOnEvent(func(e agentrun.Event) {
     // e.Type: text | tool_call | tool_result（工具轨迹可观测）
-})
+}))
 ```
 
-- `Run` / `RunWithEvents` / `RunWithRetry` / `RunWithEventsAndRetry` 四种入口；
+- 唯一入口 `Run` + `RunOption` 正交组合（v0.10.38 收敛：此前四入口层层包裹）：
+  `WithOnEvent`（过程事件）/ `WithRetry`（失败回喂重试）；
 - `Config.Tools`（静态表）与 `ToolsFactory`（按尝试重建）二选一，后者优先——
-  **RunWithRetry + LimitCalls 组合必须用 Factory**，否则限流计数跨尝试累计；
+  **WithRetry + LimitCalls 组合必须用 Factory**，否则限流计数跨尝试累计；
 - MaxIterations 默认 12；迭代耗尽/空答复返回明确错误，无死循环；
 - 失败语义：与 toolprior 软止损配合（超限返回 LIMIT_REACHED 文本而非 error，
   不会中止整图丢弃进展）；
-- 副作用守卫（v0.9.4）：`RunWithRetry`/`RunWithEventsAndRetry` 首轮已调用变更类
+- 副作用守卫（v0.9.4）：`WithRetry` 首轮已调用变更类
   工具（`IsMutatingTool` 动词段判定，`MutatingVerbs` 可扩展）后不再整体重跑——
   重跑会重复副作用（脚本执行/服务操作类工具首轮已生效），如实上抛交调用方降级；
   只读/幂等工具场景置 `Config.RetryAfterMutation=true` 恢复无条件重试。
@@ -724,12 +725,14 @@ pool := mcp.NewPool(
                      Env: []string{"LINT_CONFIG"}}, // env 白名单：按名透传，绝不继承密钥
 )
 pool.OnError = func(server string, err error) {...}
-tools, err := pool.Tools(ctx, []mcp.ToolSpec{{Server: "docs", Allow: []string{"search_docs"}}})
+res, err := pool.Tools(ctx, []mcp.ToolSpec{{Server: "docs", Allow: []string{"search_docs"}}})
 defer pool.Close()
+// res.Tools = 装配成功的工具（specs 序稳定）；res.Failed = 被容忍的失败面
+//（server → 原因，v0.10.38 起程序化可见，无须消费 OnError 副作用）
 ```
 
 lazy 建连缓存 + Initialize 握手；列举失败自动摘除坏连接（下次重建）；Close 后拒绝
-新建；Allow 全部未命中经 OnError 告警。
+新建；Allow 全部未命中经 OnError 告警并记入 Failed。
 
 能力面（按版本累积）：
 
@@ -1453,6 +1456,17 @@ flowchart TD
   截断续写/RateModel 限速）+ reportutil 模式键/Beta 置信（收编 argus 生产验证）
 - **v0.10.34**：codeintel 轻量代码符号索引——Go AST 符号图 + 多语言词法符号
   表（收编 argus internal/codegraph）
+- **v0.10.36**：mcp stdio 子进程与拨号预算层解绑（WithoutCancel——stdio 的
+  Start/Initialize 不再被调用方 ctx 拖死）+ agentrun 流式 OnUsage 回调
+- **v0.10.37**：diffx（unified diff 结构解析纯函数：SplitChunks/SplitUnifiedDiff/
+  DiffPath/HunkLines）+ textutil.FirstNonEmpty——收编 argus diffprep/inject
+- **v0.10.38（重构收口轮）**：第六轮留观察清单落地。破坏式：agentrun 入口族
+  收敛为 Run+RunOption（WithOnEvent/WithRetry）；mcp Tools 返回
+  ToolsResult{Tools, Failed}（失败面程序化可见）；lineage Hub.Set 去返回值；
+  acpx RunResult.Stderr 新增 + namedAgent 单源 + 模板内联占位符 fail-fast。
+  改进：llm estimateTokens 单源（rune/3）/jitter 按 delay 幅度/重试计数真实化；
+  permgate hardDeny 单源 + subjects 多面匹配；toolsched plan/Execute 拆分；
+  rag milvusRow 结构化 + Rescan 并发收敛单份；compact Role 常量化
 - **v0.10.35（第六轮全面审计 + 破坏式重构）**：6 面 code-reviewer 并行复查
   全部改动文件。5C：bashguard 读侧重定向目标/heredoc 体动态展开
   （cat < $(rm -rf build) 曾判只读）/command 裸操作数派发/date -s 设时钟；

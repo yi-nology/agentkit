@@ -94,12 +94,12 @@ sequenceDiagram
 ```
 
 ```go
-out, err := agentrun.RunWithEvents(ctx, agentrun.Config{
+out, err := agentrun.Run(ctx, agentrun.Config{
     Name: "reviewer", Instruction: instruction,
     Model: chatModel,
     ToolsFactory: func() []tool.BaseTool { ... },  // 每次尝试重建（限流计数按尝试重置）
     MaxIterations: 12,
-}, query, func(e agentrun.Event) { /* text|tool_call|tool_result */ })
+}, query, agentrun.WithOnEvent(func(e agentrun.Event) { /* text|tool_call|tool_result */ }))
 ```
 
 工具表经 `toolprior` 组织：`StrategyPrompt`（提示词软约束）+ `Ordered`（排序注意力）
