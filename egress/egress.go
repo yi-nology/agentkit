@@ -93,6 +93,13 @@ func checkHost(host string, o Options) error {
 	}
 	addr, err := netip.ParseAddr(h)
 	if err != nil {
+		// exotic IPv4 词法守卫（第九轮审计）：0x7f000001 / 127.1 / 0177.0.0.1
+		// 不被 netip 解析，但 cgo resolver（inet_aton 语义更宽）会解析为回环
+		// ——字面量层防护必须 fail-closed（注意 net.ParseIP 对这些形态同样
+		// 返回 nil，兜底方案无效；按段词法判定）
+		if looksLikeExoticIPv4(h) {
+			return &BlockedError{Host: h, Reason: "exotic IPv4 字面量形态"}
+		}
 		return nil // 域名：不解析
 	}
 	effective := addr
@@ -222,4 +229,35 @@ func ipv6Policy(a netip.Addr, o Options) string {
 		}
 	}
 	return ""
+}
+
+// looksLikeExoticIPv4 host 按点分段后，任一段为纯数字（含八进制形态 0177、
+// 短形态 127.1）或 0x 前缀 hex，且整体未被 netip 解析为合法 IPv4——判定为
+// exotic IPv4 字面量（拒绝）。存在任何非数字非 hex 段（beef.ca、123.com 的
+// 字母段）则为域名形态，放行。
+func looksLikeExoticIPv4(h string) bool {
+	segs := strings.Split(h, ".")
+	if len(segs) > 4 {
+		return false
+	}
+	for _, seg := range segs {
+		if seg == "" {
+			return false
+		}
+		allDigits := true
+		for i := 0; i < len(seg); i++ {
+			if seg[i] < '0' || seg[i] > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			continue
+		}
+		if len(seg) > 2 && (seg[0] == '0' && (seg[1] == 'x' || seg[1] == 'X')) {
+			continue // 0x hex 段
+		}
+		return false // 含字母段：域名形态
+	}
+	return true
 }

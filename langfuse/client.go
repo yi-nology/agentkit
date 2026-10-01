@@ -22,6 +22,16 @@ type Client struct {
 	pk   string
 	sk   string
 	http *http.Client
+	// HTTP 可选注入的 *http.Client（nil = 30s 缺省——httpjson「调用方注入
+	// Client」分工的兑现面，第九轮审计：此前全仓唯一不可注入的 HTTP 消费方）
+	HTTP *http.Client
+}
+
+func (c *Client) httpClient() *http.Client {
+	if c.HTTP != nil {
+		return c.HTTP
+	}
+	return c.http
 }
 
 // NewClient host 形如 https://lf.example.com（不带尾斜杠）。
@@ -138,12 +148,19 @@ func listQuery(q Query, page, pageSize int) url.Values {
 }
 
 func (c *Client) get(ctx context.Context, u string, out any) error {
-	err := httpjson.DoJSON(ctx, c.http, httpjson.Request{
-		URL: u,
-		Header: func(h http.Header) {
-			h.Set("Authorization", "Basic "+basicAuth(c.pk, c.sk))
+	// GET 幂等：短重试消化瞬时 5xx/429/网络超时——单次抖动不再炸整批
+	//（FetchBatch 是 N+1 串行，此前任一瞬时失败丢弃全部已合并详情；第九轮审计）
+	err := httpjson.DoJSONWithRetry(ctx, c.httpClient(),
+		func() (httpjson.Request, error) {
+			return httpjson.Request{
+				URL: u,
+				Header: func(h http.Header) {
+					h.Set("Authorization", "Basic "+basicAuth(c.pk, c.sk))
+				},
+			}, nil
 		},
-	}, out)
+		httpjson.RetryConfig{MaxAttempts: 3, BaseDelay: 200 * time.Millisecond, MaxDelay: 2 * time.Second},
+		out)
 	if err != nil {
 		return fmt.Errorf("langfuse: %w", err)
 	}

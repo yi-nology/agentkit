@@ -86,6 +86,9 @@ func New(cfg *Config) (*Router, error) {
 		if r.Name == "" || r.Handle == nil {
 			return nil, fmt.Errorf("router: 路由 %q 缺 Name 或 Handle", r.Name)
 		}
+		if r.Name != strings.ToLower(r.Name) {
+			return nil, fmt.Errorf("router: 路由名 %q 含大写——Classify 对模型输出强制小写后查表，大写名永远不可达", r.Name)
+		}
 		if _, dup := byName[r.Name]; dup {
 			return nil, fmt.Errorf("router: 路由名重复 %q", r.Name)
 		}

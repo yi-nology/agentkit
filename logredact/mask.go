@@ -2,6 +2,7 @@ package logredact
 
 import (
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,10 +64,18 @@ func (m *Masker) Mask(s string) string {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for origin, tok := range m.origins {
+	// 长注册串优先替换（第九轮审计：map 迭代序随机——db.example.com 与
+	// example.com 同时注册时，短串先替换会留 "db.«T»" 前缀泄漏且结果不确定；
+	// 与 RedactSecrets 的长优先纪律对齐）
+	origins := make([]string, 0, len(m.origins))
+	for origin := range m.origins {
 		if origin != "" {
-			s = strings.ReplaceAll(s, origin, tok)
+			origins = append(origins, origin)
 		}
+	}
+	sort.Slice(origins, func(i, j int) bool { return len(origins[i]) > len(origins[j]) })
+	for _, origin := range origins {
+		s = strings.ReplaceAll(s, origin, m.origins[origin])
 	}
 	s = ipv4Re.ReplaceAllStringFunc(s, func(match string) string {
 		return m.maskLocked(match)

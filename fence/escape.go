@@ -10,6 +10,11 @@ import "strings"
 // 表格行/引用定义前插零宽空格；反引号替换为同类引号防打断代码段。
 // 前提：下游渲染器仍需自行 sanitize 裸 HTML（本包不处理 <img>/<script> 等标签）。
 func EscapeUntrusted(s string) string {
+	// 行终止符归一（第九轮审计：CommonMark 把 \r 视为行终止符——`好评\r# 标题`
+	// 在渲染器侧是两行，按 \n 切分则是一行，行首判定被绕过即注入面）
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+
 	if s == "" {
 		return s
 	}
@@ -38,7 +43,10 @@ func EscapeUntrusted(s string) string {
 		case strings.HasPrefix(trimmed, "[") && strings.Contains(trimmed, "]:"):
 			// 引用定义 [ref]: url，可劫持后文 [text][ref] 的渲染
 			inject = true
-		case strings.HasPrefix(trimmed, "- "), strings.HasPrefix(trimmed, "+ "), strings.HasPrefix(trimmed, "* "):
+		case strings.HasPrefix(trimmed, "- "), strings.HasPrefix(trimmed, "+ "), strings.HasPrefix(trimmed, "* "),
+			// tab 紧随 bullet 符号（CommonMark 合法列表项——第九轮审计：有序
+			// 分支已认 tab，bullet 三分支漏了同一语义）
+			(len(trimmed) > 1 && (trimmed[0] == '-' || trimmed[0] == '+' || trimmed[0] == '*') && trimmed[1] == '\t'):
 			inject = true
 		case isOrderedMarker(trimmed):
 			inject = true
@@ -57,6 +65,6 @@ func isOrderedMarker(trimmed string) bool {
 	for i < len(trimmed) && trimmed[i] >= '0' && trimmed[i] <= '9' {
 		i++
 	}
-	return i > 0 && i+1 < len(trimmed) && trimmed[i] == '.' &&
-		(trimmed[i+1] == ' ' || trimmed[i+1] == '\t') // CommonMark 允许 tab
+	return i > 0 && i+1 < len(trimmed) && (trimmed[i] == '.' || trimmed[i] == ')') &&
+		(trimmed[i+1] == ' ' || trimmed[i+1] == '\t') // CommonMark 允许 tab 与 1) 形态（第九轮审计补）
 }

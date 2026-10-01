@@ -48,6 +48,16 @@ func EstTokensCJK(s string) int {
 	return units/3 + 1
 }
 
+// EstTokensCJKRunes 已知 rune 数且内容以 CJK 为主时的保守计量
+// （units=2n → tokens=2n/3+1）——compact 等已有 rune 计数中间量的调用方
+// 复用 CJK 口径，免字符串物化。
+func EstTokensCJKRunes(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	return 2*n/3 + 1
+}
+
 func runeUnitsCJK(r rune) int {
 	// 漏段显式补齐（第八轮审计）：部首补充/康熙部首、CJK 笔画、竖排/兼容/
 	// 小形式变体——Han/Hangul/Kana 的 unicode.Is 覆盖不到的 CJK 符号区段

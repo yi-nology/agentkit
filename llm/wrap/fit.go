@@ -313,6 +313,7 @@ func (f *FitModel) observeUsage(sr *schema.StreamReader[*schema.Message], sent i
 					return
 				}
 				_ = w.Send(nil, err)
+				sr.Close() // eino 契约：Recv 出错不内部关流（第九轮审计）
 				return
 			}
 			if chunk.ResponseMeta != nil && chunk.ResponseMeta.Usage != nil {

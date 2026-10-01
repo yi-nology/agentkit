@@ -2,7 +2,7 @@
 // 文件族分工：
 //   - client/errors/config：客户端薄封装——生成失败指数退避+jitter 重试（429 退避
 //     下限提高）、JSON 输出解析失败带错误回喂重试、token 记账（优先响应 usage，
-//     缺省 chars/4 估算）、fitInput 输入自守恒、可选 token bucket 限速
+//     缺省 CJK 感知估算（EstTokensCJK））、fitInput 输入自守恒、可选 token bucket 限速
 //   - provider/openai：Provider 抽象与多后端 + FallbackChain 降级链
 //   - resilient/failover：弹性客户端（降级矩阵/熔断/预算短路）+ 裸模型路径的
 //     FailoverModel 装饰器
@@ -366,7 +366,10 @@ func (c *Client) fitInput(msgs []*schema.Message) {
 	if reserved <= 0 {
 		reserved = c.ContextTokens / 20
 	}
-	limit := (c.ContextTokens - reserved) * 2 * 9 / 10
+	// CJK 感知口径（第九轮审计：此前 ×2 是 0.5 token/rune 假设，与 estimateTokens
+	// 已切的 CJK 口径（中文≈0.67 token/rune）漂移——CJK 会话在截断触发前
+	// 真实 token 可超窗 ~34%，落点是「上下文超限」确定性失败）
+	limit := (c.ContextTokens - reserved) * 3 / 2 * 9 / 10
 	if limit <= 0 {
 		return
 	}

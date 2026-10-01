@@ -62,10 +62,13 @@ type Index struct {
 	idxed int
 }
 
-// skipDirs 索引跳过的目录名（噪声目录最小集）。
+// skipDirs 索引跳过的目录名（噪声目录最小集；小写查表——大小写不敏感文件
+// 系统上的 Vendor/NODE_MODULES 漏网；.venv/site-packages/__pycache__ 是
+// Python 仓吃满 poly 名额挤掉真实源码的形态，第九轮审计）。
 var skipDirs = map[string]bool{
 	"vendor": true, "node_modules": true, ".git": true,
 	"testdata": true, "dist": true, "third_party": true,
+	".venv": true, "site-packages": true, "__pycache__": true,
 }
 
 // NewIndex 建立目录索引（dir 为工作副本根；maxFiles 封顶防超大仓，0 = 1000）。
@@ -84,7 +87,7 @@ func NewIndex(dir string, maxFiles int) (*Index, error) {
 			return nil // 不可读子树跳过（沙箱竞态容错）
 		}
 		if d.IsDir() {
-			if path != dir && skipDirs[d.Name()] {
+			if path != dir && skipDirs[strings.ToLower(d.Name())] {
 				// SkipDir（非 SkipAll）：只跳过该目录内容，兄弟文件继续遍历
 				return filepath.SkipDir
 			}
@@ -95,6 +98,10 @@ func NewIndex(dir string, maxFiles int) (*Index, error) {
 		}
 		if idx.idxed >= maxFiles {
 			return filepath.SkipAll // 封顶即全停（SkipDir 会继续遍历兄弟目录白跑）
+		}
+		if fi, ierr := d.Info(); ierr == nil && fi.Size() > maxFileBytes {
+			idx.skip++
+			return nil // 单文件字节上限（minified js/生成产物防整读整扫）
 		}
 		src, err := os.ReadFile(path)
 		if err != nil {
@@ -290,3 +297,6 @@ func (x *Index) SkippedFiles() int { return x.skip }
 
 // IndexedFiles 成功索引文件数。
 func (x *Index) IndexedFiles() int { return x.idxed }
+
+// maxFileBytes 单文件索引字节上限（Go 侧；poly 侧 2MB——词法正则扫描成本高）。
+const maxFileBytes = 8 << 20

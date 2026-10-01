@@ -15,19 +15,25 @@ type rule struct {
 
 var rules = []rule{
 	// URL 内嵌凭据：nats://user:pass@host、postgres://user:pw@db…（scheme 不区分大小写）
-	{regexp.MustCompile(`(?i)\b(nats|postgres|postgresql|mysql|mongodb|http|https|redis|amqp)://([^\s:@/]+):([^\s@/]+)@`), "$1://$2:****@"},
-	// 键值对：token=xxx / api_key:xxx / …webhook/send?key=xxx（值截到 & 或空白）
-	{regexp.MustCompile(`(?i)\b(token|secret|password|passwd|api_?key|access_?key|key)[=:]["']?([^\s&'"]+)`), "$1=****"},
-	// 凭证词键值对（容忍 ": " 空格形态——kubeconfig/私钥 YAML 日志常见；词表凭证专用防散文误伤）
-	{regexp.MustCompile(`(?i)\b(private[-_]?key|secret[-_]?key|passphrase|client[-_]?key|kubeconfig)\s*[=:]\s*["']?([^\s&'"]+)`), "$1=****"},
-	// PEM 私钥整段打码（载荷/日志防泄漏的最后兜底）
+	{regexp.MustCompile(`(?i)\b(nats|postgres|postgresql|mysql|mongodb\+srv|mongodb|http|https|redis|amqps|amqp)://([^\s:@/]+):([^\s@/]+)@`), "$1://$2:****@"},
+	// 键值对：key=xxx / …webhook/send?key=xxx（值截到 & 或空白）。
+	// key 单独留紧邻形态（[=:] 后无空白）——"user-keynote" 类散文防误伤
+	{regexp.MustCompile(`(?i)\bkey[=:]["']?([^\s&'"]+)`), "key=****"},
+	// 凭证词键值对（容忍 ": " 空格形态——YAML/缩进 JSON 日志最高频的
+	// `password: xxx` 形态；第九轮审计：password/token 此前漏在紧邻词表，
+	// 冒号后带空格即整体漏网）
+	{regexp.MustCompile(`(?i)\b(token|secret|password|passwd|api_?key|access_?key|private[-_]?key|secret[-_]?key|passphrase|client[-_]?key|kubeconfig)["']?\s*[=:]\s*["']?([^\s&'"]+)`), "$1=****"},
+	// PEM 私钥整段打码（载荷/日志防泄漏的最后兜底）；第二条为截断兜底——
+	// 日志超长截断落在 PEM 中段时无 END，私钥体无前缀特征会原文泄漏
 	{regexp.MustCompile(`(?i)-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`), "----PRIVATE KEY ****"},
-	// Authorization 头
-	{regexp.MustCompile(`(?i)(authorization|www-authenticate)\s*[:=]\s*\S+`), "$1=****"},
+	{regexp.MustCompile(`(?i)-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*$`), "----PRIVATE KEY ****（截断）"},
+	// Authorization 头：值吃到行尾——第九轮审计 C 级修复：\S+ 只吃 scheme
+	// 名（Basic/Bearer），凭据本体残留且后续 Bearer 规则失去锚点兜不住
+	{regexp.MustCompile(`(?i)(authorization|www-authenticate)\s*[:=]\s*[^\r\n]*`), "$1=****"},
 	{regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9._~+/=-]+`), "Bearer ****"},
 	// 平台 API token 特征前缀（裸 token 不带 key= 形态出现在散文/URL 路径时的兜底；
 	// 键值对形态已由上方规则先行打码，本组只负责无键形态）。
-	{regexp.MustCompile(`\b(sk-ant-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})\b`), "****"},
+	{regexp.MustCompile(`\b(sk-ant-[A-Za-z0-9_-]{16,}|sk-(?:proj|svcacct|None)-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})\b`), "****"},
 	// JWT（三段式， eyJ 头 + 两段 base64url）：出现在日志散文里的裸 JWT。
 	{regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`), "****JWT****"},
 }

@@ -151,5 +151,11 @@ func critique(ctx context.Context, client *llm.Client, cfg *Config, draft string
 	if v.Pass && len(v.Issues) > 0 {
 		v.Pass = false
 	}
+	if !v.Pass && len(v.Issues) == 0 {
+		// 反向不自洽（判不通过却列不出问题）：占位一条自查指令——否则修订
+		// 提示词是「问题清单（全部修复）」后跟空清单的自相矛盾形态，模型
+		// 大概率原稿重发白烧一轮（第九轮审计）
+		v.Issues = []string{"评审未列出具体问题：请对照评审标准逐条自查并修复"}
+	}
 	return &v, nil
 }

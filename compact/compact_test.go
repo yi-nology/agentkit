@@ -8,15 +8,15 @@ import (
 
 func TestEstimateTokensCountsToolCallArgs(t *testing.T) {
 	msgs := []Message{
-		{Role: "user", Text: "abcd"}, // 4 chars → 2 tokens
+		{Role: "user", Text: "abcd"}, // 4 runes
 		{Role: "assistant", Text: "", ToolCalls: []ToolCall{
-			{ID: "1", Name: "read_file", ArgsJSON: `{"path":"aaaaaaaaaaaaaaaa"}`}, // 10+24=34 chars → 12
+			{ID: "1", Name: "read_file", ArgsJSON: `{"path":"aaaaaaaaaaaaaaaa"}`}, // 10+24=34 runes
 		}},
 	}
 	got := EstimateTokens(msgs)
-	// ceil(4/3)=2 + ceil(34/3)=12
-	if got != 2+12 {
-		t.Fatalf("工具入参应计入估算: got %d want 14", got)
+	// CJK 保守口径（v0.12.1，第九轮审计）：4 runes→3；工具入参 36 runes→25
+	if got != 3+25 {
+		t.Fatalf("工具入参应计入估算（CJK 口径）: got %d want 28", got)
 	}
 }
 

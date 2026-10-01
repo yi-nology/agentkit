@@ -72,3 +72,26 @@ func TestAllowLoopbackCoversLocalhostDomain(t *testing.T) {
 		t.Fatal("零值仍应拒绝 localhost 域")
 	}
 }
+
+// TestExoticIPv4LiteralsBlocked 回归（第九轮审计）：0x-hex/八进制/短形态 IPv4
+// 字面量不被 netip 解析，但 cgo resolver（inet_aton）会解析为回环——词法
+// 守卫 fail-closed；正常域名（123.com、beef.ca）不受影响。
+func TestExoticIPv4LiteralsBlocked(t *testing.T) {
+	for _, u := range []string{
+		"http://0x7f000001/",
+		"http://2130706433/", // 十进制整数形态
+		"http://127.1/",
+		"http://0177.0.0.1/",
+	} {
+		if err := Check(u); err == nil {
+			t.Errorf("%s exotic IPv4 应拒绝", u)
+		}
+	}
+	for _, u := range []string{
+		"http://123.com/", "http://beef.ca/", "http://0x1a2b3c.example.com/",
+	} {
+		if err := Check(u); err != nil {
+			t.Errorf("%s 正常域名应放行: %v", u, err)
+		}
+	}
+}

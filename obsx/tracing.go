@@ -15,10 +15,14 @@ import (
 	"context"
 	"time"
 
-	"git.enjoye.top/enjoydream/agentkit/textutil"
-	"git.enjoye.top/enjoydream/ekit/observability/logx"
 	"github.com/cloudwego/eino/callbacks"
+	"github.com/cloudwego/eino/components"
 	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
+
+	"git.enjoye.top/enjoydream/agentkit/textutil"
+	"git.enjoye.top/enjoydream/ekit/concurrency/async"
+	"git.enjoye.top/enjoydream/ekit/observability/logx"
 )
 
 // stageCtxKey 业务阶段（R1/R2/...）在 ctx 中的键。
@@ -59,8 +63,11 @@ func TokenUsageOf(out *model.CallbackOutput) *model.TokenUsage {
 	if out.Message != nil && out.Message.ResponseMeta != nil && out.Message.ResponseMeta.Usage != nil {
 		u := out.Message.ResponseMeta.Usage
 		return &model.TokenUsage{
-			PromptTokens:            u.PromptTokens,
-			PromptTokenDetails:      model.PromptTokenDetails{CachedTokens: u.PromptTokenDetails.CachedTokens},
+			PromptTokens: u.PromptTokens,
+			PromptTokenDetails: model.PromptTokenDetails{
+				CachedTokens:     u.PromptTokenDetails.CachedTokens,
+				CacheWriteTokens: u.PromptTokenDetails.CacheWriteTokens,
+			},
 			CompletionTokens:        u.CompletionTokens,
 			TotalTokens:             u.TotalTokens,
 			CompletionTokensDetails: model.CompletionTokensDetails{ReasoningTokens: u.CompletionTokensDetails.ReasoningTokens},
@@ -75,20 +82,36 @@ type TracingHandler struct {
 	opt Options
 }
 
-// NewTracingHandler 创建 eino 追踪 handler（经 HandlerBuilder 组装——
-// 未注册流式时机由 builder 置空，Needed() 声明只消费非流式三时机）。
+// NewTracingHandler 创建 eino 追踪 handler（经 HandlerBuilder 组装）。
+// v0.12.1 起补 OnEndWithStreamOutput（第九轮审计 C 级：流式只触发该时机，
+// 仅注册 OnEnd 的追踪在 agentrun 默认开流下 llm.call.end/slow 永不产出、
+// duration/tokens 全盲）——流式分支异步排空副本流取末帧 usage 后落 end
+// （同步排空会把真流式阻塞成全量批出，与 llm.NewUsageHandler 同修法）。
+// 组件过滤：非 ChatModel 组件（Tool/Lambda/Graph）的回调不产 llm.call.*——
+// 注入点在 run 边界时工具节点同样触发回调，此前混入 LLM 错误率与日志。
 func NewTracingHandler(log logx.Logger, opt Options) callbacks.Handler {
 	h := &TracingHandler{log: log, opt: opt}
 	return callbacks.NewHandlerBuilder().
 		OnStartFn(h.onStart).
 		OnEndFn(h.onEnd).
 		OnErrorFn(h.onError).
+		OnEndWithStreamOutputFn(h.onStreamEnd).
 		Build()
+}
+
+// isModelCall 组件过滤：只认 ChatModel（eino 官方契约：ConvCallbackInput
+// 返回 nil 即非模型调用应跳过——但 Lambda 的 []*schema.Message 输入也会被
+// 包装成功，故显式判组件）。
+func isModelCall(info *callbacks.RunInfo) bool {
+	return info != nil && info.Component == components.ComponentOfChatModel
 }
 
 func (h *TracingHandler) onStart(ctx context.Context, info *callbacks.RunInfo,
 	input callbacks.CallbackInput) context.Context {
 
+	if !isModelCall(info) {
+		return ctx
+	}
 	state := startState{start: time.Now(), stage: StageFromContext(ctx)}
 	h.log.Info("llm.call.start",
 		"stage", state.stage,
@@ -101,6 +124,9 @@ func (h *TracingHandler) onStart(ctx context.Context, info *callbacks.RunInfo,
 func (h *TracingHandler) onEnd(ctx context.Context, info *callbacks.RunInfo,
 	output callbacks.CallbackOutput) context.Context {
 
+	if !isModelCall(info) {
+		return ctx
+	}
 	state, _ := ctx.Value(startStateKey{}).(startState)
 	dur := h.durationSince(state)
 	fields := []any{
@@ -132,6 +158,9 @@ func (h *TracingHandler) onEnd(ctx context.Context, info *callbacks.RunInfo,
 func (h *TracingHandler) onError(ctx context.Context, info *callbacks.RunInfo,
 	err error) context.Context {
 
+	if !isModelCall(info) {
+		return ctx
+	}
 	state, _ := ctx.Value(startStateKey{}).(startState)
 	h.log.Warn("llm.call.error",
 		"stage", state.stage,
@@ -140,6 +169,64 @@ func (h *TracingHandler) onError(ctx context.Context, info *callbacks.RunInfo,
 		"duration_ms", h.durationSince(state).Milliseconds(),
 		"error", err.Error())
 	return ctx
+}
+
+// onStreamEnd 流式收束：异步排空框架给的副本流（MUST Close），取末帧 usage
+// 与 finish 后复用非流式 onEnd 的落日志路径。start 计时点为 OnStart——
+// 排空完成时刻即全量生成完成时刻，duration 语义与非流式一致。
+func (h *TracingHandler) onStreamEnd(ctx context.Context, info *callbacks.RunInfo,
+	output *schema.StreamReader[callbacks.CallbackOutput]) context.Context {
+
+	if !isModelCall(info) {
+		output.Close()
+		return ctx
+	}
+	// 异步：eino 分发同步 + Stream() 在本时机返回后才交流给调用方——同步
+	// 排空会把真流式阻塞成批出（第九轮审计 C 级，与 llm.NewUsageHandler 同修）
+	async.GoSafe(func() {
+		defer output.Close()
+		var usage *model.TokenUsage
+		for {
+			v, err := output.Recv()
+			if err != nil {
+				break
+			}
+			switch t := v.(type) {
+			case *model.CallbackOutput:
+				if t != nil {
+					usage = TokenUsageOf(t)
+				}
+			case *schema.Message:
+				usage = TokenUsageOf(&model.CallbackOutput{Message: t})
+			}
+		}
+		if usage == nil {
+			return
+		}
+		h.logUsageEnd(ctx, info, usage, "")
+	})
+	return ctx
+}
+
+// logUsageEnd 落 llm.call.end / llm.call.slow（流式/非流式共用）。
+func (h *TracingHandler) logUsageEnd(ctx context.Context, info *callbacks.RunInfo, usage *model.TokenUsage, _ string) {
+	state, _ := ctx.Value(startStateKey{}).(startState)
+	dur := h.durationSince(state)
+	fields := []any{
+		"stage", state.stage,
+		"component", compOf(info),
+		"model", modelOf(info),
+		"duration_ms", dur.Milliseconds(),
+		"prompt_tokens", usage.PromptTokens,
+		"completion_tokens", usage.CompletionTokens,
+		"total_tokens", usage.TotalTokens,
+		"reasoning_tokens", usage.CompletionTokensDetails.ReasoningTokens,
+	}
+	if h.opt.SlowThreshold > 0 && dur > h.opt.SlowThreshold {
+		h.log.Warn("llm.call.slow", fields...)
+		return
+	}
+	h.log.Info("llm.call.end", fields...)
 }
 
 // durationSince 计算自 OnStart 以来的耗时；OnStart 缺失（handler 在调用链中段

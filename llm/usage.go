@@ -8,6 +8,7 @@ package llm
 
 import (
 	"context"
+	"git.enjoye.top/enjoydream/ekit/concurrency/async"
 	"github.com/cloudwego/eino/schema"
 	"sync/atomic"
 	"time"
@@ -106,53 +107,64 @@ func NewUsageHandler(onRecord Sink) callbacks.Handler {
 			return ctx
 		}).
 		OnEndWithStreamOutputFn(func(ctx context.Context, info *callbacks.RunInfo, output *schema.StreamReader[callbacks.CallbackOutput]) context.Context {
-			defer output.Close() // MUST（eino 契约：handler 副本不关整条管道泄漏）
 			if onRecord == nil || clientAccounted(ctx) || info == nil || info.Type == "" {
+				// 不消费也必须关副本（eino 契约：handler 副本不关整条管道泄漏）
+				output.Close()
 				return ctx
 			}
-			var last *model.TokenUsage
-			var finish string
-			for {
-				v, err := output.Recv()
-				if err != nil {
-					break
+			// **异步消费**（第九轮审计 C 级）：eino 的 handler 分发是同步的、
+			// Stream() 在 OnEndWithStreamOutput 返回后才把流交给调用方——
+			// 此前同步排空副本流会把真流式阻塞成「全量生成完才返回」（首分片
+			// 延迟=全程生成时间，v0.10.32 起默认开流的 text_delta 全部积压）。
+			// ctx/info 为只读值，goroutine 内读取安全；Iteration 为 atomic。
+			async.GoSafe(func() {
+				defer output.Close()
+				rec, ok := drainStreamUsage(ctx, info, output)
+				if ok {
+					onRecord(rec)
 				}
-				// 流元素两种形态都收：eino-ext 原生分片 *schema.Message；
-				// 经 callbacks 转换层的 *model.CallbackOutput
-				switch t := v.(type) {
-				case *model.CallbackOutput:
-					if t == nil {
-						continue
-					}
-					if u := obsx.TokenUsageOf(t); u != nil {
-						last = u
-					}
-					if t.Message != nil && t.Message.ResponseMeta != nil {
-						finish = t.Message.ResponseMeta.FinishReason
-					}
-				case *schema.Message:
-					if t.ResponseMeta != nil {
-						if u := t.ResponseMeta.Usage; u != nil {
-							last = &model.TokenUsage{
-								PromptTokens:            u.PromptTokens,
-								PromptTokenDetails:      model.PromptTokenDetails{CachedTokens: u.PromptTokenDetails.CachedTokens},
-								CompletionTokens:        u.CompletionTokens,
-								TotalTokens:             u.TotalTokens,
-								CompletionTokensDetails: model.CompletionTokensDetails{ReasoningTokens: u.CompletionTokensDetails.ReasoningTokens},
-							}
-						}
-						finish = t.ResponseMeta.FinishReason
-					}
-				}
-			}
-			if last == nil {
-				return ctx
-			}
-			rec := recordFromUsage(ctx, info, last, finish)
-			onRecord(rec)
+			})
 			return ctx
 		}).
 		Build()
+}
+
+// drainStreamUsage 排空回调副本流取末个非 nil usage（全仓单源——llm 面板
+// 与 obsx 追踪共用；调用方负责 Close 已由 defer 保证）。
+func drainStreamUsage(ctx context.Context, info *callbacks.RunInfo, sr *schema.StreamReader[callbacks.CallbackOutput]) (UsageRecord, bool) {
+	var last *model.TokenUsage
+	var finish string
+	for {
+		v, err := sr.Recv()
+		if err != nil {
+			break
+		}
+		// 流元素两种形态都收：eino-ext 原生分片 *schema.Message；
+		// 经 callbacks 转换层的 *model.CallbackOutput
+		switch t := v.(type) {
+		case *model.CallbackOutput:
+			if t == nil {
+				continue
+			}
+			if u := obsx.TokenUsageOf(t); u != nil {
+				last = u
+			}
+			if t.Message != nil && t.Message.ResponseMeta != nil {
+				finish = t.Message.ResponseMeta.FinishReason
+			}
+		case *schema.Message:
+			if u := obsx.TokenUsageOf(&model.CallbackOutput{Message: t}); u != nil {
+				last = u
+			}
+			if t.ResponseMeta != nil {
+				finish = t.ResponseMeta.FinishReason
+			}
+		}
+	}
+	if last == nil {
+		return UsageRecord{}, false
+	}
+	return recordFromUsage(ctx, info, last, finish), true
 }
 
 // recordFromUsage 已知 usage 的记录构造（非流式/流式两路共用单源）。

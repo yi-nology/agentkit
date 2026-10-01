@@ -68,6 +68,9 @@ func (p *Pool) Start(ctx context.Context) {
 	p.mu.Lock()
 	if p.started {
 		p.mu.Unlock()
+		// 二次 Start 静默 no-op 是文档化契约——留观测面供误重启排查
+		//（第九轮审计速赢：Stop 后 Start 同样落此分支）
+		p.logger().Warn("agentkit.worker.start_ignored", "reason", "already_started_or_stopped")
 		return
 	}
 	p.started = true

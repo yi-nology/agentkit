@@ -59,6 +59,7 @@ func Combine(summary string, recent []Turn) string {
 
 func truncateLine(s string, n int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ") // \r 同为行终止符——不压平则跨行注入语义残留（第九轮审计）
 	t, tr := textutil.TruncRunes(s, n)
 	if tr {
 		return t + "…"

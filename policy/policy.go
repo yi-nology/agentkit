@@ -158,8 +158,16 @@ func (g *Gate) Decide(ctx context.Context, op Op) Decision {
 		if !r.matches(op) {
 			continue
 		}
-		if r.Verdict != VerdictUnknown {
+		switch {
+		case r.Verdict == VerdictUnknown:
+			// 灰区：走仲裁路径（原语义）
+		case isValidVerdict(r.Verdict):
 			return Decision{Verdict: r.Verdict, Decider: DeciderRule, RuleID: r.ID, Reason: r.Reason}
+		default:
+			// 非法 verdict（漏写/拼错的 yaml 规则）：fail-safe 升人审——
+			// 此前原样透传且 toolgate 只判 deny，一切非 deny 值都放行（C 级）
+			return Decision{Verdict: VerdictNeedHuman, Decider: DeciderRule, RuleID: r.ID,
+				Reason: "规则 verdict 非法（" + string(r.Verdict) + "），fail-safe 升人审: " + r.Reason}
 		}
 		if g.arbiter == nil {
 			return Decision{Verdict: VerdictNeedHuman, Decider: DeciderRule, RuleID: r.ID,
@@ -183,6 +191,12 @@ func (g *Gate) Decide(ctx context.Context, op Op) Decision {
 		}
 		return Decision{Verdict: VerdictAuto, Decider: DeciderRule, RuleID: "readonly_allowlist", Reason: "白名单内只读采集工具"}
 	case OpExecuteStep:
+		if op.Mode == ModePlan {
+			// plan 模式不可能存在已批准方案（plan_submit 恒 plan_only）——此模式
+			// 下的 execute_step 必无上游审批，「审计复读」前提不成立（第九轮审计）
+			return Decision{Verdict: VerdictNeedHuman, Decider: DeciderRule,
+				RuleID: "plan_mode_no_exec", Reason: "计划模式不允许执行任何步骤"}
+		}
 		return Decision{Verdict: VerdictAuto, Decider: DeciderRule, RuleID: "approved_plan",
 			Reason: "已批准方案的确定性执行步骤（审批+一次性凭据上游把关，此处审计复读）"}
 	case OpPlanSubmit:
@@ -214,4 +228,15 @@ func (g *Gate) decidePlanSubmit(op Op) Decision {
 	default: // confirm 与未归一模式
 		return Decision{Verdict: VerdictNeedHuman, Decider: DeciderRule, RuleID: "confirm_default", Reason: "confirm 模式（缺省）：变更前人工审批"}
 	}
+}
+
+// isValidVerdict 例外规则 verdict 合法域（第九轮审计 C 级：此前零校验，
+// 漏写/拼错的 yaml verdict 原样透传，且 toolgate 只判 deny——一切非 deny
+// 值都放行，fail-open）。
+func isValidVerdict(v Verdict) bool {
+	switch v {
+	case VerdictAuto, VerdictNeedHuman, VerdictDeny, VerdictUnknown:
+		return true
+	}
+	return false
 }

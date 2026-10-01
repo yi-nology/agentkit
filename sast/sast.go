@@ -15,12 +15,14 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"git.enjoye.top/enjoydream/agentkit/logredact"
 	"git.enjoye.top/enjoydream/agentkit/procx"
 	"git.enjoye.top/enjoydream/agentkit/reportutil"
 	"git.enjoye.top/enjoydream/agentkit/textutil"
+	"git.enjoye.top/enjoydream/ekit/concurrency/async"
 )
 
 // Config SAST 工具配置（bin 路径来自部署方信任源；全空 = 功能关闭）。
@@ -81,17 +83,39 @@ func Scan(ctx context.Context, cfg Config, dir, baseRef string, paths []string, 
 		return nil
 	}
 	timeout := cfg.TimeoutResolved()
-	var out []ToolResult
+	// 两工具并行（第九轮审计速赢：互不依赖、状态零共享，墙钟 max 而非 sum
+	// ——串行最坏 2×Timeout）；结果按固定序重组（gitleaks 在前）保确定性
+	var wg sync.WaitGroup
+	var gRes, sRes ToolResult
+	var gRan, sRan bool
 	if cfg.GitleaksBin != "" {
-		out = append(out, runGitleaks(ctx, cfg, dir, baseRef, timeout, log))
+		gRan = true
+		wg.Add(1)
+		async.GoSafe(func() {
+			defer wg.Done()
+			gRes = runGitleaks(ctx, cfg, dir, baseRef, timeout, log)
+		})
 	}
 	if cfg.SemgrepBin != "" {
 		if strings.TrimSpace(cfg.SemgrepConfig) == "" {
 			log.Warn("sast.semgrep_no_config",
 				"hint", "semgrep bin 已配但 config 为空，semgrep 跳过")
 		} else {
-			out = append(out, runSemgrep(ctx, cfg, dir, paths, timeout, log))
+			sRan = true
+			wg.Add(1)
+			async.GoSafe(func() {
+				defer wg.Done()
+				sRes = runSemgrep(ctx, cfg, dir, paths, timeout, log)
+			})
 		}
+	}
+	wg.Wait()
+	var out []ToolResult
+	if gRan {
+		out = append(out, gRes)
+	}
+	if sRan {
+		out = append(out, sRes)
 	}
 	return out
 }
@@ -135,16 +159,21 @@ func runGitleaks(ctx context.Context, cfg Config, dir, baseRef string,
 	}
 	// 报告文件旁路了 procx 的 stdout 限容——回读设同口径硬上限（8MB）：
 	// 恶意 diff 铺百万行伪造命中可产出数十万条 finding，全量读入+Unmarshal
-	// 的内存放大一个量级（第八轮审计）。超限截断读取，解析按所得处理。
+	// 的内存放大一个量级（第八轮审计）。超限**显式报错**而非截断——截断产物
+	// 必是残缺 JSON，Unmarshal 必败且丢失真实根因（第九轮审计修正）。
 	f, err := os.Open(reportPath)
 	if err != nil {
 		res.Err = fmt.Errorf("读取 gitleaks 报告失败: %w", err)
 		return res
 	}
-	data, err := io.ReadAll(io.LimitReader(f, reportCap))
+	data, err := io.ReadAll(io.LimitReader(f, reportCap+1))
 	_ = f.Close()
 	if err != nil {
 		res.Err = fmt.Errorf("读取 gitleaks 报告失败: %w", err)
+		return res
+	}
+	if len(data) > reportCap {
+		res.Err = fmt.Errorf("gitleaks 报告超 %dMB 上限（疑似伪造命中洪泛），拒绝解析", reportCap>>20)
 		return res
 	}
 	var entries []struct {

@@ -151,3 +151,60 @@ func TestRedactKeepsNormalText(t *testing.T) {
 		t.Fatalf("普通文本被误改: %q -> %q", normal, got)
 	}
 }
+
+// TestRedactAuthorizationHeader 回归（第九轮审计 C 级）：Authorization 头的
+// 凭据本体必须整体打码——此前规则只吃 scheme 名（\S+），Basic/Bearer 后的
+// base64/裸 token 原文泄漏，且 Bearer 规则失去锚点兜不住。
+func TestRedactAuthorizationHeader(t *testing.T) {
+	cases := []struct{ in, cred string }{
+		{"Authorization: Basic dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNzd29yZA=="},
+		{"Authorization: Bearer gf7t2xK9randomOpaqueToken0a1b2c", "gf7t2xK9randomOpaqueToken0a1b2c"},
+		{"authorization=bearer-cred-abcdef0123456789", "bearer-cred-abcdef0123456789"},
+	}
+	for _, c := range cases {
+		out := Redact(c.in)
+		if strings.Contains(out, c.cred) {
+			t.Errorf("%q 凭据泄漏: %q", c.in, out)
+		}
+	}
+}
+
+// TestRedactPasswordColonSpace 回归（第九轮审计）：YAML/缩进 JSON 的
+// `password: xxx` 形态（冒号后空格）必须打码。
+func TestRedactPasswordColonSpace(t *testing.T) {
+	for _, in := range []string{
+		"password: hunter2",
+		"  token: abc.def.ghi12345",
+		`{"password": "s3cr3tVALUE"}`,
+	} {
+		out := Redact(in)
+		for _, cred := range []string{"hunter2", "abc.def.ghi12345", "s3cr3tVALUE"} {
+			if strings.Contains(out, cred) {
+				t.Errorf("%q 凭据泄漏: %q", in, out)
+			}
+		}
+	}
+}
+
+// TestRedactModernTokenPrefixes 回归（第九轮审计）：sk-proj-（OpenAI 现行）、
+// mongodb+srv://、amqps:// 形态覆盖。
+func TestRedactModernTokenPrefixes(t *testing.T) {
+	out := Redact("key=sk-proj-abcdef0123456789abcdef0123456789abcd")
+	if strings.Contains(out, "sk-proj-abcdef") {
+		t.Errorf("sk-proj- 泄漏: %q", out)
+	}
+	out = Redact("connect mongodb+srv://user:passw0rd@cluster.example.net/")
+	if strings.Contains(out, "passw0rd") {
+		t.Errorf("mongodb+srv 凭据泄漏: %q", out)
+	}
+}
+
+// TestRedactTruncatedPEM 回归（第九轮审计）：日志截断落在 PEM 中段（BEGIN
+// 无 END）时私钥体不泄漏。
+func TestRedactTruncatedPEM(t *testing.T) {
+	in := "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA7xK9tG\n(truncated"
+	out := Redact(in)
+	if strings.Contains(out, "MIIEowIBAAKCAQEA7xK9tG") {
+		t.Errorf("截断 PEM 泄漏: %q", out)
+	}
+}
