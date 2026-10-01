@@ -1,7 +1,7 @@
 # agentkit
 
 AI Agent 开发工具箱 —— 从生产项目提炼的通用组件库：代码审查平台 **Argus** + 智能运维多智能体平台 **bianque** + LLM 评测/观测平台 **heimdallr**。
-当前版本 **v0.10.40** · Go ≥ 1.26 · 47 个包。
+当前版本 **v0.10.41** · Go ≥ 1.26 · 46 个包。
 
 > 📖 **完整框架文档**：[docs/FRAMEWORK.md](docs/FRAMEWORK.md) —— 设计原则、六层架构、
 > 各包逐一详解（API/示例/边界契约）、横向能力专题（可靠性/成本/多副本/安全）、
@@ -90,9 +90,9 @@ git.enjoye.top/enjoydream/agentkit
 | `lineage` | 装配血缘图（used_by 单源 + reload 影响面 diff + 焦点子图） | skill, pack |
 | `hotplug` | 插拔视图 Plugboard + 泛型原子快照 Holder | 无 |
 | `logredact` | 日志/审计凭据脱敏（URL/token/Bearer 打码 + Redact 高敏感抹除 + Masker/Restore 拓扑标识令牌化） | 无 |
-| `jsonrepair` | LLM 宽容 JSON 修复（栅栏/尾逗号/全角/散文包裹 + 标量归一 + ExtractJSON/Unmarshal 解析链） | 无 |
+| ~~jsonrepair~~ | **已下沉 ekit/pkg/jsonrepair（v0.10.41）**——LLM 宽容 JSON 修复全链，消费 `ekit/pkg/jsonrepair` | 无 |
 | `procx` | 子进程托管纪律单源（进程组执行/超时整组终止/限容采集/环境白名单） | ekit(async) |
-| `httpx` | HTTP+JSON 调用纪律单源（限容读体 + rune 安全错误摘要） | 无 |
+| ~~httpx~~ | **已下沉 ekit/pkg/httpjson（v0.10.41）**——DoJSON/重试/Retry-After，消费 `ekit/pkg/httpjson` | 无 |
 | `reportutil` | 评审/评测报告后处理（严重度归一 + 采样聚簇 + Wilson/McNemar 统计 + 模式键/Beta） | ekit(encoding) |
 | `sast` | 确定性 SAST 前置扫描：gitleaks/semgrep 执行+JSON 归一（范围/聚焦扫描、密钥红线、环境白名单） | 无 |
 | `diffx` | unified diff 结构解析：保序切块/path→块/目标路径/hunk 新行区间（纯函数） | 无 |
@@ -514,7 +514,7 @@ import "git.enjoye.top/enjoydream/agentkit/logredact"
 logredact.Redact("nats://ops:s3cret@host:4222") // nats://ops:****@host:4222
 logredact.RedactValue(payload)                  // 递归脱敏 map/slice 中的凭据字符串
 
-import "git.enjoye.top/enjoydream/agentkit/jsonrepair"
+import "git.enjoye.top/enjoydream/ekit/pkg/jsonrepair"
 
 var v MyStruct
 err := jsonrepair.ParseLenient(llmOutput, &v, &jsonrepair.Schema{

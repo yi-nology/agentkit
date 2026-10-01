@@ -1463,6 +1463,11 @@ flowchart TD
   DiffPath/HunkLines）+ textutil.FirstNonEmpty——收编 argus diffprep/inject
 - **v0.10.39**：工具链三件下沉——workcopy 浅克隆补全 / 确定性 SAST / 配置卫生
   助手（并发会话发布）
+- **v0.10.41（通用件下沉轮）**：httpx/jsonrepair 两包整体下沉 ekit v0.33.0
+  （pkg/httpjson：DoJSON/重试/Retry-After 家族；pkg/jsonrepair：宽容 JSON 修复
+  全链）后删除，消费方改 import ekit；llm retryafter 传输原语下沉、保留薄委托
+  门面；textutil 截断三件与 reportutil Wilson/McNemar 薄委托 ekit
+  （stringx/mathx）——公开 API 不变
 - **v0.10.40（ekit v0.27.2 → v0.31.0 升级轮）**：依赖边界从 logx/async 扩到
   encoding——async 接入 v0.29 补齐的 GoWithContext（worker/leader、worker/pool
   心跳、progress/bus），裸 goroutine 全面收编 GoSafe（mcp Tools fanout 与闲置

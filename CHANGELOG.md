@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.10.41 (2026-10-02)
+
+通用件下沉轮：agentkit 中与 agent 语义无关的通用实现下沉 ekit v0.33.0
+（pkg/stringx、pkg/httpjson、pkg/jsonrepair、pkg/mathx），agentkit 删除自有
+实现改消费 ekit 单源。破坏式：httpx 与 jsonrepair 两包删除。
+
+### Changed（破坏式）
+
+- **httpx 包删除**：整体下沉 ekit/pkg/httpjson（DoJSON/DoJSONWithRetry/
+  StatusError/RetryConfig + Retry-After 捕获与钳制取舍家族）。消费方
+ （langfuse、rag.OpenAIEmbedder、websearch.Searxng）改 import
+  `ekit/pkg/httpjson`（API 同形，包名 httpx→httpjson）。
+- **jsonrepair 包删除**：整体下沉 ekit/pkg/jsonrepair（剥围栏→散文抽对象→
+  单遍字符串感知语法修复→标量归一→Unmarshal 三级宽容链；测试随迁）。
+  消费方（llm/acpx）改 import `ekit/pkg/jsonrepair`（包名不变零代码改动）。
+- **llm/retryafter.go**：传输/钳制原语（sink/transport/parse/select）下沉
+  ekit，本包保留 WithRetryAfterSink/RetryAfterFrom/SelectRetryDelay/
+  MaxServerRetryAfter 薄委托（agentrun/resilient 消费 llm.* 门面不变）；
+  「仅限流失败采信建议」的策略门控仍在 llm.generateRetry。OpenAI Provider
+  的传输层装配改 httpjson.RetryAfterTransport。
+
+### Changed（门面委托，公开 API 不变）
+
+- **textutil**：TruncRunes/TruncBytes/TruncEllipsis 薄委托
+  ekit/pkg/stringx（实现单源在彼）；TruncNote/SplitRunes/token 估算等
+  agent 语义件留本地。
+- **reportutil**：WilsonCI/McNemarExact 薄委托 ekit/pkg/mathx。
+
+### deps
+
+- ekit v0.31.0 → v0.33.0。
+
 ## v0.10.40 (2026-10-01)
 
 ekit 升级轮：v0.27.2 → v0.31.0，并按 ekit 最新治理纪律收编 agentkit 的
