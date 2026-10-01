@@ -126,3 +126,45 @@ func TestMimoDefaultModel(t *testing.T) {
 		t.Fatalf("req.Model 应优先于 DefaultModel: %s", raw)
 	}
 }
+
+// TestMimoStepFinishWinsOverExitError step_finish 终态已到但进程退出码非零：
+// 终态优先（与 claude/codex/pi 同契约——第六轮审计补齐，此前 mimo 直接上抛
+// 丢失 text/sessionID/usage 全部结果）。
+func TestMimoStepFinishWinsOverExitError(t *testing.T) {
+	bin := fakeCLI(t, `cat <<'JSONL'
+{"type":"text","part":{"text":"已完成的部分"}}
+{"type":"step_finish","sessionID":"ses_1","part":{"tokens":{"input":10,"output":5},"cost":0.001}}
+JSONL
+exit 1
+`)
+	m := NewMimo()
+	m.Bin = bin
+	res, err := m.Run(context.Background(), RunRequest{Prompt: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Text != "已完成的部分" || res.ExitCode != 1 || res.SessionID != "ses_1" {
+		t.Fatalf("res: %+v", res)
+	}
+	if res.Usage.InputTokens != 10 || res.Usage.OutputTokens != 5 {
+		t.Fatalf("usage: %+v", res.Usage)
+	}
+}
+
+// TestMimoEmptyFinishNotFallbackToStream step_finish 到达但无 text 事件：
+// 空文本终态合法，不得以 stdout 的 JSONL 原文兜底当正文。
+func TestMimoEmptyFinishNotFallbackToStream(t *testing.T) {
+	bin := fakeCLI(t, `cat <<'JSONL'
+{"type":"step_finish","sessionID":"ses_2","part":{"tokens":{"input":1,"output":1}}}
+JSONL
+`)
+	m := NewMimo()
+	m.Bin = bin
+	res, err := m.Run(context.Background(), RunRequest{Prompt: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Text != "" || res.SessionID != "ses_2" {
+		t.Fatalf("res: %+v", res)
+	}
+}

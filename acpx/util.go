@@ -24,3 +24,17 @@ func readFileTrim(path string) string {
 	}
 	return strings.TrimSpace(string(b))
 }
+
+// mapSandbox 沙箱档位 → CLI 参数值（readonly/workspace/full 三档语义统一，
+// 取值因 CLI 而异由各适配器传入）。未指定档位 ok=false（不追加任何参数）。
+func mapSandbox(sb, readonly, workspace, full string) (string, bool) {
+	switch sb {
+	case SandboxReadonly:
+		return readonly, true
+	case SandboxWorkspace:
+		return workspace, true
+	case SandboxFull:
+		return full, true
+	}
+	return "", false
+}

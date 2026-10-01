@@ -2,8 +2,6 @@ package acpx
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 )
 
 // 编译期断言。
@@ -66,13 +64,8 @@ func (g *Gemini) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	if req.Model != "" {
 		argv = append(argv, "-m", req.Model)
 	}
-	switch req.Sandbox {
-	case SandboxReadonly:
-		argv = append(argv, "--approval-mode", "default")
-	case SandboxWorkspace:
-		argv = append(argv, "--approval-mode", "auto_edit")
-	case SandboxFull:
-		argv = append(argv, "--approval-mode", "yolo")
+	if v, ok := mapSandbox(req.Sandbox, "default", "auto_edit", "yolo"); ok {
+		argv = append(argv, "--approval-mode", v)
 	}
 
 	stdout, code, err := runCLI(ctx, req, argv, nil)
@@ -87,10 +80,8 @@ func (g *Gemini) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	}
 	// 运行期错误如实上抛（部分错误形态 exit 仍为 0，只能从信封识别——与 mimo 同纪律）
 	if out.Error != nil && out.Error.Message != "" {
-		if req.OnEvent != nil {
-			req.OnEvent(Event{Type: EventError, Text: out.Error.Message, Raw: json.RawMessage(stdout)})
-		}
-		return nil, fmt.Errorf("acpx: gemini 运行错误: %s", out.Error.Message)
+		emitError(req, out.Error.Message, stdout)
+		return nil, streamError("gemini", "运行错误", out.Error.Message)
 	}
 	if out.Response == "" {
 		return fallbackResult(stdout, code), nil

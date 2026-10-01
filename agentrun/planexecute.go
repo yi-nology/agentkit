@@ -55,22 +55,40 @@ func PlanAndExecute(ctx context.Context, cfg PlanExecuteConfig, goal string) (*P
 	}
 	maxSteps := maxStepsOr(cfg.MaxSteps)
 
-	// GenInputFn 仅在调用方带 PlannerInstruction 时设置：eino 的 defaultGenPlanner-
-	// InputFn（PlannerPrompt.Format——完整规划方法论与格式要求）仅在 nil 时生效，
-	// 恒传非 nil 会把它整体丢弃（规划器裸奔，v0.10.29 审计修复）。带指令时在默认
-	// 提示词之前追加调用方约束——兑现「追加注入、不覆盖格式提示词」的文档承诺。
-	plannerCfg := &planexecute.PlannerConfig{ToolCallingChatModel: cfg.Planner}
-	if cfg.PlannerInstruction != "" {
-		instr := cfg.PlannerInstruction
-		plannerCfg.GenInputFn = func(ctx context.Context, userInput []adk.Message) ([]adk.Message, error) {
-			base, err := planexecute.PlannerPrompt.Format(ctx, map[string]any{"input": userInput})
-			if err != nil {
-				return nil, err
-			}
-			return append([]adk.Message{schema.SystemMessage(instr)}, base...), nil
-		}
+	pe, err := buildPlanExecute(ctx, cfg, maxSteps)
+	if err != nil {
+		return nil, err
 	}
-	planner, err := planexecute.NewPlanner(ctx, plannerCfg)
+
+	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: pe, EnableStreaming: false})
+	iter := runner.Query(ctx, goal)
+
+	// 最终答复只认 Replanner 的 respond 出口（其 Content 恒为
+	// {"response":"..."} tool-call arguments 信封）——executor 的步骤输出
+	// 也是无 tool_calls 的 assistant 文本，事件流无 agent 来源标识，
+	// 信封命中即完成信号；否则 MaxSteps 耗尽时中间步骤会被当最终答复。
+	var answer string
+	err = drainEvents(iter, "plan-execute", func(mv *adk.MessageVariant) error {
+		if mv.Role == schema.Assistant && mv.Message != nil &&
+			len(mv.Message.ToolCalls) == 0 && mv.Message.Content != "" {
+			if unwrapped := unwrapRespond(mv.Message.Content); unwrapped != mv.Message.Content {
+				answer = unwrapped
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if answer == "" {
+		return nil, fmt.Errorf("agentrun: plan-execute 未产出最终答复（max_steps=%d，replanner 未判定完成）", maxSteps)
+	}
+	return &PlanExecuteResult{Text: answer}, nil
+}
+
+// buildPlanExecute 装配 Planner/Executor/Replanner 并组合成 ADK planexecute。
+func buildPlanExecute(ctx context.Context, cfg PlanExecuteConfig, maxSteps int) (adk.ResumableAgent, error) {
+	planner, err := planexecute.NewPlanner(ctx, plannerConfig(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("agentrun: 构造 Planner 失败: %w", err)
 	}
@@ -98,40 +116,33 @@ func PlanAndExecute(ctx context.Context, cfg PlanExecuteConfig, goal string) (*P
 		return nil, fmt.Errorf("agentrun: 构造 Replanner 失败: %w", err)
 	}
 
-	pe, err := planexecute.New(ctx, &planexecute.Config{
+	return planexecute.New(ctx, &planexecute.Config{
 		Planner:       planner,
 		Executor:      executor,
 		Replanner:     replanner,
 		MaxIterations: maxSteps,
 	})
-	if err != nil {
-		return nil, fmt.Errorf("agentrun: 组合 Plan-and-Execute 失败: %w", err)
+}
+
+// plannerConfig 装配 Planner 配置。GenInputFn 仅在调用方带 PlannerInstruction
+// 时设置：eino 的 defaultGenPlannerInputFn（PlannerPrompt.Format——完整规划
+// 方法论与格式要求）仅在 nil 时生效，恒传非 nil 会把它整体丢弃（规划器裸奔，
+// v0.10.29 审计修复）。带指令时在默认提示词之前追加调用方约束——兑现
+// 「追加注入、不覆盖格式提示词」的文档承诺。
+func plannerConfig(cfg PlanExecuteConfig) *planexecute.PlannerConfig {
+	plannerCfg := &planexecute.PlannerConfig{ToolCallingChatModel: cfg.Planner}
+	if cfg.PlannerInstruction == "" {
+		return plannerCfg
 	}
-
-	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: pe, EnableStreaming: false})
-	iter := runner.Query(ctx, goal)
-
-	var answer string
-	err = drainEvents(iter, "plan-execute", func(mv *adk.MessageVariant) error {
-		// 最终答复只认 Replanner 的 respond 出口（其 Content 恒为
-		// {"response":"..."} tool-call arguments 信封）——executor 的步骤输出
-		// 也是无 tool_calls 的 assistant 文本，事件流无 agent 来源标识，
-		// 信封命中即完成信号；否则 MaxSteps 耗尽时中间步骤会被当最终答复。
-		if mv.Role == schema.Assistant && mv.Message != nil &&
-			len(mv.Message.ToolCalls) == 0 && mv.Message.Content != "" {
-			if unwrapped := unwrapRespond(mv.Message.Content); unwrapped != mv.Message.Content {
-				answer = unwrapped
-			}
+	instr := cfg.PlannerInstruction
+	plannerCfg.GenInputFn = func(ctx context.Context, userInput []adk.Message) ([]adk.Message, error) {
+		base, err := planexecute.PlannerPrompt.Format(ctx, map[string]any{"input": userInput})
+		if err != nil {
+			return nil, err
 		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
+		return append([]adk.Message{schema.SystemMessage(instr)}, base...), nil
 	}
-	if answer == "" {
-		return nil, fmt.Errorf("agentrun: plan-execute 未产出最终答复（max_steps=%d，replanner 未判定完成）", maxSteps)
-	}
-	return &PlanExecuteResult{Text: answer}, nil
+	return plannerCfg
 }
 
 // unwrapRespond 解包 eino respond 工具调用的 {"response":"..."} 信封；

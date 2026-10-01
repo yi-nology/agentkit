@@ -152,3 +152,24 @@ func TestPreapproveHook(t *testing.T) {
 		t.Fatalf("只读模式压过预批（非只读工具拦下）: %+v", d)
 	}
 }
+
+// TestWildcardPathTraversalDenied 回归（第六轮审计）：wildcard 路径规则可被
+// `..` 穿越绕过——file_path/path 类 subject 匹配前 Clean，"/repo/data/../../etc/passwd"
+// 归一为 "/etc/passwd" 后不再命中 "/repo/data/*"（fail-closed，落 Ask 裁决）。
+func TestWildcardPathTraversalDenied(t *testing.T) {
+	s := &Service{
+		ProjectRules: Ruleset{
+			Allow: []Rule{{ToolName: "write", Content: "/repo/data/*"}},
+		},
+	}
+	in := map[string]any{"file_path": "/repo/data/../../etc/passwd"}
+	d := s.Check(ctx, "write", in, ModeDefault, Capability{})
+	if d.Behavior == Allow {
+		t.Fatalf("穿越路径不应命中 allow 规则: %+v", d)
+	}
+	// 正常子路径仍命中
+	d2 := s.Check(ctx, "write", map[string]any{"file_path": "/repo/data/sub/a.txt"}, ModeDefault, Capability{})
+	if d2.Behavior != Allow {
+		t.Fatalf("正常子路径应放行: %+v", d2)
+	}
+}

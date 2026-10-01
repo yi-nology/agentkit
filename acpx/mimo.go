@@ -3,7 +3,6 @@ package acpx
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 )
 
@@ -83,6 +82,13 @@ func (e *mimoEvent) errMsg() string {
 
 // Run 执行 mimo run 任务。
 func (m *Mimo) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
+	st := &mimoStream{req: req}
+	stdout, code, err := runCLI(ctx, req, m.buildArgv(req), st.handleLine)
+	return st.finalize(stdout, code, err)
+}
+
+// buildArgv 构造 mimo CLI 参数（协议面固定：run --format json；argv 语义不改）。
+func (m *Mimo) buildArgv(req RunRequest) []string {
 	argv := []string{m.Bin, "run", promptArg(req.Prompt), "--format", "json"}
 	model := req.Model
 	if model == "" {
@@ -94,62 +100,75 @@ func (m *Mimo) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	if req.SessionID != "" {
 		argv = append(argv, "-s", req.SessionID)
 	}
+	return argv
+}
 
-	var (
-		text      string
-		sessionID string
-		usage     Usage
-		errMsg    string
-	)
-	onLine := func(line string) {
-		var ev mimoEvent
-		if err := json.Unmarshal([]byte(line), &ev); err != nil {
-			return
-		}
-		switch ev.Type {
-		case "error":
-			// mimo 运行期错误（如模型不支持）exit code 仍为 0——只能从事件流识别。
-			// 全量转发（transcript 可排障）并记录，结束时如实报错
-			if msg := ev.errMsg(); msg != "" {
-				errMsg = msg
-				if req.OnEvent != nil {
-					req.OnEvent(Event{Type: EventError, Text: msg, Raw: json.RawMessage(line)})
-				}
-			}
-		case "text":
-			if ev.Part != nil && ev.Part.Text != "" {
-				text = ev.Part.Text // 增量文本：保留最后一段（完整回复以 step_finish 收尾）
-				emitText(req, ev.Part.Text, line)
-			}
-		case "step_finish":
-			if ev.SessionID != "" {
-				sessionID = ev.SessionID
-			}
-			if ev.Part != nil {
-				if ev.Part.Tokens != nil {
-					usage.InputTokens += ev.Part.Tokens.Input
-					usage.OutputTokens += ev.Part.Tokens.Output
-				}
-				usage.CostUSD += ev.Part.Cost
-			}
-			if req.OnEvent != nil {
-				req.OnEvent(Event{Type: EventResult, Text: text, Raw: json.RawMessage(line)})
-			}
-		}
-	}
+// mimoStream 事件流解析状态（handleLine 在 stdout 读取 goroutine 中同步执行）。
+type mimoStream struct {
+	req       RunRequest
+	text      string
+	sessionID string
+	usage     Usage
+	errMsg    string
+	sawFinish bool // step_finish 终态是否到达（终态优先判据，与文本无关）
+}
 
-	stdout, code, err := runCLI(ctx, req, argv, onLine)
-	if err != nil {
-		return nil, err
+// handleLine 单行 JSONL 事件解析（非事件行忽略）。
+func (s *mimoStream) handleLine(line string) {
+	var ev mimoEvent
+	if err := json.Unmarshal([]byte(line), &ev); err != nil {
+		return
 	}
+	switch ev.Type {
+	case "error":
+		// mimo 运行期错误（如模型不支持）exit code 仍为 0——只能从事件流识别。
+		// 全量转发（transcript 可排障）并记录，结束时如实报错
+		if msg := ev.errMsg(); msg != "" {
+			s.errMsg = msg
+			emitError(s.req, msg, line)
+		}
+	case "text":
+		if ev.Part != nil && ev.Part.Text != "" {
+			s.text = ev.Part.Text // 增量文本：保留最后一段（完整回复以 step_finish 收尾）
+			emitText(s.req, ev.Part.Text, line)
+		}
+	case "step_finish":
+		s.sawFinish = true
+		if ev.SessionID != "" {
+			s.sessionID = ev.SessionID
+		}
+		if ev.Part != nil {
+			if ev.Part.Tokens != nil {
+				s.usage.InputTokens += ev.Part.Tokens.Input
+				s.usage.OutputTokens += ev.Part.Tokens.Output
+			}
+			s.usage.CostUSD += ev.Part.Cost
+		}
+		emit(s.req, Event{Type: EventResult, Text: s.text, Raw: json.RawMessage(line)})
+	}
+}
+
+// finalize 收尾装配（三段式骨架）：step_finish 到达即终态——执行错时终态优先
+// （agent 正常完成但退出码非零），空文本终态不再以 stdout 事件流原文兜底；
+// 无终态时保留 text 事件文本（版本差异下 step_finish 缺失的宽容路径）。
+func (s *mimoStream) finalize(stdout string, code int, err error) (*RunResult, error) {
 	// 有错如实报错：不因恰好收到部分文本而把失败跑当成功返回
 	//（2026-09 huginn 实弹教训：纯错误跑曾以 stdout 全文兜底成"成功"，
 	// probe 误判通过、排障被带偏）
-	if errMsg != "" {
-		return nil, fmt.Errorf("acpx: mimo 运行错误: %s", errMsg)
+	streamErr := streamError("mimo", "运行错误", s.errMsg)
+	if s.sawFinish {
+		return finalizeStream(stdout, code, err,
+			&RunResult{Text: s.text, SessionID: s.sessionID, Usage: s.usage}, true, streamErr)
 	}
+	if err != nil {
+		return nil, err
+	}
+	if streamErr != nil {
+		return nil, streamErr
+	}
+	text := s.text
 	if text == "" {
 		text = strings.TrimSpace(stdout) // 事件流不可用时全文兜底（含 ANSI 码的场景由调用方清理）
 	}
-	return &RunResult{Text: text, SessionID: sessionID, Usage: usage, ExitCode: code, Raw: []byte(stdout)}, nil
+	return &RunResult{Text: text, SessionID: s.sessionID, Usage: s.usage, ExitCode: code, Raw: []byte(stdout)}, nil
 }

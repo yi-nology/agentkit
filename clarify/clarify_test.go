@@ -127,3 +127,27 @@ func TestLoadVocab(t *testing.T) {
 		}
 	})
 }
+
+// TestResolveAnswerFallbackTightened 回归（第六轮审计）：逃生选项判定收紧为
+// 「答案包含完整短语」或「答案是短语前缀（≥2 字）」——双向子串包含曾把
+// 「全面」「不」这类词误消解为放弃细分。
+func TestResolveAnswerFallbackTightened(t *testing.T) {
+	opts := []string{"继续等待"}
+	fb := "不清楚，全面查"
+	cases := []struct {
+		answer     string
+		isFallback bool
+		ok         bool
+	}{
+		{"不清楚", true, true},         // 前缀缩写（≥2 字）
+		{"我认为不清楚，全面查吧", true, true}, // 包含完整短语
+		{"全面", false, false},        // 子串但非前缀 → 换话题
+		{"不", false, false},         // 单字前缀不命中
+	}
+	for _, c := range cases {
+		_, isFb, ok := ResolveAnswer(opts, fb, c.answer)
+		if isFb != c.isFallback || ok != c.ok {
+			t.Errorf("%q: isFallback=%v ok=%v（want %v/%v）", c.answer, isFb, ok, c.isFallback, c.ok)
+		}
+	}
+}

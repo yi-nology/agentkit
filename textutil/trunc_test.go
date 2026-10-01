@@ -90,3 +90,20 @@ func TestSplitRunes(t *testing.T) {
 		}
 	}
 }
+
+func TestTruncBytesRuneAligned(t *testing.T) {
+	s := "技能名字很长"                      // 每字 3 字节
+	out, truncated := TruncBytes(s, 4) // 预算落在第 2 字内 → 回退到 3 字节边界
+	if !truncated || out != "技" {
+		t.Fatalf("out=%q truncated=%v（应回退到完整 rune 边界）", out, truncated)
+	}
+	if out2, tr := TruncBytes(s, len(s)); tr || out2 != s {
+		t.Fatalf("预算足够应原样返回: %q %v", out2, tr)
+	}
+	if out3, tr := TruncBytes(s, 0); !tr || out3 != "" {
+		t.Fatalf("零预算应返回空串: %q %v", out3, tr)
+	}
+	if out4, tr := TruncBytes(s, -1); !tr || out4 != "" {
+		t.Fatalf("负预算按全截断: %q %v", out4, tr)
+	}
+}

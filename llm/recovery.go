@@ -5,6 +5,8 @@
 package llm
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"time"
 )
@@ -13,12 +15,10 @@ import (
 // 跨过单请求重试边界后只恢复 1 次与用户预期差距过大，10 次是生产调过的上限）。
 const MaxStreamRecoveryRetries = 10
 
-// transientErrorReasons 瞬态失败原因码（大小写双写兼容——各家网关措辞不一）。
+// transientErrorReasons 瞬态失败原因码（统一小写：匹配前 err 文案会 ToLower）。
 var transientErrorReasons = map[string]bool{
 	"model_request_timeout": true, "model_rate_limited": true,
 	"model_server_error": true, "model_network_error": true,
-	"MODEL_REQUEST_TIMEOUT": true, "MODEL_RATE_LIMITED": true,
-	"MODEL_SERVER_ERROR": true, "MODEL_NETWORK_ERROR": true,
 	"stream_idle_timeout": true, "rate_limited": true,
 	"server_error": true, "network_error": true, "timeout": true,
 }
@@ -26,8 +26,13 @@ var transientErrorReasons = map[string]bool{
 // IsTransientStreamError 流式 turn 中的错误是否瞬态（值得从安全锚点重开流）。
 // 与 ClassifyLLMError 的分工：后者面向单请求 HTTP 重试；本判定面向 turn 级
 // 恢复——额外覆盖流空闲超时与原因码形态（错误链上任意一层的文案都参与匹配）。
+// 调用方主动取消不算瞬态（与降级矩阵「ctx 取消 → 全链中止」一致）：若判为
+// 瞬态，取消后的恢复循环会空转 MaxStreamRecoveryRetries 轮、每轮立即再失败。
 func IsTransientStreamError(err error) bool {
 	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
 		return false
 	}
 	if h := ClassifyLLMError(err); h.Retryable {
@@ -35,7 +40,7 @@ func IsTransientStreamError(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	for reason := range transientErrorReasons {
-		if strings.Contains(msg, strings.ToLower(reason)) {
+		if strings.Contains(msg, reason) {
 			return true
 		}
 	}

@@ -55,7 +55,9 @@ func (k *Kimi) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	}
 
 	stdout, code, err := runCLI(ctx, req, argv, onLine)
-	if err != nil {
+	// 终态优先（与 claude/codex/pi/mimo 同契约）：已收到 assistant 消息
+	//（agent 正常完成）但进程退出码非零时以结果为准，不丢文本
+	if err != nil && lastAssistant == "" {
 		return nil, err
 	}
 	if lastAssistant == "" {

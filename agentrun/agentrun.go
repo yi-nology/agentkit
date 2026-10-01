@@ -82,12 +82,12 @@ type Event struct {
 // （真流式），同轮收束后仍发完整 reasoning/text 快照（权威口径，回放/对账以它为
 // 准；增量只服务实况渲染）。消费方以「同轮快照到达即吸收增量缓冲」去重。
 const (
-	EventReasoning       = "reasoning"
-	EventText            = "text"
-	EventToolCall        = "tool_call"
-	EventToolResult      = "tool_result"
-	EventReasoningDelta  = "reasoning_delta"
-	EventTextDelta       = "text_delta"
+	EventReasoning      = "reasoning"
+	EventText           = "text"
+	EventToolCall       = "tool_call"
+	EventToolResult     = "tool_result"
+	EventReasoningDelta = "reasoning_delta"
+	EventTextDelta      = "text_delta"
 )
 
 // Validate 校验配置必需项。
@@ -152,7 +152,10 @@ func RunWithEventsAndRetry(ctx context.Context, cfg Config, query, retryQuery st
 	}
 	// 服务端退避建议优先（钳制 ≤5min，ctx 取消即止）：429 时端点知道限流窗口还剩
 	// 多久——对仍在限流窗口的端点立即重跑只会再吃一个 429（对标 ZCode runner-retry
-	// 的服务端建议优先语义；等待钳制内才原地重跑，超限交调用方/failover 处置）。
+	// 的服务端建议优先语义）。建议超出钳制（>5min 且长于本地曲线）= 超长限流窗口，
+	// 原地等待与立即重跑都没有意义——返回首轮错误交调用方/failover 处置（此前
+	// SelectRetryDelay 返回 0 时跳过等待但照常立即重跑，恰是注释论证过要避免的
+	// 动作；第六轮审计）。
 	if hint := llm.RetryAfterFrom(ctx); hint > 0 {
 		if wait := llm.SelectRetryDelay(0, hint); wait > 0 {
 			select {
@@ -160,6 +163,8 @@ func RunWithEventsAndRetry(ctx context.Context, cfg Config, query, retryQuery st
 				return "", ctx.Err()
 			case <-time.After(wait):
 			}
+		} else {
+			return "", err // 建议超钳制：超长限流窗口，不原地重跑
 		}
 	}
 	return run(ctx, cfg, retryQuery, onEvent)
@@ -208,10 +213,10 @@ func run(ctx context.Context, cfg Config, query string, onEvent func(Event)) (st
 
 // reactHandler ReAct 事件流消费：工具声明/结果/思考/最终答复分路派发。
 type reactHandler struct {
-	onEvent   func(Event)
+	onEvent    func(Event)
 	toolCalled map[string]string // tool_call id → 工具名（回填 tool_result）
-	finalText string
-	sawFinal  bool
+	finalText  string
+	sawFinal   bool
 }
 
 func (h *reactHandler) handle(mv *adk.MessageVariant) error {

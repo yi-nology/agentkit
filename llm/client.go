@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"reflect"
 	"time"
+	"unicode/utf8"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
@@ -107,6 +108,22 @@ func (c *Client) Generate(ctx context.Context, stage string, msgs []*schema.Mess
 	ctx = obsx.WithStage(ctx, stage)
 	msgs = copyMsgs(msgs) // fitInput 原地替换元素，不能污染调用方的切片
 	c.fitInput(msgs)
+	return c.generateFitted(ctx, stage, msgs)
+}
+
+// generateFitted 假定 msgs 已是副本且完成 fitInput（Resilient.prepare 路径复用，
+// 免 JSON/降级链上再 copy+fit 一遍）。
+func (c *Client) generateFitted(ctx context.Context, stage string, msgs []*schema.Message) (*schema.Message, error) {
+	pol := c.retryPolicy()
+	out, err := c.generateRetry(ctx, stage, msgs, pol)
+	if err != nil {
+		return nil, fmt.Errorf("llm: %s 调用失败（已重试 %d 次）: %w", stage, pol.maxAttempts-1, err)
+	}
+	return out, nil
+}
+
+// retryPolicy 由 Client 字段推导单模型重试参数（缺省落位只算一次）。
+func (c *Client) retryPolicy() retryPolicy {
 	maxRetries := c.MaxRetries
 	if maxRetries <= 0 {
 		maxRetries = 3
@@ -119,16 +136,12 @@ func (c *Client) Generate(ctx context.Context, stage string, msgs []*schema.Mess
 	if ceil <= 0 {
 		ceil = 30 * time.Second
 	}
-	out, err := c.generateRetry(ctx, stage, msgs, retryPolicy{
+	return retryPolicy{
 		maxAttempts:   maxRetries,
 		base:          base,
 		ceil:          ceil,
 		chainFallback: false, // 单客户端无备选模型，429 值得退避等待
-	})
-	if err != nil {
-		return nil, fmt.Errorf("llm: %s 调用失败（已重试 %d 次）: %w", stage, maxRetries-1, err)
 	}
-	return out, nil
 }
 
 // retryPolicy 单模型重试策略（Client.Generate 与 Resilient.tryOneProvider 共用
@@ -148,79 +161,117 @@ type retryPolicy struct {
 // （一次）→ Generate → finish_reason=length 转错误并记账 → 按 ClassifyLLMError
 // 决定重试。ctx 取消原样上抛。
 func (c *Client) generateRetry(ctx context.Context, stage string, msgs []*schema.Message, pol retryPolicy) (*schema.Message, error) {
-	// Client 侧已配置记账（OnUsage/Budget）时打标记：NewUsageHandler 检测到
-	// 标记跳过发射——同一次物理调用的 Generate 路径与 callbacks 路径只记一次账
-	if c.OnUsage != nil || c.Budget != nil {
+	// Client 侧已配置 OnUsage 遥测出口时打标记：NewUsageHandler 检测到标记
+	// 跳过发射——同一次物理调用的 Generate 路径与 callbacks 路径只记一次遥测。
+	// Budget 不算遥测出口：只配 Budget（未配 OnUsage/Tracker）时不打标记，
+	// 否则 callbacks 侧的用量遥测会被预算静默吞掉（第六轮审计）
+	if c.OnUsage != nil {
 		ctx = withClientAccounting(ctx)
 	}
 	// Retry-After sink（批次四十五）：传输层捕获 429 服务端建议，退避取舍时优先采信
 	ctx = WithRetryAfterSink(ctx)
 	var lastErr error
+	var lastHint RetryHint
 	truncatedBoosted := false
 	for attempt := 0; attempt < pol.maxAttempts; attempt++ {
 		if attempt > 0 {
-			if pol.chainFallback {
-				// 同模型重试仅限"值得在同模型上重试"的错误：
-				// 429（限速池独立）与 context 超限/401（确定性失败）直接跳出，切换下一模型
-				if !sameModelRetryable(lastErr) {
-					break
-				}
-			} else if !ClassifyLLMError(lastErr).Retryable {
+			if !sameModelRetryDecision(pol.chainFallback, lastHint, lastErr) {
 				break
 			}
-			delay := backoffDelay(attempt, pol.base, pol.ceil, lastErr)
-			// 服务端建议优先（合理性钳制：≤5min 或短于本地曲线才采信——长限流交降级链）
-			if hint := RetryAfterFrom(ctx); hint > 0 {
-				delay = SelectRetryDelay(delay, hint)
+			if err := waitRetryGap(ctx, attempt, pol, lastHint); err != nil {
+				return nil, err
 			}
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(delay):
-			}
-		}
-		if c.Limiter != nil {
-			if err := c.Limiter.Wait(ctx); err != nil {
-				return nil, fmt.Errorf("llm: %s 限速等待取消: %w", stage, err)
-			}
-		}
-		attemptCtx := ctx
-		if pol.attemptTimeout > 0 {
-			var cancel context.CancelFunc
-			attemptCtx, cancel = context.WithTimeout(ctx, pol.attemptTimeout)
-			defer cancel()
 		}
 		var opts []model.Option
-		if IsTruncatedError(lastErr) && c.MaxOutputTokens > 0 && !truncatedBoosted {
+		if lastHint.IsTruncated {
+			// 提升后仍截断（或无 MaxOutputTokens 可提升）：同参数重试注定再
+			// 截断，白烧一次钱——就此打住，交上层（降级链切换/调用方处置）
+			if truncatedBoosted || c.MaxOutputTokens <= 0 {
+				break
+			}
 			opts = append(opts, model.WithMaxTokens(c.MaxOutputTokens*3/2))
 			truncatedBoosted = true
 		}
-		out, err := c.Model.Generate(attemptCtx, msgs, opts...)
+		out, err := c.oneAttempt(ctx, stage, msgs, pol.attemptTimeout, opts)
 		if err == nil {
-			if out.ResponseMeta != nil && out.ResponseMeta.FinishReason == "length" {
-				c.account(stage, msgs, out)
-				// Usage 是否存在取决于 Provider 实现（部分兼容端点缺失），不能裸解引用
-				ct := "?"
-				if out.ResponseMeta.Usage != nil {
-					ct = fmt.Sprint(out.ResponseMeta.Usage.CompletionTokens)
-				}
-				err = fmt.Errorf("llm: %s 输出被截断（finish_reason=length, completion_tokens=%s）",
-					stage, ct)
-			} else {
-				c.account(stage, msgs, out)
-				return out, nil
-			}
+			return out, nil
 		}
 		lastErr = err
+		lastHint = ClassifyLLMError(err) // 每轮只分类一次，复用于重试决策/退避/截断提升
 	}
 	return nil, lastErr
 }
 
+// sameModelRetryDecision 重试决策：chainFallback（降级链有备选）时仅"值得在同模型
+// 上重试"的错误继续（429 与确定性失败直接跳出，切换下一模型）；单客户端按
+// RetryHint.Retryable。
+func sameModelRetryDecision(chainFallback bool, hint RetryHint, err error) bool {
+	if chainFallback {
+		return sameModelRetryable(hint, err)
+	}
+	return hint.Retryable
+}
+
+// waitRetryGap 重试前退避等待：本地指数曲线 + 服务端 Retry-After 建议取舍。
+// ctx 取消原样上抛。
+func waitRetryGap(ctx context.Context, attempt int, pol retryPolicy, hint RetryHint) error {
+	delay := backoffDelay(attempt, pol.base, pol.ceil, hint.IsRateLimit)
+	// 服务端建议优先（合理性钳制：≤5min 或短于本地曲线才采信——长限流交降级链）。
+	// 只在本次失败确为限流时采信：sink 不随尝试清除，429 之后的 500 若也读
+	// sink，会对非限流错误白等陈旧的整段限流窗口（第六轮审计）
+	if hint.IsRateLimit {
+		if after := RetryAfterFrom(ctx); after > 0 {
+			delay = SelectRetryDelay(delay, after)
+		}
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(delay):
+		return nil
+	}
+}
+
+// oneAttempt 单次物理调用：限速等待 → 独立限时 Generate → 记账；
+// finish_reason=length 转为截断错误（供重试决策/截断提升）。
+func (c *Client) oneAttempt(ctx context.Context, stage string, msgs []*schema.Message, attemptTimeout time.Duration, opts []model.Option) (*schema.Message, error) {
+	if c.Limiter != nil {
+		if err := c.Limiter.Wait(ctx); err != nil {
+			return nil, fmt.Errorf("llm: %s 限速等待取消: %w", stage, err)
+		}
+	}
+	// 每轮独立 cancel：defer 会堆到函数尾，多轮重试囤积计时器/ctx
+	attemptCtx := ctx
+	var cancel context.CancelFunc
+	if attemptTimeout > 0 {
+		attemptCtx, cancel = context.WithTimeout(ctx, attemptTimeout)
+	}
+	out, err := c.Model.Generate(attemptCtx, msgs, opts...)
+	if cancel != nil {
+		cancel()
+	}
+	if err != nil {
+		return nil, err
+	}
+	c.account(stage, msgs, out)
+	if out.ResponseMeta != nil && out.ResponseMeta.FinishReason == "length" {
+		// Usage 是否存在取决于 Provider 实现（部分兼容端点缺失），不能裸解引用
+		ct := "?"
+		if out.ResponseMeta.Usage != nil {
+			ct = fmt.Sprint(out.ResponseMeta.Usage.CompletionTokens)
+		}
+		return nil, fmt.Errorf("llm: %s 输出被截断（finish_reason=length, completion_tokens=%s）",
+			stage, ct)
+	}
+	return out, nil
+}
+
 // backoffDelay 指数退避 + jitter（Client 与 Resilient 共用）；429 下限 5s，
 // 下限本身仍封顶 ceil——ceil<5s 的测试场景下最终钳到 ceil 的结果不变。
-func backoffDelay(attempt int, base, ceil time.Duration, err error) time.Duration {
+// isRateLimit 由调用方携带 ClassifyLLMError 结果，免二次全串分类。
+func backoffDelay(attempt int, base, ceil time.Duration, isRateLimit bool) time.Duration {
 	minDelay := base
-	if IsRateLimitError(err) {
+	if isRateLimit {
 		minDelay = 5 * time.Second
 		if minDelay > ceil {
 			minDelay = ceil
@@ -238,12 +289,23 @@ func backoffDelay(attempt int, base, ceil time.Duration, err error) time.Duratio
 }
 
 // GenerateJSON 生成并解析 JSON；解析失败把原始输出与错误回喂重试 1 次。
-// out 必须是 *T。截断在 Generate 内部已转为错误返回，走到这里的 lastErr 只会是
+// out 必须是 *T。截断在重试核心内已转为错误返回，走到这里的解析失败只会是
 // json.Unmarshal 错误——回喂提示只有"输出合法 JSON"一种。
 // 刻意走 ExtractJSON+严格 Unmarshal 而非 jsonrepair.Unmarshal 宽容链：宽容修复
 // 会改变输出内容，而本方法的失败路径要回喂重试，lastErr 须是纯解析错误。
 // 宽容回收半损坏输出归 jsonrepair.Unmarshal（无重试回喂的场景用）。
 func (c *Client) GenerateJSON(ctx context.Context, stage string, msgs []*schema.Message, out any) error {
+	return c.generateJSONFitted(ctx, stage, msgs, out, c.retryPolicy())
+}
+
+// generateJSONFitted GenerateJSON 的 policy 参数版本——Client.GenerateJSON 与
+// Resilient.tryOneProviderJSON 共用同一份「传输重试 + 回喂重试」骨架。此前
+// Resilient 的 JSON 路径固定经 GenerateJSON 落到 Client 字段推导的 policy
+// （buildClient 设 MaxRetries=1），同模型传输重试在 JSON 路径整体失效：一个
+// 瞬态 500 就切模型，与 Generate 路径行为不对称（第六轮审计）。
+// pol.attemptTimeout 不参与——JSON 路径语义是"单次完整生成调用"共享一个
+// 外层 deadline（见 tryOneProviderJSON 的超时接线）。
+func (c *Client) generateJSONFitted(ctx context.Context, stage string, msgs []*schema.Message, out any, pol retryPolicy) error {
 	// 入口校验（reflect 改写前）：out 必须是非 nil 指针——原 json.Unmarshal 对
 	// 误用返回 InvalidUnmarshalError，reflect 路径不校验会 panic
 	rv := reflect.ValueOf(out)
@@ -251,21 +313,22 @@ func (c *Client) GenerateJSON(ctx context.Context, stage string, msgs []*schema.
 		return fmt.Errorf("llm: %s GenerateJSON 的 out 必须是非 nil 指针（got %T）", stage, out)
 	}
 	ctx = obsx.WithStage(ctx, stage)
-	msgs = copyMsgs(msgs)
+	// 每轮回喂自行 copy+fit（对齐 Generate 的入口纪律；本函数对 msgs 只读）
 	var lastErr error
 	lastRaw := ""
 	for attempt := 0; attempt < 2; attempt++ {
-		callMsgs := msgs
+		callMsgs := copyMsgs(msgs)
 		if attempt > 0 {
 			hint := "你上一轮的输出无法解析为合法 JSON（错误：%v）。\n请重新输出，且只输出合法 JSON：不要解释、不要 markdown 代码围栏。"
-			callMsgs = append(append([]*schema.Message{}, msgs...),
+			callMsgs = append(callMsgs,
 				&schema.Message{Role: schema.Assistant, Content: lastRaw},
 				schema.UserMessage(fmt.Sprintf(hint, lastErr)),
 			)
 		}
-		resp, err := c.Generate(ctx, stage, callMsgs)
+		c.fitInput(callMsgs)
+		resp, err := c.generateRetry(ctx, stage, callMsgs, pol)
 		if err != nil {
-			return err
+			return fmt.Errorf("llm: %s 调用失败（已重试 %d 次）: %w", stage, pol.maxAttempts-1, err)
 		}
 		raw := jsonrepair.ExtractJSON(resp.Content)
 		// 解进临时零值、成功后整体赋回：encoding/json 失败/合并不清零已解码
@@ -297,20 +360,19 @@ func (c *Client) fitInput(msgs []*schema.Message) {
 	if limit <= 0 {
 		return
 	}
-	lens := make([]int, len(msgs))
-	total := 0
-	longest := -1
+	// 只扫一遍求 total/最长 user：免 []rune 物化与 lens 切片
+	total, longest, longestN := 0, -1, 0
 	for i, m := range msgs {
-		lens[i] = len([]rune(m.Content))
-		total += lens[i]
-		if m.Role == schema.User && (longest < 0 || lens[i] > lens[longest]) {
-			longest = i
+		n := utf8.RuneCountInString(m.Content)
+		total += n
+		if m.Role == schema.User && (longest < 0 || n > longestN) {
+			longest, longestN = i, n
 		}
 	}
 	if total <= limit || longest < 0 {
 		return
 	}
-	keep := limit - (total - lens[longest])
+	keep := limit - (total - longestN)
 	if keep < 0 {
 		keep = 0
 	}

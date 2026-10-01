@@ -30,10 +30,11 @@ func TestModernProbeEvictsDeadConnection(t *testing.T) {
 	if _, err := p.Tools(ctx, []ToolSpec{{Server: "srv"}}); err != nil {
 		t.Fatalf("Tools 失败: %v", err)
 	}
-	p.mu.Lock()
-	isModern := p.modern["srv"]
-	_, cached := p.clients["srv"]
-	p.mu.Unlock()
+	st := p.conn("srv")
+	st.mu.Lock()
+	isModern := st.modern
+	cached := st.cli != nil
+	st.mu.Unlock()
 	if !isModern {
 		t.Fatal("mcp-go v1.1 HTTP 对端应协商到现代协议（代际记录生效的前提）")
 	}
@@ -49,9 +50,7 @@ func TestModernProbeEvictsDeadConnection(t *testing.T) {
 	if err := p.PingServer(context.Background(), "srv"); err == nil {
 		t.Fatal("死连接探活必须失败（现代协议 no-op ping 曾虚报存活）")
 	}
-	p.mu.Lock()
-	_, still := p.clients["srv"]
-	p.mu.Unlock()
+	still := hasConn(p, "srv")
 	if still {
 		t.Fatal("探活失败应摘除连接")
 	}
@@ -62,14 +61,17 @@ func TestModernProbeEvictsDeadConnection(t *testing.T) {
 func TestReapIdleInvalidatesCatalog(t *testing.T) {
 	p := NewPool(ServerConfig{Name: "srv"})
 	injectClient(t, p, "srv", mustInProcessClient(t, newTestServer(t)))
-	p.catalog["srv"] = []toolEntry{{}}
-	p.lastUsed["srv"] = time.Now().Add(-2 * time.Hour)
+	setConn(p, "srv", func(st *connState) {
+		st.catalog = []toolEntry{{}}
+		st.lastUsed = time.Now().Add(-2 * time.Hour)
+	})
 	if n := p.ReapIdle(time.Hour); n != 1 {
 		t.Fatalf("应回收 1 条: %d", n)
 	}
-	p.mu.Lock()
-	_, hasCatalog := p.catalog["srv"]
-	p.mu.Unlock()
+	st2 := p.conn("srv")
+	st2.mu.Lock()
+	hasCatalog := st2.catalog != nil
+	st2.mu.Unlock()
 	if hasCatalog {
 		t.Fatal("回收应连带目录失效")
 	}

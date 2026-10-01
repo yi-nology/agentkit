@@ -27,13 +27,13 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"git.enjoye.top/enjoydream/agentkit/procx"
+	"git.enjoye.top/enjoydream/agentkit/textutil"
 )
-
-// token 估算口径（与 compact 包一致：字符数/3）。
-const tokenCharDivisor = 3
 
 // Boundary 缓存边界。
 type Boundary string
@@ -75,14 +75,14 @@ func NewSection(name string, target Target, boundary Boundary, content string) S
 	if boundary == "" {
 		boundary = Dynamic
 	}
-	chars := len([]rune(content))
+	chars := utf8.RuneCountInString(content)
 	return Section{
 		Name:     name,
 		Target:   target,
 		Boundary: boundary,
 		Content:  content,
 		Chars:    chars,
-		Tokens:   (chars + tokenCharDivisor - 1) / tokenCharDivisor,
+		Tokens:   textutil.EstTokens(chars),
 	}
 }
 
@@ -136,36 +136,41 @@ func (b *Builder) Add(s Section) *Builder {
 
 // Build 组装：排序（stable 先于 dynamic，system 先于 user_context）→ 分块 →
 // 计量。产物不引用入参切片（Build 后再 Add 不影响已产出的 Result）。
+// 单遍分桶：原 8 次 pick 全量扫，现一次归桶后复用。
 func (b *Builder) Build() Result {
-	pick := func(t Target, bd Boundary) []Section {
-		var out []Section
-		for _, s := range b.sections {
-			if s.Target == t && s.Boundary == bd {
-				out = append(out, s)
-			}
+	var sysStable, sysDyn, ucStable, ucDyn []Section
+	for _, s := range b.sections {
+		switch {
+		case s.Target == TargetSystem && s.Boundary == Stable:
+			sysStable = append(sysStable, s)
+		case s.Target == TargetSystem && s.Boundary == Dynamic:
+			sysDyn = append(sysDyn, s)
+		case s.Target == TargetUserContext && s.Boundary == Stable:
+			ucStable = append(ucStable, s)
+		case s.Target == TargetUserContext && s.Boundary == Dynamic:
+			ucDyn = append(ucDyn, s)
 		}
-		return out
 	}
 	res := Result{Sections: make([]Section, 0, len(b.sections))}
-	res.Sections = append(res.Sections, pick(TargetSystem, Stable)...)
-	res.Sections = append(res.Sections, pick(TargetSystem, Dynamic)...)
-	res.Sections = append(res.Sections, pick(TargetUserContext, Stable)...)
-	res.Sections = append(res.Sections, pick(TargetUserContext, Dynamic)...)
+	res.Sections = append(res.Sections, sysStable...)
+	res.Sections = append(res.Sections, sysDyn...)
+	res.Sections = append(res.Sections, ucStable...)
+	res.Sections = append(res.Sections, ucDyn...)
 	for _, s := range res.Sections {
 		res.TotalChars += s.Chars
 		res.TotalTokens += s.Tokens
 	}
-	if c := joinContent(pick(TargetSystem, Stable)); c != "" {
+	if c := joinContent(sysStable); c != "" {
 		res.System = append(res.System, Block{Boundary: Stable, Content: c})
 	}
-	if c := joinContent(pick(TargetSystem, Dynamic)); c != "" {
+	if c := joinContent(sysDyn); c != "" {
 		res.System = append(res.System, Block{Boundary: Dynamic, Content: c})
 	}
 	var uc []string
-	if c := joinContent(pick(TargetUserContext, Stable)); c != "" {
+	if c := joinContent(ucStable); c != "" {
 		uc = append(uc, c)
 	}
-	if c := joinContent(pick(TargetUserContext, Dynamic)); c != "" {
+	if c := joinContent(ucDyn); c != "" {
 		uc = append(uc, c)
 	}
 	if len(uc) > 0 {
@@ -277,63 +282,97 @@ func yesNo(b bool) string {
 
 // ---- 运行期采集 ----
 
+// envRaw 并行采集的原始输出（未清洗）。
+type envRaw struct {
+	isGit, unameOut string
+	git             gitRaw
+}
+
+// gitRaw git 子命令原始输出。
+type gitRaw struct {
+	branch, mainBranch, user, statusOut, logOut string
+}
+
 // DetectEnv 采集环境快照与 git 仓信息（git 子命令经 procx 纪律执行：argv 直传、
 // 超时 5s、限容采集）。dir 非 git 仓时 GitInfo 返回 nil 不报错；git 不可用同。
 // OSVersion 经 uname -s -r 采集（非 unix 平台留空）。
+// 采集彼此独立，git/uname 并行跑（原先串行 6 次子进程，冷启动白等）。
 func DetectEnv(ctx context.Context, dir string) (EnvInfo, *GitInfo, error) {
+	raw := collectEnvRaw(ctx, dir)
 	info := EnvInfo{
-		Cwd:      dir,
-		Platform: runtime.GOOS,
-		Shell:    shellOf(),
-	}
-	if v, err := gitOut(ctx, dir, "rev-parse", "--is-inside-work-tree"); err == nil {
-		info.IsGitRepo = strings.TrimSpace(v) == "true"
-	}
-	if runtime.GOOS != "windows" {
-		if out, _, _, err := procx.Run(ctx, procx.RunRequest{
-			Argv: []string{"uname", "-s", "-r"}, Timeout: 5 * time.Second, MaxStdout: 1 << 10,
-		}); err == nil {
-			info.OSVersion = strings.TrimSpace(out)
-		}
+		Cwd:       dir,
+		Platform:  runtime.GOOS,
+		Shell:     shellOf(),
+		IsGitRepo: strings.TrimSpace(raw.isGit) == "true",
+		OSVersion: strings.TrimSpace(raw.unameOut),
 	}
 	if !info.IsGitRepo {
 		return info, nil, nil
 	}
-	g := &GitInfo{}
-	if v, err := gitOut(ctx, dir, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
-		g.Branch = strings.TrimSpace(v)
-	}
-	if v, err := gitOut(ctx, dir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
-		// refs/remotes/origin/HEAD → origin/main 形态取 main
-		g.MainBranch = strings.TrimPrefix(strings.TrimSpace(v), "origin/")
-	}
-	if v, err := gitOut(ctx, dir, "config", "user.name"); err == nil {
-		g.User = strings.TrimSpace(v)
-	}
-	if v, err := gitOut(ctx, dir, "status", "--porcelain=v1", "-b"); err == nil {
-		lines := strings.Split(strings.TrimRight(v, "\n"), "\n")
-		var status []string
-		for _, l := range lines {
-			if strings.TrimSpace(l) != "" {
-				status = append(status, l)
+	return info, assembleGitInfo(raw.git), nil
+}
+
+// collectEnvRaw 并行采集 git 仓探测、uname 与 git 细节（细节只在仓内才有意义；
+// rev-parse 结果未定前先并行预取，后面用不上就丢）。
+func collectEnvRaw(ctx context.Context, dir string) envRaw {
+	var raw envRaw
+	var wg sync.WaitGroup
+	run := func(fn func()) { wg.Add(1); go func() { defer wg.Done(); fn() }() }
+
+	run(func() { raw.isGit, _ = gitOut(ctx, dir, "rev-parse", "--is-inside-work-tree") })
+	if runtime.GOOS != "windows" {
+		run(func() {
+			if out, _, _, err := procx.Run(ctx, procx.RunRequest{
+				Argv: []string{"uname", "-s", "-r"}, Timeout: 5 * time.Second, MaxStdout: 1 << 10,
+			}); err == nil {
+				raw.unameOut = out
 			}
-		}
-		// 首行 ## branch... 是分支元信息，状态行才是工作区状态
-		g.StatusLines = status
-		if len(status) <= 1 {
-			g.StatusLines = nil // 仅 ## 行 = clean
-		}
-	} else {
-		g.StatusUnknown = true
+		})
 	}
-	if v, err := gitOut(ctx, dir, "log", "--oneline", "-10"); err == nil {
-		for _, l := range strings.Split(strings.TrimRight(v, "\n"), "\n") {
-			if strings.TrimSpace(l) != "" {
-				g.RecentCommits = append(g.RecentCommits, l)
-			}
+	run(func() { raw.git.branch, _ = gitOut(ctx, dir, "rev-parse", "--abbrev-ref", "HEAD") })
+	run(func() {
+		raw.git.mainBranch, _ = gitOut(ctx, dir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+	})
+	run(func() { raw.git.user, _ = gitOut(ctx, dir, "config", "user.name") })
+	run(func() { raw.git.statusOut, _ = gitOut(ctx, dir, "status", "--porcelain=v1", "-b") })
+	run(func() { raw.git.logOut, _ = gitOut(ctx, dir, "log", "--oneline", "-10") })
+	wg.Wait()
+	return raw
+}
+
+// assembleGitInfo 把 git 原始输出装配为 GitInfo（清洗 + 状态/提交行解析）。
+func assembleGitInfo(raw gitRaw) *GitInfo {
+	g := &GitInfo{
+		Branch:        strings.TrimSpace(raw.branch),
+		MainBranch:    strings.TrimPrefix(strings.TrimSpace(raw.mainBranch), "origin/"),
+		User:          strings.TrimSpace(raw.user),
+		StatusUnknown: raw.statusOut == "",
+	}
+	g.StatusLines = parseStatusLines(raw.statusOut)
+	for _, l := range strings.Split(strings.TrimRight(raw.logOut, "\n"), "\n") {
+		if strings.TrimSpace(l) != "" {
+			g.RecentCommits = append(g.RecentCommits, l)
 		}
 	}
-	return info, g, nil
+	return g
+}
+
+// parseStatusLines 解析 porcelain 状态行；首行 ## branch... 是分支元信息，
+// 状态行才是工作区状态（仅 ## 行 = clean，返回 nil）。
+func parseStatusLines(stOut string) []string {
+	if stOut == "" {
+		return nil
+	}
+	var status []string
+	for _, l := range strings.Split(strings.TrimRight(stOut, "\n"), "\n") {
+		if strings.TrimSpace(l) != "" {
+			status = append(status, l)
+		}
+	}
+	if len(status) <= 1 {
+		return nil
+	}
+	return status
 }
 
 func gitOut(ctx context.Context, dir string, args ...string) (string, error) {

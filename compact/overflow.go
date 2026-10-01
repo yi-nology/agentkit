@@ -130,7 +130,12 @@ type Selection struct {
 // Select 切分：保留最近 preserveGroups 组原文（下限 0、上限 len(groups)−1——
 // 至少一组进摘要，否则无物可压）。preserveGroups≤0 = 全量摘要。
 func Select(msgs []Message, preserveGroups int) Selection {
-	groups := GroupRounds(msgs)
+	return selectGroups(GroupRounds(msgs), preserveGroups)
+}
+
+// selectGroups 与 Select 同语义，但接受已算好的分组（调用方已 GroupRounds 时
+// 免二次全量扫）。
+func selectGroups(groups [][]Message, preserveGroups int) Selection {
 	total := len(groups)
 	preserve := max(0, min(preserveGroups, total-1))
 	keep := groups[total-preserve:]
@@ -167,7 +172,7 @@ func SelectAfterOverflow(msgs []Message, cause error, currentPreserved int) *Sel
 	if next <= currentPreserved {
 		return nil
 	}
-	sel := Select(msgs, next)
+	sel := selectGroups(groups, next) // 复用分组，免 Select 内二次 GroupRounds
 	if !HasEnoughToCompact(sel.ForSummary) {
 		return nil
 	}

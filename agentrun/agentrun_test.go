@@ -139,7 +139,7 @@ func (m *mockOpenAI) writeStreamChunks(w http.ResponseWriter, resp mockResponse)
 			"function": map[string]any{"name": resp.toolCall.name, "arguments": ""},
 		}}}, nil))
 		write(sseChunk(map[string]any{"tool_calls": []any{map[string]any{
-			"index": 0,
+			"index":    0,
 			"function": map[string]any{"arguments": resp.toolCall.arguments},
 		}}}, nil))
 		write(sseChunk(map[string]any{}, "tool_calls"))

@@ -3,8 +3,6 @@ package acpx
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"strings"
 )
 
 // 编译期断言。
@@ -35,7 +33,13 @@ func (c *Codex) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		return nil, err
 	}
 	defer cleanup()
+	st := &codexStream{req: req, lastMsg: lastMsg}
+	stdout, code, err := runCLI(ctx, req, c.buildArgv(req, lastMsg), st.handleLine)
+	return st.finalize(stdout, code, err)
+}
 
+// buildArgv 构造 codex CLI 参数（协议面固定：exec --json --output-last-message；argv 语义不改）。
+func (c *Codex) buildArgv(req RunRequest, lastMsg string) []string {
 	argv := []string{c.Bin, "exec", promptArg(req.Prompt), "--json", "--output-last-message", lastMsg}
 	if req.Model != "" {
 		argv = append(argv, "-m", req.Model)
@@ -43,65 +47,70 @@ func (c *Codex) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	if req.WorkDir != "" {
 		argv = append(argv, "-C", req.WorkDir)
 	}
-	switch req.Sandbox {
-	case SandboxReadonly:
-		argv = append(argv, "--sandbox", "read-only")
-	case SandboxWorkspace:
-		argv = append(argv, "--sandbox", "workspace-write")
-	case SandboxFull:
-		argv = append(argv, "--sandbox", "danger-full-access")
+	if v, ok := mapSandbox(req.Sandbox, "read-only", "workspace-write", "danger-full-access"); ok {
+		argv = append(argv, "--sandbox", v)
 	}
+	return argv
+}
 
-	var lastText string
-	var usage Usage
-	var errMsg string
-	onLine := func(line string) {
-		var ev codexEvent
-		if err := json.Unmarshal([]byte(line), &ev); err != nil {
-			return
+// codexStream 事件流解析状态（handleLine 在 stdout 读取 goroutine 中同步执行）。
+type codexStream struct {
+	req      RunRequest
+	lastMsg  string
+	lastText string
+	usage    Usage
+	errMsg   string
+}
+
+// handleLine 单行 JSONL 事件解析（非事件行忽略）。
+func (s *codexStream) handleLine(line string) {
+	var ev codexEvent
+	if err := json.Unmarshal([]byte(line), &ev); err != nil {
+		return
+	}
+	switch ev.Type {
+	case "error":
+		// 运行期错误全量转发（transcript 可排障）并记录——codex 部分错误形态
+		// exit 仍为 0，结束时如实报错（与 mimo/gemini 同纪律）
+		if ev.Message != "" {
+			s.errMsg = ev.Message
+			emitError(s.req, ev.Message, line)
 		}
-		switch ev.Type {
-		case "error":
-			// 运行期错误全量转发（transcript 可排障）并记录——codex 部分错误形态
-			// exit 仍为 0，结束时如实报错（与 mimo/gemini 同纪律）
-			if ev.Message != "" {
-				errMsg = ev.Message
-				emitError(req, ev.Message, line)
-			}
-		case "item.completed":
-			if ev.Item != nil && ev.Item.ItemType == "assistant_message" && ev.Item.Text != "" {
-				lastText = ev.Item.Text
-				emitText(req, ev.Item.Text, line)
-			}
-		case "turn.completed":
-			// 多轮任务逐轮累加（与 mimo 适配器一致，只取最后一轮会少计）
-			if ev.Usage != nil {
-				usage.InputTokens += ev.Usage.InputTokens
-				usage.OutputTokens += ev.Usage.OutputTokens
-			}
+	case "item.completed":
+		if ev.Item != nil && ev.Item.ItemType == "assistant_message" && ev.Item.Text != "" {
+			s.lastText = ev.Item.Text
+			emitText(s.req, ev.Item.Text, line)
+		}
+	case "turn.completed":
+		// 多轮任务逐轮累加（与 mimo 适配器一致，只取最后一轮会少计）
+		if ev.Usage != nil {
+			s.usage.InputTokens += ev.Usage.InputTokens
+			s.usage.OutputTokens += ev.Usage.OutputTokens
 		}
 	}
+}
 
-	stdout, code, err := runCLI(ctx, req, argv, onLine)
+// finalize 收尾装配：output-last-message 优先、事件流 lastText 兜底；错误如实上抛。
+func (s *codexStream) finalize(stdout string, code int, err error) (*RunResult, error) {
 	if err != nil {
 		// 与 claude 族一致：output-last-message 已有最终消息（agent 正常完成但
 		// 退出码非零）时以结果为准
-		if text := strings.TrimSpace(readFileTrim(lastMsg)); text != "" {
-			return &RunResult{Text: text, Usage: usage, ExitCode: code, Raw: []byte(stdout)}, nil
+		if text := readFileTrim(s.lastMsg); text != "" {
+			return &RunResult{Text: text, Usage: s.usage, ExitCode: code, Raw: []byte(stdout)}, nil
 		}
 		return nil, err
 	}
 	// 有错如实报错（对齐 mimo 纪律及其回归测试）：exit=0 但事件流含 error 的
 	// 部分输出跑（配额耗尽/流中断后吐了些文本）不得当成功——lastText 条件
 	// 曾让这类跑静默丢错
-	if errMsg != "" {
-		return nil, fmt.Errorf("acpx: codex 运行错误: %s", errMsg)
+	if err := streamError("codex", "运行错误", s.errMsg); err != nil {
+		return nil, err
 	}
-	text := strings.TrimSpace(readFileTrim(lastMsg))
+	text := readFileTrim(s.lastMsg)
 	if text == "" {
-		text = lastText
+		text = s.lastText
 	}
-	return &RunResult{Text: text, Usage: usage, ExitCode: code, Raw: []byte(stdout)}, nil
+	return &RunResult{Text: text, Usage: s.usage, ExitCode: code, Raw: []byte(stdout)}, nil
 }
 
 type codexEvent struct {

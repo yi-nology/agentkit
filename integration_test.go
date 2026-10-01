@@ -35,8 +35,8 @@ func TestCompositionPermissionStory(t *testing.T) {
 	gate := &permgate.Service{}
 	roDecision := gate.Check(ctx, "bash", map[string]any{"command": "ls -la"},
 		permgate.ModeDefault, permgate.Capability{
-			ReadOnly:    bashguard.Analyze("ls -la", nil).ReadOnly,
-			AlwaysAsk:   !bashguard.Analyze("ls -la", nil).ReadOnly, // 非只读 bash 逐次确认
+			ReadOnly:  bashguard.Analyze("ls -la", nil).ReadOnly,
+			AlwaysAsk: !bashguard.Analyze("ls -la", nil).ReadOnly, // 非只读 bash 逐次确认
 		})
 	if roDecision.Behavior != permgate.Allow {
 		t.Fatalf("只读 bash 应放行: %+v", roDecision)

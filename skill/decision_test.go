@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/cloudwego/eino/components/tool"
 )
@@ -345,5 +346,23 @@ func TestAsSkillToolContentCap(t *testing.T) {
 	_ = json.Unmarshal([]byte(raw2), &out2)
 	if len(out2.Content) < 5000 || strings.Contains(out2.Content, "已截断") {
 		t.Fatal("cap≤0 应不限且原样")
+	}
+}
+
+// TestRenderListBudgetHonored 回归（第六轮审计）：降级截断的头尾计入预算
+// （重组后不得超 budget），多字节技能名不被切碎（rune 对齐 + 分隔符回退）。
+func TestRenderListBudgetHonored(t *testing.T) {
+	metas := make([]Meta, 200)
+	for i := range metas {
+		metas[i] = Meta{Name: fmt.Sprintf("技能目录名很长很长%03d", i), Description: "描述"}
+	}
+	for _, budget := range []int{300, 500, 1000} {
+		out := RenderList(metas, budget)
+		if len(out) > budget {
+			t.Fatalf("budget=%d 超限: %d", budget, len(out))
+		}
+		if !utf8.ValidString(out) {
+			t.Fatalf("budget=%d 输出含非法 UTF-8: %q", budget, out)
+		}
 	}
 }

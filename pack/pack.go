@@ -7,6 +7,7 @@
 package pack
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"path"
@@ -60,56 +61,84 @@ type ToolManifest struct {
 //   - 包间同名冲突 → 警告 + 按包名字典序第一个生效（确定性、可测试；
 //     两包真争同一 server 的工具面属治理问题，警告暴露给人裁决）。
 func LoadToolManifests(fsys fs.FS) (map[string]*ToolManifest, []string, error) {
-	out := map[string]*ToolManifest{}
-	var warns []string
-	parse := func(dir, owner string) error {
-		sub, err := fs.ReadDir(fsys, dir)
-		if err != nil {
-			return nil // 目录不存在=无清单，合法
-		}
-		for _, f := range sub {
-			if f.IsDir() || !strings.HasSuffix(f.Name(), ".yaml") {
-				continue
-			}
-			server := strings.TrimSuffix(f.Name(), ".yaml")
-			raw, err := fs.ReadFile(fsys, path.Join(dir, f.Name()))
-			if err != nil {
-				return fmt.Errorf("%s/%s: %w", dir, f.Name(), err)
-			}
-			var m ToolManifest
-			if err := yaml.Unmarshal(raw, &m); err != nil {
-				return fmt.Errorf("%s/%s 解析: %w", dir, f.Name(), err)
-			}
-			m.Server, m.From = server, owner
-			if prev, dup := out[server]; dup {
-				if prev.From == "_shared" {
-					// 包覆盖 _shared 基线：合法整文件替换。
-					out[server] = &m
-					continue
-				}
-				// 包间同名冲突：警告 + 字典序第一生效（迭代按字典序，先到先得）。
-				warns = append(warns, fmt.Sprintf("tool_manifest %q 在 %s 与 %s 同名冲突，按包名字典序 %s 生效",
-					server, prev.From, owner, prev.From))
-				continue
-			}
-			out[server] = &m
-		}
-		return nil
-	}
+	l := &manifestLoader{fsys: fsys, out: map[string]*ToolManifest{}}
 	// _shared 基线先入；包按字典序覆盖（与领域包装配的确定性排序契约一致）。
 	baseline, packs, err := LayoutDirs(fsys)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := parse(path.Join(baseline, "mcp"), baseline); err != nil {
+	if err := l.parseDir(path.Join(baseline, "mcp"), baseline); err != nil {
 		return nil, nil, err
 	}
 	for _, pack := range packs {
-		if err := parse(path.Join(pack, "mcp"), pack); err != nil {
+		if err := l.parseDir(path.Join(pack, "mcp"), pack); err != nil {
 			return nil, nil, err
 		}
 	}
-	return out, warns, nil
+	return l.out, l.warns, nil
+}
+
+// manifestLoader 清单装载过程状态（结果表 + 冲突警告）。
+type manifestLoader struct {
+	fsys  fs.FS
+	out   map[string]*ToolManifest
+	warns []string
+}
+
+// parseDir 解析单目录下的 *.yaml 清单；目录不存在=无清单（合法布局形态）。
+// 其余 FS 故障（权限/IO）上抛——静默吞掉会让血缘对账面静默退化且无任何信号
+// （与同包 LayoutDirs 对根目录错误的显式上抛同纪律；第六轮审计）。
+func (l *manifestLoader) parseDir(dir, owner string) error {
+	sub, err := fs.ReadDir(l.fsys, dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("tool_manifest: 读取目录 %s 失败: %w", dir, err)
+	}
+	for _, f := range sub {
+		if f.IsDir() || !strings.HasSuffix(f.Name(), ".yaml") {
+			continue
+		}
+		server := strings.TrimSuffix(f.Name(), ".yaml")
+		m, err := readManifest(l.fsys, dir, f.Name(), server, owner)
+		if err != nil {
+			return err
+		}
+		l.merge(server, owner, m)
+	}
+	return nil
+}
+
+// readManifest 读盘并解析单个清单文件。
+func readManifest(fsys fs.FS, dir, file, server, owner string) (*ToolManifest, error) {
+	raw, err := fs.ReadFile(fsys, path.Join(dir, file))
+	if err != nil {
+		return nil, fmt.Errorf("%s/%s: %w", dir, file, err)
+	}
+	var m ToolManifest
+	if err := yaml.Unmarshal(raw, &m); err != nil {
+		return nil, fmt.Errorf("%s/%s 解析: %w", dir, file, err)
+	}
+	m.Server, m.From = server, owner
+	return &m, nil
+}
+
+// merge 合入结果表：包覆盖 _shared 基线合法；包间同名冲突警告 + 先到先得。
+func (l *manifestLoader) merge(server, owner string, m *ToolManifest) {
+	prev, dup := l.out[server]
+	if !dup {
+		l.out[server] = m
+		return
+	}
+	if prev.From == LayoutBaseline {
+		// 包覆盖 _shared 基线：合法整文件替换。
+		l.out[server] = m
+		return
+	}
+	// 包间同名冲突：警告 + 字典序第一生效（迭代按字典序，先到先得）。
+	l.warns = append(l.warns, fmt.Sprintf("tool_manifest %q 在 %s 与 %s 同名冲突，按包名字典序 %s 生效",
+		server, prev.From, owner, prev.From))
 }
 
 // Has 声明是否包含某工具名。

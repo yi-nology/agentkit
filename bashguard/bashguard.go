@@ -51,6 +51,9 @@ type Policy struct {
 	// NoBareOperands 裸操作数即写形态（git branch <名> 创建 / git stash 裸 push /
 	// git tag <名> 打标）：出现任何 flag 之外的裸操作数 → 非只读。
 	NoBareOperands bool
+	// AllowBareOperandsPrefix NoBareOperands 的豁免前缀（date 的 +FORMAT 形态：
+	// 裸操作数以 "+" 开头是格式串不是写目标）。前缀空串不放行任何操作数。
+	AllowBareOperandsPrefix []string
 }
 
 // Table 策略表。
@@ -78,7 +81,7 @@ type Decision struct {
 // Analyze 静态解析与判定。超长/解析失败返回非只读（保守）。
 func Analyze(cmdStr string, t *Table) Decision {
 	if t == nil {
-		t = DefaultTable()
+		t = defaultTable() // 只读共享模板，免每调用拷贝整表
 	}
 	if len(cmdStr) > MaxCommandLen {
 		return Decision{Reason: "命令超长（>10K），不进解析器"}
@@ -115,7 +118,21 @@ var readRedirOps = map[mvdan.RedirOperator]bool{
 func redirectsReason(redirs []*mvdan.Redirect) string {
 	for _, r := range redirs {
 		if readRedirOps[r.Op] {
-			continue // 输入侧重定向是读
+			// 输入侧重定向的**目标词与 heredoc 体**同样必须字面：真实 shell 会
+			// 执行 `< $(cmd)`、`< <(cmd)`、`<<< $(cmd)` 与未引号定界 heredoc 体
+			// 里的命令替换——只看 Op 放行曾让 `cat < $(rm -rf build)` 全程判
+			// 只读（第六轮审计 C 级；引号定界 `<<'EOF'` 的体是纯字面，不受影响）
+			if r.Word != nil {
+				if _, dyn := literalWord(r.Word); dyn {
+					return "读侧重定向目标含动态展开（< $(…)/< <(…) 会执行）"
+				}
+			}
+			if r.Hdoc != nil {
+				if _, dyn := literalWord(r.Hdoc); dyn {
+					return "heredoc 体含动态展开（未引号定界符下 $(…) 会执行）"
+				}
+			}
+			continue
 		}
 		return fmt.Sprintf("写重定向 op=%d", int(r.Op))
 	}
@@ -145,6 +162,11 @@ func (t *Table) evalCmd(node mvdan.Command, invocations *[]Invocation) string {
 			}
 		}
 		return ""
+	case *mvdan.TimeClause:
+		// bash 保留字 time [-p]：对被计时语句递归判定（mvdan 在 bash 模式把
+		// `time cmd` 解析为 TimeClause 而非 CallExpr——表里的 time 条目只覆盖
+		// 引用形态，`time ls` 曾因走不到而报"不支持的控制流"误拒）
+		return t.evalStmt(c.Stmt, invocations)
 	default:
 		return fmt.Sprintf("不支持的控制流 %T（if/for/while/case/函数等无法静态证明只读）", node)
 	}
@@ -231,8 +253,12 @@ func stripWrapper(argv []string, pol Policy) []string {
 		}
 		if kind, ok := pol.SafeFlags[a]; ok {
 			rest = rest[1:]
-			if kind != FlagBool && len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
-				rest = rest[1:] // 值型 flag 吃参
+			next, has := "", len(rest) > 0
+			if has {
+				next = rest[0]
+			}
+			if valueFlagEats(kind, a, next, has) {
+				rest = rest[1:]
 			}
 			continue
 		}
@@ -244,9 +270,28 @@ func stripWrapper(argv []string, pol Policy) []string {
 	return rest
 }
 
+// valueFlagEats 值型 flag 是否吞并紧随的独立参数（非内联 = 值、下一个 token
+// 非 flag 形态）。consumeFlags/splitSubcommand/stripWrapper 三处同构单源
+// （第六轮审计收敛——此前 stripWrapper 漏判内联 = 形态）。
+func valueFlagEats(kind FlagKind, flag, next string, hasNext bool) bool {
+	return kind != FlagBool && !strings.Contains(flag, "=") &&
+		hasNext && !strings.HasPrefix(next, "-")
+}
+
 // evalPolicy 策略执行：危险 flag 显式优先 → 子命令先剥离（子命令的 flag 归
 // 子命令策略）→ 白名单 flag 消费（未知即拒）→ 裸操作数守卫。
 func evalPolicy(name string, argv []string, pol Policy) string {
+	if reason := rejectUnsafeFlags(name, argv, pol); reason != "" {
+		return reason
+	}
+	if len(pol.Subcommands) > 0 {
+		return evalSubcommandPolicy(name, argv, pol)
+	}
+	return evalLeafPolicy(name, argv, pol)
+}
+
+// rejectUnsafeFlags 危险 flag 显式优先（含 --flag=value 内联形态）。
+func rejectUnsafeFlags(name string, argv []string, pol Policy) string {
 	for _, a := range argv {
 		for _, u := range pol.UnsafeFlags {
 			if a == u || strings.HasPrefix(a, u+"=") {
@@ -254,32 +299,64 @@ func evalPolicy(name string, argv []string, pol Policy) string {
 			}
 		}
 	}
-	if len(pol.Subcommands) > 0 {
-		// 先定位子命令 token（值型 flag 吃参后首个非 flag 项），其后整段交给
-		// 子命令策略——git log --oneline 的 --oneline 属于 log 不属于 git
-		sub, rest, giReason := splitSubcommand(argv, pol)
-		if giReason != "" {
-			return giReason
-		}
-		if sub == "" {
-			if pol.NoBareOperands {
-				return name + " 裸调用是写形态（如 stash 默认 push）"
-			}
-			return ""
-		}
-		subPol, ok := pol.Subcommands[sub]
-		if !ok {
-			return fmt.Sprintf("%s 子命令 %q 不在只读表", name, sub)
-		}
-		if !subPol.ReadOnly && !subPol.Wrapper {
-			return fmt.Sprintf("%s 子命令 %q 非只读", name, sub)
-		}
-		if subPol.Wrapper {
-			return "嵌套包装子命令不支持"
-		}
-		return evalPolicy(name+" "+sub, rest, subPol)
+	return ""
+}
+
+// evalSubcommandPolicy 子命令分派：先定位子命令 token（值型 flag 吃参后首个
+// 非 flag 项），其后整段交给子命令策略——git log --oneline 的 --oneline 属于
+// log 不属于 git。
+func evalSubcommandPolicy(name string, argv []string, pol Policy) string {
+	sub, rest, giReason := splitSubcommand(argv, pol)
+	if giReason != "" {
+		return giReason
 	}
-	operands := []string{}
+	if sub == "" {
+		if pol.NoBareOperands {
+			return name + " 裸调用是写形态（如 stash 默认 push）"
+		}
+		return ""
+	}
+	subPol, ok := pol.Subcommands[sub]
+	if !ok {
+		return fmt.Sprintf("%s 子命令 %q 不在只读表", name, sub)
+	}
+	if !subPol.ReadOnly && !subPol.Wrapper {
+		return fmt.Sprintf("%s 子命令 %q 非只读", name, sub)
+	}
+	if subPol.Wrapper {
+		return "嵌套包装子命令不支持"
+	}
+	return evalPolicy(name+" "+sub, rest, subPol)
+}
+
+// evalLeafPolicy 叶子命令：白名单 flag 消费（未知即拒）+ 裸操作数守卫。
+func evalLeafPolicy(name string, argv []string, pol Policy) string {
+	operands, reason := consumeFlags(name, argv, pol)
+	if reason != "" {
+		return reason
+	}
+	if pol.NoBareOperands {
+		for _, op := range operands {
+			if !allowedBareOperand(op, pol.AllowBareOperandsPrefix) {
+				return fmt.Sprintf("%s 带裸操作数 %q 是写形态（创建分支/标签/弹栈/设时钟等）", name, op)
+			}
+		}
+	}
+	return ""
+}
+
+// allowedBareOperand NoBareOperands 守卫的豁免前缀判定（date +FORMAT 形态）。
+func allowedBareOperand(op string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if p != "" && strings.HasPrefix(op, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// consumeFlags 按白名单消费 flag（-- 后全是操作数）；返回裸操作数与拒因。
+func consumeFlags(name string, argv []string, pol Policy) (operands []string, reason string) {
 	i := 0
 	afterSep := false
 	for i < len(argv) {
@@ -296,18 +373,18 @@ func evalPolicy(name string, argv []string, pol Policy) string {
 		}
 		if ok, kind := flagLookup(a, pol); ok {
 			i++
-			if kind != FlagBool && !strings.Contains(a, "=") &&
-				i < len(argv) && !strings.HasPrefix(argv[i], "-") {
+			next, has := "", i < len(argv)
+			if has {
+				next = argv[i]
+			}
+			if valueFlagEats(kind, a, next, has) {
 				i++ // 值参数
 			}
 			continue
 		}
-		return fmt.Sprintf("%s 的 flag %q 不在安全表", name, a)
+		return operands, fmt.Sprintf("%s 的 flag %q 不在安全表", name, a)
 	}
-	if pol.NoBareOperands && len(operands) > 0 {
-		return fmt.Sprintf("%s 带裸操作数 %q 是写形态（创建分支/标签/弹栈等）", name, operands[0])
-	}
-	return ""
+	return operands, ""
 }
 
 // flagLookup 单 flag 解析：精确命中；`--flag=value` 形态（optional/string 型，
@@ -370,8 +447,11 @@ func splitSubcommand(argv []string, pol Policy) (sub string, rest []string, reas
 		}
 		if ok, kind := flagLookup(a, pol); ok {
 			i++
-			if kind != FlagBool && !strings.Contains(a, "=") &&
-				i < len(argv) && !strings.HasPrefix(argv[i], "-") {
+			next, has := "", i < len(argv)
+			if has {
+				next = argv[i]
+			}
+			if valueFlagEats(kind, a, next, has) {
 				i++
 			}
 			continue

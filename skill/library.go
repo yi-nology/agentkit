@@ -2,10 +2,12 @@ package skill
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -99,11 +101,8 @@ func (m LibMeta) Validate() error {
 		return fmt.Errorf("skill: version 非法 %q（SemVer）", m.Version)
 	}
 	if m.Maturity == MaturityDeprecated {
-		if m.Deprecated == nil || m.Deprecated.RemoveAfter == "" {
-			return fmt.Errorf("skill: maturity=deprecated 必须填写 deprecated.remove_after（YYYY-MM-DD）")
-		}
-		if !dateRe.MatchString(m.Deprecated.RemoveAfter) {
-			return fmt.Errorf("skill: deprecated.remove_after 非法 %q（YYYY-MM-DD）", m.Deprecated.RemoveAfter)
+		if err := validateDeprecated(m.Deprecated); err != nil {
+			return err
 		}
 	}
 	for i, dep := range m.RequiresMCP {
@@ -114,17 +113,32 @@ func (m LibMeta) Validate() error {
 	return nil
 }
 
+// validateDeprecated 弃用元数据校验：必须有 remove_after 且为 YYYY-MM-DD。
+func validateDeprecated(d *Deprecated) error {
+	if d == nil || d.RemoveAfter == "" {
+		return fmt.Errorf("skill: maturity=deprecated 必须填写 deprecated.remove_after（YYYY-MM-DD）")
+	}
+	if !dateRe.MatchString(d.RemoveAfter) {
+		return fmt.Errorf("skill: deprecated.remove_after 非法 %q（YYYY-MM-DD）", d.RemoveAfter)
+	}
+	return nil
+}
+
 // LibEntry 库内单技能。
 type LibEntry struct {
 	Full string // 全文（含 frontmatter）
 	Body string // 剥 frontmatter 正文
 	Meta LibMeta
+	sum  string // 正文 checksum（装载期算好；库不可变故 Resolve 免重算）
 }
 
-// Library 进程内技能库（可热替换；无缓存，每次读当前实例）。
+// Library 进程内技能库（可热替换；装载后只读，热替换=换新实例）。
 // 实现 Provider / Lister / AliasResolver。
 type Library struct {
 	byName map[string]LibEntry
+	// byTitle 展示名（frontmatter name）→ 目录名反查（装载期建；同名 Title
+	// 先到先得，免 CanonicalName 每次线性扫全库）。
+	byTitle map[string]string
 }
 
 // LoadOption LoadFromFS 选项。
@@ -165,50 +179,7 @@ func LoadFromFS(fsys fs.FS, opts ...LoadOption) (*Library, error) {
 		}
 	}
 
-	lib := &Library{byName: map[string]LibEntry{}}
-	sourceOf := func(prefix string) string {
-		return strings.TrimSuffix(prefix, "/skills")
-	}
-	collect := func(prefix string) error {
-		sub, err := fs.ReadDir(fsys, prefix)
-		if err != nil {
-			return nil // 目录不存在=无技能
-		}
-		for _, d := range sub {
-			if !d.IsDir() {
-				continue
-			}
-			name := d.Name()
-			p := path.Join(prefix, name, "SKILL.md")
-			data, err := fs.ReadFile(fsys, p)
-			if err != nil {
-				continue
-			}
-			if _, dup := lib.byName[name]; dup {
-				return fmt.Errorf("skill: 技能名重复: %s（%s）", name, p)
-			}
-			meta, body, err := ParseRichFrontmatter(name, string(data))
-			if err != nil {
-				return fmt.Errorf("skill: %s: %w", p, err)
-			}
-			meta.Source = sourceOf(prefix)
-			meta.Path = p
-			if meta.Maturity == "" {
-				meta.Maturity = cfg.defaultMaturity(meta.Source)
-			}
-			if meta.Version == "" {
-				meta.Version = DefaultVersion
-			}
-			if meta.Mode == "" {
-				meta.Mode = ModeStatic
-			}
-			if err := meta.Validate(); err != nil {
-				return fmt.Errorf("skill: %s: %w", p, err)
-			}
-			lib.byName[name] = LibEntry{Full: string(data), Body: body, Meta: meta}
-		}
-		return nil
-	}
+	lib := &Library{byName: map[string]LibEntry{}, byTitle: map[string]string{}}
 
 	// 布局约定（_shared 基线 + 非 _ 前缀包目录）以 pack.LayoutDirs 为单一事实源。
 	baseline, packs, err := pack.LayoutDirs(fsys)
@@ -222,11 +193,76 @@ func LoadFromFS(fsys fs.FS, opts ...LoadOption) (*Library, error) {
 	prefixes = append(prefixes, cfg.extraPrefixes...)
 
 	for _, prefix := range prefixes {
-		if err := collect(prefix); err != nil {
+		if err := loadPrefix(fsys, prefix, cfg, lib); err != nil {
 			return nil, err
 		}
 	}
 	return lib, nil
+}
+
+// loadPrefix 扫描前缀下一层子目录装载技能。目录不存在=无技能（合法布局形态）；
+// 其余 FS 故障（权限/IO）上抛——静默吞掉会把坏库装配成空库且无任何信号。
+func loadPrefix(fsys fs.FS, prefix string, cfg *loadConfig, lib *Library) error {
+	sub, err := fs.ReadDir(fsys, prefix)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("skill: 扫描 %s 失败: %w", prefix, err)
+	}
+	source := strings.TrimSuffix(prefix, "/skills")
+	for _, d := range sub {
+		if !d.IsDir() {
+			continue
+		}
+		if err := loadEntry(fsys, prefix, source, d.Name(), cfg, lib); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// loadEntry 单技能条目装载：读文件 → 解析 → 默认填充 → 校验 → 入库。
+// 无 SKILL.md 的目录跳过；读取故障（权限/IO）上抛；重名 fail-fast。
+func loadEntry(fsys fs.FS, prefix, source, name string, cfg *loadConfig, lib *Library) error {
+	p := path.Join(prefix, name, "SKILL.md")
+	data, err := fs.ReadFile(fsys, p)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil // 无 SKILL.md 的目录（非技能内容）跳过
+		}
+		return fmt.Errorf("skill: 读取 %s 失败: %w", p, err)
+	}
+	if _, dup := lib.byName[name]; dup {
+		return fmt.Errorf("skill: 技能名重复: %s（%s）", name, p)
+	}
+	meta, body, err := ParseRichFrontmatter(name, string(data))
+	if err != nil {
+		return fmt.Errorf("skill: %s: %w", p, err)
+	}
+	meta.Source = source
+	meta.Path = p
+	if meta.Maturity == "" {
+		meta.Maturity = cfg.defaultMaturity(meta.Source)
+	}
+	if meta.Version == "" {
+		meta.Version = DefaultVersion
+	}
+	if meta.Mode == "" {
+		meta.Mode = ModeStatic
+	}
+	if err := meta.Validate(); err != nil {
+		return fmt.Errorf("skill: %s: %w", p, err)
+	}
+	lib.byName[name] = LibEntry{Full: string(data), Body: body, Meta: meta, sum: contentChecksum(body)}
+	if meta.Title != "" && meta.Title != name {
+		// 同 Title 多技能时取目录名字典序最小者（确定性规则——FileProvider 的
+		// 字典序扫描 + 后者覆盖与这里装载序先到先得曾给出不同归一化结果）。
+		if prev, exists := lib.byTitle[meta.Title]; !exists || name < prev {
+			lib.byTitle[meta.Title] = name
+		}
+	}
+	return nil
 }
 
 // Get 取技能全文（含 frontmatter）。
@@ -264,7 +300,8 @@ func (l *Library) Describe(name string) LibMeta {
 	return l.byName[name].Meta
 }
 
-// Names 全部技能名。
+// Names 全部技能名（字典序稳定——消费链直接拼提示词/比对清单文本，map 迭代
+// 序的随机输出曾令字节级稳定前缀不可复现）。
 func (l *Library) Names() []string {
 	if l == nil {
 		return nil
@@ -273,6 +310,7 @@ func (l *Library) Names() []string {
 	for n := range l.byName {
 		out = append(out, n)
 	}
+	sort.Strings(out)
 	return out
 }
 
@@ -291,11 +329,11 @@ func (l *Library) Resolve(_ context.Context, ref Ref) (*Skill, error) {
 		Version:     e.Meta.Version,
 		Description: e.Meta.Description,
 		Content:     e.Body,
-		Checksum:    contentChecksum(e.Body),
+		Checksum:    e.sum, // 装载期已算——库只读，正文不变无需每次重算 sha256
 	}, nil
 }
 
-// ListSkills 实现 Lister（渐进披露清单，不含正文）。
+// ListSkills 实现 Lister（渐进披露清单，不含正文；按 Name 字典序稳定）。
 func (l *Library) ListSkills(_ context.Context) ([]Meta, error) {
 	if l == nil {
 		return nil, nil
@@ -309,6 +347,7 @@ func (l *Library) ListSkills(_ context.Context) ([]Meta, error) {
 			Description: e.Meta.Description,
 		})
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
 
@@ -321,10 +360,8 @@ func (l *Library) CanonicalName(_ context.Context, name string) (string, bool) {
 	if _, ok := l.byName[name]; ok {
 		return name, true
 	}
-	for n, e := range l.byName {
-		if e.Meta.Title == name {
-			return n, true
-		}
+	if n, ok := l.byTitle[name]; ok {
+		return n, true
 	}
 	return "", false
 }
@@ -354,5 +391,6 @@ func (l *Library) DeprecatedExpiredInUse(used map[string][]string, now time.Time
 			out = append(out, name)
 		}
 	}
+	sort.Strings(out) // 失败清单确定性排序（reload/lint 断言可复现）
 	return out
 }

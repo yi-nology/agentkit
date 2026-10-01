@@ -111,9 +111,10 @@ func TestCatalogInvalidatedOnEvict(t *testing.T) {
 	}
 	// 模拟连接死亡：evict 后重灌新连接
 	cli2 := &countingClient{MCPClient: mustInProcessClient(t, srv)}
-	p.mu.Lock()
-	cached := p.clients["srv"]
-	p.mu.Unlock()
+	st := p.conn("srv")
+	st.mu.Lock()
+	cached := st.cli
+	st.mu.Unlock()
 	p.evict("srv", cached)
 	injectClient(t, p, "srv", cli2)
 	if _, err := p.Tools(context.Background(), []ToolSpec{{Server: "srv"}}); err != nil {

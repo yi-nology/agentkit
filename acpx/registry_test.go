@@ -117,7 +117,7 @@ func TestRegistryConcurrentRegisterAndRun(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	// NewRegistry 预注册 9 家内置——并发注册后 4 个自定义名全部在场且无重复
+	// NewRegistry 预注册 11 家内置——并发注册后 4 个自定义名全部在场且无重复
 	names := strings.Join(r.Names(), ",")
 	for i := 0; i < 4; i++ {
 		if !strings.Contains(names, fmt.Sprintf("agent-%d,", i)) && !strings.HasSuffix(names, fmt.Sprintf("agent-%d", i)) {

@@ -5,6 +5,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,9 +35,12 @@ func (f *fakeClient) Close() error {
 func seedFake(p *Pool, name string, cli client.MCPClient) {
 	p.mu.Lock()
 	p.cfgs[name] = ServerConfig{Name: name}
-	p.clients[name] = cli
-	p.lastUsed[name] = time.Now()
+	st := p.connLocked(name)
 	p.mu.Unlock()
+	st.mu.Lock()
+	st.cli = cli
+	st.lastUsed = time.Now()
+	st.mu.Unlock()
 }
 
 func TestPingServerAliveAndDead(t *testing.T) {
@@ -58,9 +62,7 @@ func TestPingServerAliveAndDead(t *testing.T) {
 	if !dead.closed {
 		t.Fatal("死亡连接应被摘除关闭")
 	}
-	p.mu.Lock()
-	_, still := p.clients["dead"]
-	p.mu.Unlock()
+	still := hasConn(p, "dead")
 	if still {
 		t.Fatal("死亡连接应出缓存")
 	}
@@ -80,9 +82,7 @@ func TestReapIdle(t *testing.T) {
 	fresh := &fakeClient{}
 	seedFake(p, "old", old)
 	seedFake(p, "fresh", fresh)
-	p.mu.Lock()
-	p.lastUsed["old"] = time.Now().Add(-10 * time.Minute)
-	p.mu.Unlock()
+	setConn(p, "old", func(st *connState) { st.lastUsed = time.Now().Add(-10 * time.Minute) })
 
 	n := p.ReapIdle(time.Minute)
 	if n != 1 {
@@ -94,10 +94,7 @@ func TestReapIdle(t *testing.T) {
 	if fresh.closed {
 		t.Fatal("新鲜连接不应被回收")
 	}
-	p.mu.Lock()
-	_, oldIn := p.clients["old"]
-	_, freshIn := p.clients["fresh"]
-	p.mu.Unlock()
+	oldIn, freshIn := hasConn(p, "old"), hasConn(p, "fresh")
 	if oldIn || !freshIn {
 		t.Fatal("缓存状态与回收结果不一致")
 	}
@@ -114,4 +111,90 @@ func TestStartIdleReaperStopsOnClose(t *testing.T) {
 	time.Sleep(5 * time.Millisecond)
 	p.Close()
 	// Close 后 reapStop 关闭，协程退出（无泄漏断言靠 race/无阻塞；这里只验证不 panic）。
+}
+
+func TestReapIdleSkipsInFlight(t *testing.T) {
+	p := NewPool()
+	cli := &fakeClient{}
+	seedFake(p, "busy", cli)
+	setConn(p, "busy", func(st *connState) {
+		st.lastUsed = time.Now().Add(-time.Hour) // 已超闲置阈值
+		st.inFlight = 2                          // 但在途
+	})
+
+	if n := p.ReapIdle(time.Minute); n != 0 {
+		t.Fatalf("在途连接不应被回收，got %d", n)
+	}
+	alive := hasConn(p, "busy")
+	setConn(p, "busy", func(st *connState) {
+		st.inFlight = 0
+		st.lastUsed = time.Now().Add(-time.Hour)
+	})
+	if !alive {
+		t.Fatal("在途连接应仍存活")
+	}
+	if n := p.ReapIdle(time.Minute); n != 1 {
+		t.Fatalf("空闲后应回收 1 条，got %d", n)
+	}
+}
+
+func TestLeaseUseCountsInFlight(t *testing.T) {
+	p := NewPool()
+	begin := p.leaseUse("s")
+	end1 := begin()
+	end2 := begin()
+	p.mu.Lock()
+	n := p.connLocked("s").inFlight
+	p.mu.Unlock()
+	if n != 2 {
+		t.Fatalf("inFlight 应为 2，got %d", n)
+	}
+	end1()
+	end2()
+	p.mu.Lock()
+	st := p.connLocked("s")
+	n0 := st.inFlight
+	p.mu.Unlock()
+	exists := n0 != 0
+	if exists {
+		t.Fatal("计数归零应清掉条目")
+	}
+}
+
+// blockClient Ping 阻塞到 ctx 取消（调用方取消/探活预算耗尽形态）。
+type blockClient struct {
+	client.MCPClient
+	closed bool
+}
+
+func (f *blockClient) Ping(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (f *blockClient) Close() error { f.closed = true; return nil }
+
+// TestPingServerLocalCancelKeepsConn 调用方 ctx 取消 ≠ 连接死亡（第六轮审计）：
+// 探活预算派生自调用方 ctx，自身过期不得摘除健康连接——外部短周期巡检带短
+// ctx，若据此摘连接，好连接会被反复摘除（stdio 场景即子进程反复重启）。
+func TestPingServerLocalCancelKeepsConn(t *testing.T) {
+	p := NewPool()
+	cli := &blockClient{}
+	seedFake(p, "s", cli)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		cancel()
+	}()
+	err := p.PingServer(ctx, "s")
+	if err == nil || !strings.Contains(err.Error(), "本地取消") {
+		t.Fatalf("本地取消应报「连接保留」形态错误: %v", err)
+	}
+	if cli.closed {
+		t.Fatal("本地取消不得关闭连接")
+	}
+	if !hasConn(p, "s") {
+		t.Fatal("本地取消不得摘除缓存连接")
+	}
 }

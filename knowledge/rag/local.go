@@ -62,6 +62,9 @@ func NewLocal(dir string) (*Local, error) {
 // 多 goroutine 同时判过期会重复重扫，幂等无害，容忍。
 func (l *Local) Retrieve(ctx context.Context, query string, topK int, filter Filter) ([]Chunk, error) {
 	_ = ctx // 当前实现无阻塞点，保留 ctx 以面向未来（接口契约）
+	if err := validateFilter(filter); err != nil {
+		return nil, err
+	}
 	l.mu.Lock()
 	if time.Since(l.scannedAt) >= rescanInterval {
 		l.mu.Unlock()
@@ -78,31 +81,51 @@ func (l *Local) Retrieve(ctx context.Context, query string, topK int, filter Fil
 	if len(qt) == 0 || len(idx) == 0 {
 		return nil, nil
 	}
+	return topKChunks(idx, idf, qt, topK, filter), nil
+}
 
-	// 固定容量小顶堆选 topK：堆顶是当前第 K 大，全程 O(chunks·log K)，
-	// 替代"全量收集 + 全排序"（大 hits 切片分配是检索路径内存开销的大头）
-	type scored struct {
-		c indexedChunk
-		s float64
+// scored 堆元素（检索路径局部类型，不外泄）。
+type scored struct {
+	c indexedChunk
+	s float64
+}
+
+// siftDown 小顶堆下沉维护（堆顶=当前第 K 大）。
+func siftDown(heap []scored, i int) {
+	for {
+		l, r := 2*i+1, 2*i+2
+		m := i
+		if l < len(heap) && heap[l].s < heap[m].s {
+			m = l
+		}
+		if r < len(heap) && heap[r].s < heap[m].s {
+			m = r
+		}
+		if m == i {
+			return
+		}
+		heap[i], heap[m] = heap[m], heap[i]
+		i = m
 	}
-	heap := make([]scored, 0, topK)
-	siftDown := func(i int) {
-		for {
-			l, r := 2*i+1, 2*i+2
-			m := i
-			if l < len(heap) && heap[l].s < heap[m].s {
-				m = l
-			}
-			if r < len(heap) && heap[r].s < heap[m].s {
-				m = r
-			}
-			if m == i {
-				return
-			}
-			heap[i], heap[m] = heap[m], heap[i]
-			i = m
+}
+
+// siftUp 小顶堆上浮维护。
+func siftUp(heap []scored, i int) {
+	for i > 0 {
+		p := (i - 1) / 2
+		if heap[i].s < heap[p].s {
+			heap[i], heap[p] = heap[p], heap[i]
+			i = p
+		} else {
+			return
 		}
 	}
+}
+
+// topKChunks 固定容量小顶堆选 topK：堆顶是当前第 K 大，全程 O(chunks·log K)，
+// 替代"全量收集 + 全排序"（大 hits 切片分配是检索路径内存开销的大头）。
+func topKChunks(idx []indexedChunk, idf map[string]float64, qt []string, topK int, filter Filter) []Chunk {
+	heap := make([]scored, 0, topK)
 	for _, ic := range idx {
 		if !matchFilter(ic.chunk.Metadata, filter) {
 			continue
@@ -113,18 +136,10 @@ func (l *Local) Retrieve(ctx context.Context, query string, topK int, filter Fil
 		}
 		if len(heap) < topK {
 			heap = append(heap, scored{ic, s})
-			for i := len(heap) - 1; i > 0; {
-				p := (i - 1) / 2
-				if heap[i].s < heap[p].s {
-					heap[i], heap[p] = heap[p], heap[i]
-					i = p
-				} else {
-					break
-				}
-			}
+			siftUp(heap, len(heap)-1)
 		} else if s > heap[0].s {
 			heap[0] = scored{ic, s}
-			siftDown(0)
+			siftDown(heap, 0)
 		}
 	}
 	sort.Slice(heap, func(i, j int) bool { return heap[i].s > heap[j].s })
@@ -132,7 +147,7 @@ func (l *Local) Retrieve(ctx context.Context, query string, topK int, filter Fil
 	for _, h := range heap {
 		out = append(out, h.c.chunk)
 	}
-	return out, nil
+	return out
 }
 
 // AsTool 把检索包成 search_knowledge 工具。
@@ -148,12 +163,26 @@ func (l *Local) Rescan() {
 		logx.NewSlogLogger("agentkit-rag").Warn("agentkit.rag.rescan_root_missing", "dir", l.dir, "error", err.Error())
 		return
 	}
-	var index []indexedChunk
-	df := map[string]int{}
-	// WalkDir 对"已处理的错误"返回 nil 即跳过继续——但根目录 stat 通过而不可 readdir
-	// （权限收紧/挂载半故障）时整棵树读不到，静默换入空索引 = 知识库"消失"且无信号。
-	// 记录读取错误：全部读失败时保留旧索引（与根目录缺失同策略），部分失败告警后照常换入。
-	var walkErr error
+	index, df, walkErr := l.scanMarkdown()
+	idf := computeIDF(len(index), df)
+	// 原子换入：检索侧要么看到完整旧索引、要么完整新索引，不见中间态。
+	// 全量读失败（walkErr 非空且一无所获）时保留旧索引——区分"用户清空目录"
+	// （WalkDir 无 err，正常换入空索引）与"读失败"（保留旧索引）。
+	l.mu.Lock()
+	if walkErr != nil && len(index) == 0 {
+		l.mu.Unlock()
+		return
+	}
+	l.index, l.idf, l.scannedAt = index, idf, time.Now()
+	l.mu.Unlock()
+}
+
+// scanMarkdown 遍历目录构建分块索引与文档频率表。
+// WalkDir 对"已处理的错误"返回 nil 即跳过继续——但根目录 stat 通过而不可 readdir
+// （权限收紧/挂载半故障）时整棵树读不到，静默换入空索引 = 知识库"消失"且无信号。
+// 记录读取错误：全部读失败时保留旧索引（与根目录缺失同策略），部分失败告警后照常换入。
+func (l *Local) scanMarkdown() (index []indexedChunk, df map[string]int, walkErr error) {
+	df = map[string]int{}
 	_ = filepath.WalkDir(l.dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			if walkErr == nil {
@@ -170,42 +199,42 @@ func (l *Local) Rescan() {
 			return nil // 单文件不可读跳过，不阻塞整体索引
 		}
 		rel, _ := filepath.Rel(l.dir, path)
-		for _, c := range chunkMarkdown(string(data)) {
-			toks := tokenize(c.content)
-			freq := make(map[string]int, len(toks))
-			for _, t := range toks {
-				freq[t]++
-			}
-			for t := range freq { // 文档频率顺手统计，省一次全索引遍历
-				df[t]++
-			}
-			index = append(index, indexedChunk{
-				chunk: Chunk{
-					Content:  c.content,
-					Metadata: map[string]string{"file": rel, "heading": c.heading},
-				},
-				tokenFreq: freq, // 打分只用词频表；词元切片不再保留（省一份内存）
-			})
-		}
+		indexMarkdownFile(rel, string(data), &index, df)
 		return nil
 	})
-	// IDF 预计算：smoothed IDF（1 + log(N/df)，最小值 1，避免单 chunk 时 IDF=0 导致零分）。
-	// 检索路径零 log——此前每 chunk×查询词都要重算一遍。
-	n := float64(len(index))
+	return index, df, walkErr
+}
+
+// indexMarkdownFile 单文件分块入索引并累计文档频率。
+func indexMarkdownFile(rel, data string, index *[]indexedChunk, df map[string]int) {
+	for _, c := range chunkMarkdown(data) {
+		toks := tokenize(c.content)
+		freq := make(map[string]int, len(toks))
+		for _, t := range toks {
+			freq[t]++
+		}
+		for t := range freq { // 文档频率顺手统计，省一次全索引遍历
+			df[t]++
+		}
+		*index = append(*index, indexedChunk{
+			chunk: Chunk{
+				Content:  c.content,
+				Metadata: map[string]string{"file": rel, "heading": c.heading},
+			},
+			tokenFreq: freq, // 打分只用词频表；词元切片不再保留（省一份内存）
+		})
+	}
+}
+
+// computeIDF smoothed IDF 预计算（1 + log(N/df)，最小值 1，避免单 chunk 时 IDF=0
+// 导致零分）。检索路径零 log——此前每 chunk×查询词都要重算一遍。
+func computeIDF(n int, df map[string]int) map[string]float64 {
+	nf := float64(n)
 	idf := make(map[string]float64, len(df))
 	for t, d := range df {
-		idf[t] = 1 + logF(n/float64(d))
+		idf[t] = 1 + logF(nf/float64(d))
 	}
-	// 原子换入：检索侧要么看到完整旧索引、要么完整新索引，不见中间态。
-	// 全量读失败（walkErr 非空且一无所获）时保留旧索引——区分"用户清空目录"
-	// （WalkDir 无 err，正常换入空索引）与"读失败"（保留旧索引）。
-	l.mu.Lock()
-	if walkErr != nil && len(index) == 0 {
-		l.mu.Unlock()
-		return
-	}
-	l.index, l.idf, l.scannedAt = index, idf, time.Now()
-	l.mu.Unlock()
+	return idf
 }
 
 type mdChunk struct {
@@ -215,95 +244,128 @@ type mdChunk struct {
 
 // chunkMarkdown 按标题和空行分段，合并到 ~chunkTargetRunes，支持代码块保护。
 func chunkMarkdown(text string) []mdChunk {
-	var chunks []mdChunk
-	heading := ""
-	var cur []string
-	curLen := 0
-	inCodeBlock := false
-
-	flush := func() {
-		if len(cur) == 0 {
-			return
-		}
-		content := strings.TrimSpace(strings.Join(cur, "\n"))
-		if content != "" {
-			chunks = append(chunks, mdChunk{heading: heading, content: content})
-		}
-		cur = cur[:0]
-		curLen = 0
-	}
-
+	var z mdChunker
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {
-		// 代码块保护：不拆分 ``` 内部
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
-			inCodeBlock = !inCodeBlock
-			cur = append(cur, line)
-			curLen += utf8.RuneCountInString(line)
-			continue
-		}
-		if inCodeBlock {
-			cur = append(cur, line)
-			curLen += utf8.RuneCountInString(line)
-			// 硬上限保护：未闭合代码块 + 超长内容强制成块，避免单块超
-			// Milvus VarChar 65535 字节导致整个文件 Insert 失败
-			if curLen >= maxChunkRunes {
-				flush()
-			}
-			continue
-		}
+		z.handleLine(line, i+1 < len(lines))
+	}
+	z.flush()
+	return z.chunks
+}
 
-		if h, ok := mdHeading(line); ok {
-			// 保留重叠：把上一块的最后 overlapRunes 个字符带入新块
-			if len(cur) > 0 && overlapRunes > 0 {
-				all := strings.Join(cur, "\n")
-				runes := []rune(all)
-				if len(runes) > overlapRunes {
-					overlap := string(runes[len(runes)-overlapRunes:])
-					flush()
-					cur = append(cur, overlap)
-					curLen = len([]rune(overlap))
-				} else {
-					flush()
-				}
-			} else {
-				flush()
-			}
-			heading = h
-			continue
-		}
+// mdChunker 切块状态机（行级副作用集中一处，标题/代码块/重叠互不渗透）。
+type mdChunker struct {
+	chunks      []mdChunk
+	heading     string
+	cur         []string
+	curLen      int
+	inCodeBlock bool
+}
 
-		// 硬上限保护：单行超限（粘贴 base64/日志）强制截断
-		if lineRunes := utf8.RuneCountInString(line); lineRunes > maxChunkRunes {
-			if len(cur) > 0 {
-				flush()
-			}
-			chunks = append(chunks, mdChunk{heading: heading,
-				content: textutil.TruncNote(line, maxChunkRunes, "超长行截断")})
-			continue
+// flush 当前累积行成块（无实质内容则丢弃）。
+func (z *mdChunker) flush() {
+	if len(z.cur) == 0 {
+		return
+	}
+	content := strings.TrimSpace(strings.Join(z.cur, "\n"))
+	if content != "" {
+		z.chunks = append(z.chunks, mdChunk{heading: z.heading, content: content})
+	}
+	z.cur = z.cur[:0]
+	z.curLen = 0
+}
+
+// carryOverlap 把 cur 末尾 overlap 带入下一块（标题切块与长度切块共用）。
+func (z *mdChunker) carryOverlap() {
+	tail := overlapTail(z.cur)
+	z.flush()
+	if tail != "" {
+		z.cur = append(z.cur, tail)
+		z.curLen = utf8.RuneCountInString(tail)
+	}
+}
+
+// handleLine 单行入块：超长行守卫（正文/代码块共用）/ 代码块保护 / 标题切换 /
+// 长度切块。more=是否还有后续行（末行到阈值只 flush，不带 overlap——没有下一
+// 块可带入）。
+func (z *mdChunker) handleLine(line string, more bool) {
+	// 单行超限守卫前置：粘贴 base64/超长日志恰恰常包在代码围栏里，此前守卫
+	// 只在正文路径——代码块内单条超长行直接越过 Milvus VarChar 65535 字节
+	// 上限，flush 出的单块让整个文件（含正常段落）Insert 失败（第六轮审计
+	// C 级）。围栏行不切（切了会破坏开/闭状态机配对）。
+	if !isFenceLine(line) && utf8.RuneCountInString(line) > maxChunkRunes {
+		z.handleOverlongLine(line)
+		return
+	}
+	if isFenceLine(line) {
+		z.inCodeBlock = !z.inCodeBlock
+		z.appendLine(line)
+		return
+	}
+	if z.inCodeBlock {
+		z.appendLine(line)
+		// 多行累积守卫：未闭合代码块 + 超长内容强制成块
+		if z.curLen >= maxChunkRunes {
+			z.flush()
 		}
-		cur = append(cur, line)
-		curLen += utf8.RuneCountInString(line)
-		if curLen >= chunkTargetRunes {
-			// 保留尾部 overlap 到下一块
-			if overlapRunes > 0 && i+1 < len(lines) {
-				all := strings.Join(cur, "\n")
-				runes := []rune(all)
-				if len(runes) > overlapRunes {
-					tail := string(runes[len(runes)-overlapRunes:])
-					flush()
-					cur = append(cur, tail)
-					curLen = len([]rune(tail))
-				} else {
-					flush()
-				}
-			} else {
-				flush()
-			}
+		return
+	}
+	if h, ok := mdHeading(line); ok {
+		if len(z.cur) > 0 {
+			z.carryOverlap()
+		} else {
+			z.flush()
+		}
+		z.heading = h
+		return
+	}
+	z.handleBodyLine(line, more)
+}
+
+// isFenceLine 代码围栏行（``` 开头，可带语言标注）。
+func isFenceLine(line string) bool {
+	return strings.HasPrefix(strings.TrimSpace(line), "```")
+}
+
+// handleOverlongLine 超长行硬切（单一入口）：先收当前块，再按 maxChunkRunes
+// rune 等分成多块（heading 上下文保留）。硬切丢行内格式优于截断丢内容，且
+// 每块确定性 ≤ maxChunkRunes（此前正文路径截断、代码块路径不设防，两处漂移）。
+func (z *mdChunker) handleOverlongLine(line string) {
+	if len(z.cur) > 0 {
+		z.flush()
+	}
+	for _, seg := range textutil.SplitRunes(line, maxChunkRunes) {
+		z.chunks = append(z.chunks, mdChunk{heading: z.heading, content: seg})
+	}
+}
+
+func (z *mdChunker) appendLine(line string) {
+	z.cur = append(z.cur, line)
+	z.curLen += utf8.RuneCountInString(line)
+}
+
+// handleBodyLine 正文行：达目标块长则切块（单行超限守卫已前置 handleLine）。
+func (z *mdChunker) handleBodyLine(line string, more bool) {
+	z.appendLine(line)
+	if z.curLen >= chunkTargetRunes {
+		if more {
+			z.carryOverlap()
+		} else {
+			z.flush()
 		}
 	}
-	flush()
-	return chunks
+}
+
+// overlapTail 取块文本末尾 overlapRunes 个字符（不足阈值返回 ""=不携带）。
+func overlapTail(cur []string) string {
+	if overlapRunes <= 0 || len(cur) == 0 {
+		return ""
+	}
+	runes := []rune(strings.Join(cur, "\n"))
+	if len(runes) <= overlapRunes {
+		return ""
+	}
+	return string(runes[len(runes)-overlapRunes:])
 }
 
 func mdHeading(line string) (string, bool) {
@@ -404,4 +466,19 @@ func matchFilter(meta map[string]string, filter Filter) bool {
 		}
 	}
 	return true
+}
+
+// filterKeys 检索过滤字段白名单（包级单源：Local 与 Milvus 后端共用——此前
+// 白名单只在 Milvus 侧，Local 对未知 key 静默返回空结果，同一接口两后端
+// 行为相悖，配置错误被当成"没搜到"）。
+var filterKeys = map[string]bool{"file": true, "heading": true}
+
+// validateFilter 检索过滤字段校验：白名单外的 key 直接报错（fail-fast）。
+func validateFilter(filter Filter) error {
+	for k := range filter {
+		if !filterKeys[k] {
+			return fmt.Errorf("rag: 不支持的过滤字段 %q（可用: file, heading）", k)
+		}
+	}
+	return nil
 }

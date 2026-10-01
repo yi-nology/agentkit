@@ -100,15 +100,37 @@ func (p *FileProvider) Resolve(ctx context.Context, ref Ref) (*Skill, error) {
 		return cached, nil
 	}
 
-	name := filepath.Clean("/" + strings.TrimSpace(ref.Name))[1:] // 防路径穿越（前缀 / 使 .. 无法越出 root）
+	name, err := safeSkillName(ref.Name)
+	if err != nil {
+		return nil, err
+	}
+	s, err := p.loadSkill(ref, name)
+	if err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	p.cache[key] = s
+	p.mu.Unlock()
+	return s, nil
+}
+
+// safeSkillName 规范化引用名并拒绝路径穿越（前缀 / 使 .. 无法越出 root）。
+// 仅拒绝路径段级的 ..，放行 foo..bar 这类合法名。
+func safeSkillName(refName string) (string, error) {
+	name := filepath.Clean("/" + strings.TrimSpace(refName))[1:]
 	if name == "" {
-		return nil, fmt.Errorf("skill: 非法引用 %q", ref.Name)
+		return "", fmt.Errorf("skill: 非法引用 %q", refName)
 	}
 	for _, seg := range strings.Split(name, "/") {
-		if seg == ".." { // 仅拒绝路径段级的 ..，放行 foo..bar 这类合法名
-			return nil, fmt.Errorf("skill: 非法引用 %q", ref.Name)
+		if seg == ".." {
+			return "", fmt.Errorf("skill: 非法引用 %q", refName)
 		}
 	}
+	return name, nil
+}
+
+// loadSkill 读盘并剥 frontmatter 组装 Skill（checksum 对正文计算）。
+func (p *FileProvider) loadSkill(ref Ref, name string) (*Skill, error) {
 	candidates := []string{
 		filepath.Join(p.Root, name, "SKILL.md"),
 		filepath.Join(p.Root, name+".md"),
@@ -129,17 +151,13 @@ func (p *FileProvider) Resolve(ctx context.Context, ref Ref) (*Skill, error) {
 	if fmName != "" {
 		displayName = fmName
 	}
-	s := &Skill{
+	return &Skill{
 		Name:        displayName,
 		Version:     fmVer,
 		Description: fmDesc,
 		Content:     body,
 		Checksum:    contentChecksum(body),
-	}
-	p.mu.Lock()
-	p.cache[key] = s
-	p.mu.Unlock()
-	return s, nil
+	}, nil
 }
 
 // ---------- 发现与决策使用（渐进披露） ----------
@@ -209,7 +227,11 @@ func (p *FileProvider) scanAliases(ctx context.Context) map[string]string {
 	if err == nil {
 		for _, meta := range metas {
 			if meta.Title != "" && meta.Title != meta.Name {
-				m[meta.Title] = meta.Name
+				// 同 Title 取名字典序最小者——与 Library.byTitle 同一确定性规则
+				//（此前字典序扫描+后者覆盖=取最大者，与 Library 先到先得不同构）
+				if prev, exists := m[meta.Title]; !exists || meta.Name < prev {
+					m[meta.Title] = meta.Name
+				}
 			}
 		}
 	}

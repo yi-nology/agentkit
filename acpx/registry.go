@@ -21,7 +21,7 @@ type Registry struct {
 }
 
 // NewRegistry 创建注册表并注册缺省 agent
-// （claude/zcode/codex/opencode/minimax/kimi/gemini/qwen/mimo）。
+// （claude/zcode/codex/opencode/minimax/kimi/gemini/qwen/mimo/pi/dsh，11 家）。
 func NewRegistry() *Registry {
 	r := &Registry{agents: map[string]Agent{}}
 	r.Register(NewClaudeCode())

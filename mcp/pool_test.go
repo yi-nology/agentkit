@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -47,9 +48,7 @@ func injectClient(t *testing.T, p *Pool, name string, cli client.MCPClient) {
 	if _, err := cli.Initialize(context.Background(), newInitRequest()); err != nil {
 		t.Fatalf("in-process client Initialize 失败: %v", err)
 	}
-	p.mu.Lock()
-	p.clients[name] = cli
-	p.mu.Unlock()
+	setConn(p, name, func(st *connState) { st.cli = cli })
 }
 
 func newInitRequest() mcp.InitializeRequest {
@@ -201,14 +200,14 @@ func TestPoolClose(t *testing.T) {
 
 	p.Close()
 	p.Close() // 幂等
-	if len(p.clients) != 0 {
+	if hasConn(p, "calc") {
 		t.Fatal("Close 后缓存应清空")
 	}
 	// Close 后再建连应被拒绝，且不得把新连接塞回缓存（泄漏）
 	if _, err := p.client(context.Background(), ServerConfig{Name: "calc"}); err == nil {
 		t.Fatal("Close 后 client() 应报错")
 	}
-	if len(p.clients) != 0 {
+	if hasConn(p, "calc") {
 		t.Fatal("Close 后 client() 不得写入缓存")
 	}
 }
@@ -278,5 +277,40 @@ func TestServerConfigTimeoutOr(t *testing.T) {
 	}
 	if (&ServerConfig{Timeout: 3 * time.Second}).timeoutOr(9*time.Second) != 3*time.Second {
 		t.Fatal("显式值应保留")
+	}
+}
+
+// setConn 直塞单 server 状态（白盒测试路径）。
+func setConn(p *Pool, name string, mutate func(*connState)) {
+	p.mu.Lock()
+	st := p.connLocked(name)
+	p.mu.Unlock()
+	st.mu.Lock()
+	mutate(st)
+	st.mu.Unlock()
+}
+
+// hasConn 是否缓存着连接。
+func hasConn(p *Pool, name string) bool {
+	st := p.conn(name)
+	if st == nil {
+		return false
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.cli != nil
+}
+
+// TestToolsCancelledCtxColdCacheReturnsError 缓存冷 + ctx 取消（第六轮审计）：
+// Tools 不得返回 (空表, nil)——调用方会把取消当"server 没有工具"静默降级；
+// 缓存热时同样的 ctx 走快路径正常返回，两种形态行为须一致。
+func TestToolsCancelledCtxColdCacheReturnsError(t *testing.T) {
+	p := NewPool(ServerConfig{Name: "x", Command: []string{"true"}})
+	defer p.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	tools, err := p.Tools(ctx, []ToolSpec{{Server: "x"}})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("应返回 ctx.Err()，得到 tools=%d err=%v", len(tools), err)
 	}
 }

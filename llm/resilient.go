@@ -83,7 +83,11 @@ func (r *Resilient) WithBudget(b TokenAccountant) Generator {
 type Attempt struct {
 	Provider string
 	Model    string
-	Err      string
+	// Err error 类型（v0.11 起不再折损为 string）：errors.Is/As 经
+	// AttemptError.Unwrap 可直达 RequestError/context.Canceled 等——下游无须
+	// 对聚合文案做文本分类（多模型聚合文本里 429 与 401 共存时文本分类结果
+	// 取决于 marker 优先级，不可靠）。
+	Err      error
 	Duration time.Duration
 }
 
@@ -91,14 +95,37 @@ type Attempt struct {
 type AttemptError struct {
 	Stage    string
 	Attempts []Attempt
+	// BreakerSkipped 被熔断跳过（未真正尝试）的模型数——仅入 Error 文案，
+	// 区分"链上真失败 N 个"与"另 M 个熔断未试"。
+	BreakerSkipped int
 }
 
 func (e *AttemptError) Error() string {
 	var parts []string
 	for _, a := range e.Attempts {
-		parts = append(parts, fmt.Sprintf("%s(%s): %s", a.Provider, a.Model, a.Err))
+		msg := "<nil>"
+		if a.Err != nil {
+			msg = a.Err.Error()
+		}
+		parts = append(parts, fmt.Sprintf("%s(%s): %s", a.Provider, a.Model, msg))
 	}
-	return fmt.Sprintf("llm: %s 全部 %d 个模型失败: %s", e.Stage, len(e.Attempts), strings.Join(parts, " → "))
+	s := fmt.Sprintf("llm: %s 全部 %d 个模型失败: %s", e.Stage, len(e.Attempts), strings.Join(parts, " → "))
+	if e.BreakerSkipped > 0 {
+		s += fmt.Sprintf("（另有 %d 个模型熔断跳过未尝试）", e.BreakerSkipped)
+	}
+	return s
+}
+
+// Unwrap 暴露各模型的原始错误链（Go 多错误 Unwrap 约定）：errors.Is/As 穿透
+// 聚合错误直达底层错误类型。
+func (e *AttemptError) Unwrap() []error {
+	errs := make([]error, 0, len(e.Attempts))
+	for _, a := range e.Attempts {
+		if a.Err != nil {
+			errs = append(errs, a.Err)
+		}
+	}
+	return errs
 }
 
 // ResilientConfig 弹性客户端配置。
@@ -305,107 +332,158 @@ func (r *Resilient) walkChain(ctx context.Context, stage string, try func(p Prov
 	var attempts []Attempt
 	breakerSkipped := 0
 	for i, p := range r.chain.Providers {
-		// 预算逐 provider 复查：截断记账后本链内仍会继续烧，越早短路越省钱
-		if r.Budget != nil && r.Budget.Remaining() <= 0 {
-			return attempts, fmt.Errorf("llm: %s 任务 token 预算已耗尽（%d）", stage, r.Budget.Used())
-		}
-		// 熔断中的模型直接跳过（不记录为 attempt——没真正尝试）
-		if !r.breakers.Allow(p.ModelName()) {
+		done, att, skipped, fatal := r.stepChain(ctx, stage, p, i, try)
+		if skipped {
 			breakerSkipped++
 			continue
 		}
-		// nil model 防御：Allow 已放行（可能占用半开探测配额），必须配对 Failure
-		if isNilModel(p.Model()) {
-			r.breakers.Failure(p.ModelName())
-			attempts = append(attempts, Attempt{Provider: p.Name(), Model: p.ModelName(), Err: "provider.Model() 为 nil"})
-			continue
+		if att != nil {
+			attempts = append(attempts, *att)
 		}
-
-		start := time.Now()
-		err := try(p)
-		if err == nil {
-			r.breakers.Success(p.ModelName())
-			r.rememberModel(p.ModelName())
+		if fatal != nil {
+			return attempts, fatal
+		}
+		if done {
 			return attempts, nil
 		}
-		if ctx.Err() != nil {
-			// 用户主动中止：结果未知，走 Abandon（解除半开探测占位、不计失败
-			// 统计——Failure 曾让连续 3 次用户取消把模型熔断 5 分钟）
-			r.breakers.Abandon(p.ModelName())
-			return attempts, ctx.Err()
-		}
-		// 真实模型失败：配对 Failure（含半开探测占位的解除）
-		r.breakers.Failure(p.ModelName())
-		attempts = append(attempts, Attempt{
-			Provider: p.Name(), Model: p.ModelName(),
-			Err: err.Error(), Duration: time.Since(start),
-		})
-		if r.OnFallback != nil {
-			// to = 降级链上的下一个模型（链尾为空串）
-			to := ""
-			if i+1 < len(r.chain.Providers) {
-				to = r.chain.Providers[i+1].ModelName()
-			}
-			r.OnFallback(p.ModelName(), to, stage, err.Error())
-		}
 	}
+	return attempts, chainExhaustedError(stage, attempts, breakerSkipped)
+}
 
-	// 全部被熔断跳过时 attempts 为空——"全部 0 个模型失败"极具误导性
+// stepChain 单个 provider 的链上推进：预算复查 → 熔断/nil 防御 → try。
+// skipped=熔断跳过；fatal 非 nil 时调用方应带上已有 attempts 中止（预算耗尽/ctx 取消）。
+func (r *Resilient) stepChain(ctx context.Context, stage string, p Provider, idx int, try func(p Provider) error) (done bool, att *Attempt, skipped bool, fatal error) {
+	// 预算逐 provider 复查：截断记账后本链内仍会继续烧，越早短路越省钱
+	if r.Budget != nil && r.Budget.Remaining() <= 0 {
+		return false, nil, false, fmt.Errorf("llm: %s 任务 token 预算已耗尽（%d）", stage, r.Budget.Used())
+	}
+	// 熔断中的模型直接跳过（不记录为 attempt——没真正尝试）
+	if !r.breakers.Allow(p.ModelName()) {
+		return false, nil, true, nil
+	}
+	// nil model 防御：Allow 已放行（可能占用半开探测配额），必须配对 Failure
+	if isNilModel(p.Model()) {
+		r.breakers.Failure(p.ModelName())
+		return false, &Attempt{Provider: p.Name(), Model: p.ModelName(), Err: fmt.Errorf("provider.Model() 为 nil")}, false, nil
+	}
+	done, att = r.tryProvider(ctx, stage, p, idx, try)
+	if done {
+		return true, nil, false, nil
+	}
+	if ctx.Err() != nil {
+		return false, att, false, ctx.Err()
+	}
+	return false, att, false, nil
+}
+
+// chainExhaustedError 链走完仍失败的收口错误。全部被熔断跳过时 attempts 为空——
+// "全部 0 个模型失败"极具误导性，须给出真实原因。
+func chainExhaustedError(stage string, attempts []Attempt, breakerSkipped int) error {
 	if len(attempts) == 0 {
 		if breakerSkipped > 0 {
-			return nil, fmt.Errorf("llm: %s 全部 %d 个模型均处于熔断冷却中，未发起任何尝试", stage, breakerSkipped)
+			return fmt.Errorf("llm: %s 全部 %d 个模型均处于熔断冷却中，未发起任何尝试", stage, breakerSkipped)
 		}
-		return nil, fmt.Errorf("llm: %s 降级链为空", stage)
+		return fmt.Errorf("llm: %s 降级链为空", stage)
 	}
-	return attempts, &AttemptError{Stage: stage, Attempts: attempts}
+	return &AttemptError{Stage: stage, Attempts: attempts, BreakerSkipped: breakerSkipped}
+}
+
+// tryProvider 单次链上尝试：成功收口 / 失败记账 + OnFallback。
+// done=true 表示全链成功可返回；att 为需并入 attempts 的失败记录（成功时 nil）。
+func (r *Resilient) tryProvider(ctx context.Context, stage string, p Provider, idx int, try func(p Provider) error) (done bool, att *Attempt) {
+	start := time.Now()
+	err := try(p)
+	if err == nil {
+		r.breakers.Success(p.ModelName())
+		r.rememberModel(p.ModelName())
+		return true, nil
+	}
+	if ctx.Err() != nil {
+		// 用户主动中止：结果未知，走 Abandon（解除半开探测占位、不计失败
+		// 统计——Failure 曾让连续 3 次用户取消把模型熔断 5 分钟）
+		r.breakers.Abandon(p.ModelName())
+		return false, nil
+	}
+	// 真实模型失败：配对 Failure（含半开探测占位的解除）
+	r.breakers.Failure(p.ModelName())
+	att = &Attempt{
+		Provider: p.Name(), Model: p.ModelName(),
+		Err: err, Duration: time.Since(start),
+	}
+	if r.OnFallback != nil {
+		// to = 降级链上的下一个模型（链尾为空串）
+		to := ""
+		if idx+1 < len(r.chain.Providers) {
+			to = r.chain.Providers[idx+1].ModelName()
+		}
+		r.OnFallback(p.ModelName(), to, stage, err.Error())
+	}
+	return false, att
 }
 
 // tryOneProvider 单 Provider 内部：复制 msgs（防 fitInput 污染调用方）→
 // 按该 Provider 窗口裁剪 → 委托 Client.generateRetry 单模型重试骨架
 // （每次尝试独立受 AttemptTimeout 约束；chainFallback——上层链有备选模型）。
-func (r *Resilient) tryOneProvider(ctx context.Context, p Provider, stage string, msgs []*schema.Message) (*schema.Message, error) {
-	// 复制切片：fitInput 会原地替换元素，不能污染调用方的消息
+// prepare 复制消息 + 装配单模型 Client + fitInput（Generate 路径专用——
+// generateRetry 直接消费已裁剪副本）。JSON 路径走 GenerateJSON 自身的 copy+fit，
+// 不经此函数，避免双份裁剪。
+func (r *Resilient) prepare(p Provider, msgs []*schema.Message) (*Client, []*schema.Message) {
 	msgsCopy := copyMsgs(msgs)
-
 	c := r.buildClient(p)
 	c.fitInput(msgsCopy)
+	return c, msgsCopy
+}
+
+// attemptTimeoutOf 提取 Provider 声明的单次尝试超时（未声明 = 0）。
+func attemptTimeoutOf(p Provider) time.Duration {
+	if tp, ok := p.(timeoutProvider); ok {
+		return tp.AttemptTimeout()
+	}
+	return 0
+}
+
+func (r *Resilient) tryOneProvider(ctx context.Context, p Provider, stage string, msgs []*schema.Message) (*schema.Message, error) {
+	c, msgsCopy := r.prepare(p, msgs)
 
 	// 单次尝试超时：每次尝试独立计时。不能在循环外创建一次——否则 deadline
 	// 覆盖全部重试 + 退避睡眠，首次尝试耗满后重试全部形同虚设。
 	// （JSON 路径 tryOneProviderJSON 是刻意相反的接线——回喂重试共享一个
 	// deadline，语义为"单次完整生成调用"；改任一侧前先读另一侧注释。）
-	attemptTimeout := time.Duration(0)
-	if tp, ok := p.(timeoutProvider); ok {
-		attemptTimeout = tp.AttemptTimeout()
-	}
 	return c.generateRetry(ctx, stage, msgsCopy, retryPolicy{
 		maxAttempts:    r.cfg.RetriesPerModel + 1,
 		base:           r.cfg.BaseDelay,
 		ceil:           r.cfg.MaxDelay,
 		chainFallback:  true,
-		attemptTimeout: attemptTimeout,
+		attemptTimeout: attemptTimeoutOf(p),
 	})
 }
 
-// tryOneProviderJSON 单 Provider 的 JSON 生成（复用 Client.GenerateJSON 的回喂重试）。
+// tryOneProviderJSON 单 Provider 的 JSON 生成（复用 Client.generateJSONFitted
+// 的回喂重试）。不经 prepare：generateJSONFitted 每轮回喂自行 copy+fit，
+// 再 prep 一遍是双份。
 func (r *Resilient) tryOneProviderJSON(ctx context.Context, p Provider, stage string, msgs []*schema.Message, out any) error {
-	msgsCopy := copyMsgs(msgs)
 	c := r.buildClient(p)
-	c.fitInput(msgsCopy)
 
-	// 同 tryOneProvider：超时约束单次尝试，由 Client.GenerateJSON 内部的
-	// 回喂重试循环各自继承该 deadline——语义为"单次完整生成调用"的时限。
+	// 同 tryOneProvider：超时约束单次尝试，由回喂重试循环整体继承该
+	// deadline——语义为"单次完整生成调用"的时限。
 	// （与 Generate 路径的"每次尝试独立计时"刻意不同，互链见 tryOneProvider。）
 	attemptCtx := ctx
-	if tp, ok := p.(timeoutProvider); ok {
-		if d := tp.AttemptTimeout(); d > 0 {
-			var cancel context.CancelFunc
-			attemptCtx, cancel = context.WithTimeout(ctx, d)
-			defer cancel()
-		}
+	if d := attemptTimeoutOf(p); d > 0 {
+		var cancel context.CancelFunc
+		attemptCtx, cancel = context.WithTimeout(ctx, d)
+		defer cancel()
 	}
 
-	return c.GenerateJSON(attemptCtx, stage, msgsCopy, out)
+	// 与 tryOneProvider 同 policy（含 chainFallback）：此前固定经
+	// Client.GenerateJSON 按 Client 字段推导（buildClient 设 MaxRetries=1），
+	// 同模型传输重试在 JSON 路径整体失效——一个瞬态 500 就切模型（第六轮
+	// 审计）。attemptTimeout 不入 policy：外层 attemptCtx 已约束整个回喂重试。
+	return c.generateJSONFitted(attemptCtx, stage, msgs, out, retryPolicy{
+		maxAttempts:   r.cfg.RetriesPerModel + 1,
+		base:          r.cfg.BaseDelay,
+		ceil:          r.cfg.MaxDelay,
+		chainFallback: true,
+	})
 }
 
 // buildClient 为指定 Provider 构造单模型 Client（记账跟随该模型）。
@@ -432,14 +510,13 @@ func (r *Resilient) buildClient(p Provider) *Client {
 	return c
 }
 
-// sameModelRetryable 判断错误是否值得在同一模型上重试。
-// 429（不同模型限速池独立，等待浪费时间）、context 超限与 401/403（确定性失败，
-// 但换模型/换凭证可能解决）→ 不重试同模型，交由降级链切换。
-func sameModelRetryable(err error) bool {
+// sameModelRetryable 判断错误是否值得在同一模型上重试（hint 由调用方携带，
+// 免二次分类）。429（不同模型限速池独立，等待浪费时间）、context 超限与
+// 401/403（确定性失败，但换模型/换凭证可能解决）→ 不重试同模型，交由降级链切换。
+func sameModelRetryable(hint RetryHint, err error) bool {
 	if err == nil {
 		return true
 	}
-	hint := ClassifyLLMError(err)
 	if hint.IsRateLimit {
 		return false
 	}

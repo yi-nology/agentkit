@@ -93,12 +93,12 @@ func NewLeaderElector(store LeaseStore, key, holder string, ttl, interval time.D
 // 重复调用为 no-op（只允许一个竞选 goroutine）。
 func (e *LeaderElector) Start(ctx context.Context) {
 	e.startOnce.Do(func() {
+		// started 同步置位（在拉起 goroutine 之前）：Stop 若在 goroutine 尚未
+		// 跑到 Store(true) 时读到 false 会直接返回，既不等待也不让位，租约泄漏。
+		e.started.Store(true)
 		async.GoSafe(func() {
-			// 先注册 done 的关闭、后置 started：Stop 看到 started=true 时
-			// 必能等到 done 关闭；反之 goroutine 自行收尾（stop 已关，无租约动作）
 			defer close(e.done)
 			defer e.started.Store(false)
-			e.started.Store(true)
 			ticker := time.NewTicker(e.interval)
 			defer ticker.Stop()
 			if !e.tick(ctx) {

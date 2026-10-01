@@ -3,19 +3,14 @@
 package jsonrepair
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 
 	"git.enjoye.top/enjoydream/agentkit/textutil"
-)
-
-var (
-	invalidEscapeRe = regexp.MustCompile(`\\([^"\\/bfnrtu])`)
-	trailingCommaRe = regexp.MustCompile(`,\s*([}\]])`)
 )
 
 // ExtractObject 提取文本中第一个平衡的 JSON 对象（字符串字面量感知；
@@ -59,12 +54,85 @@ func ExtractObject(s string) string {
 	return tail
 }
 
-// Repair 轻量 JSON 修复：全角结构标点、非法转义（如 \| → |）、尾逗号、未闭合括号。
-// 只处理语法级损坏；语义归一化由 Normalize / 调用方承担。
+// Repair 轻量 JSON 修复：全角结构标点、非法转义（如 \| → |）、尾逗号、未闭合
+// 括号。只处理语法级损坏；语义归一化由 Normalize / 调用方承担。
+//
+// 单遍字符串感知扫描（第六轮审计重构）：此前尾逗号/非法转义走全文正则、不辨
+// 字符串边界——字符串里合法的 `", }"` / `"\x"` 序列会被当损坏静默改写（修复器
+// 的错误成功比失败更贵）。现在三类修复共用一个 inStr/esc 状态机，与
+// scanOpenBrackets/ExtractObject 同一纪律：字符串外才动结构位，字符串内只修
+// 转义。
 func Repair(s string) string {
-	s = fixFullWidth(s)
-	s = invalidEscapeRe.ReplaceAllString(s, "$1")
-	s = trailingCommaRe.ReplaceAllString(s, "$1")
+	var b bytes.Buffer
+	b.Grow(len(s))
+	inStr, esc := false, false
+	// truncAt 尾逗号候选段起点（逗号 + 其后空白）：确认紧跟 '}'/']' 才回退删除。
+	truncAt := -1
+	for _, r := range s {
+		if inStr {
+			if esc {
+				esc = false
+				if validEscape(r) {
+					b.WriteRune('\\')
+				}
+				b.WriteRune(r) // 非法转义：丢反斜杠保字符（\| → |）
+				continue
+			}
+			if r == '\\' {
+				esc = true // 反斜杠的写入延到下一 rune 判定合法性
+				continue
+			}
+			if r == '"' {
+				inStr = false
+			}
+			b.WriteRune(r)
+			continue
+		}
+		switch r {
+		case '"':
+			inStr = true
+			truncAt = -1 // 值开始，逗号不再是尾逗号
+			b.WriteRune(r)
+		case '，': // 全角结构标点（字符串外）→ ASCII；逗号语义同 ASCII
+			truncAt = b.Len() // 转出的 , 同样是尾逗号候选（旧正则靠后跑补此环）
+			b.WriteByte(',')
+		case '：':
+			truncAt = -1
+			b.WriteByte(':')
+		case ',':
+			truncAt = b.Len()
+			b.WriteRune(r)
+		case '}', ']':
+			if truncAt >= 0 {
+				b.Truncate(truncAt) // 尾逗号（含其后空白）删除
+				truncAt = -1
+			}
+			b.WriteRune(r)
+		default:
+			switch r {
+			case ' ', '\t', '\n', '\r':
+				// 空白不重置尾逗号候选（", }" 的空格段）
+			default:
+				truncAt = -1
+			}
+			b.WriteRune(r)
+		}
+	}
+	repaired := b.String()
+	return closeUnclosed(repaired, scanOpenBrackets(repaired))
+}
+
+// validEscape JSON 合法转义字符（\" \\ \/ \b \f \n \r \t \uXXXX）。
+func validEscape(r rune) bool {
+	switch r {
+	case '"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u':
+		return true
+	}
+	return false
+}
+
+// scanOpenBrackets 括号栈扫描（字符串字面量感知），返回未闭合的开括号序列。
+func scanOpenBrackets(s string) []byte {
 	var stack []byte
 	inStr, esc := false, false
 	for _, c := range s {
@@ -83,49 +151,29 @@ func Repair(s string) string {
 			}
 		}
 	}
-	for i := len(stack) - 1; i >= 0; i-- {
-		if stack[i] == '{' {
-			s += "}"
-		} else {
-			s += "]"
-		}
-	}
-	return s
+	return stack
 }
 
-// fixFullWidth 结构位全角标点修复（字符串感知）：JSON 结构位置的 ，： 替换为 ASCII；
-// 字符串字面量内部原样保留。
-func fixFullWidth(s string) string {
+// closeUnclosed 按栈序补全未闭合括号（后开先闭）。
+func closeUnclosed(s string, stack []byte) string {
+	if len(stack) == 0 {
+		return s
+	}
 	var b strings.Builder
-	b.Grow(len(s))
-	inStr, esc := false, false
-	for _, r := range s {
-		if inStr {
-			b.WriteRune(r)
-			switch {
-			case esc:
-				esc = false
-			case r == '\\':
-				esc = true
-			case r == '"':
-				inStr = false
-			}
-			continue
-		}
-		switch r {
-		case '"':
-			inStr = true
-			b.WriteRune(r)
-		case '，':
-			b.WriteByte(',')
-		case '：':
-			b.WriteByte(':')
-		default:
-			b.WriteRune(r)
+	b.Grow(len(s) + len(stack))
+	b.WriteString(s)
+	for i := len(stack) - 1; i >= 0; i-- {
+		if stack[i] == '{' {
+			b.WriteByte('}')
+		} else {
+			b.WriteByte(']')
 		}
 	}
 	return b.String()
 }
+
+// fixFullWidth 的全角标点修复已并入 Repair 的单遍扫描（字符串外 ，： → ASCII；
+// 字符串内原样保留）。
 
 // Schema 标量归一化作用范围（领域键集合由调用方提供）。
 type Schema struct {
@@ -200,15 +248,19 @@ func walkNormalize(m map[string]any, schema *Schema) {
 }
 
 // ParseLenient 栅栏剥离 → 直接解析 → Repair 重试 → ExtractObject+Repair 重试。
+// schema 为 nil 时跳过 Normalize（空 schema 下归一仍是 Unmarshal+递归+Marshal
+// 三趟纯开销，对解析结果无贡献）。
 func ParseLenient(raw string, v any, schema *Schema) error {
 	candidate := textutil.StripCodeFence(raw)
 	if candidate == "" {
 		return fmt.Errorf("jsonrepair: 空输入")
 	}
 	tryParse := func(c string) bool {
-		normalized, nerr := Normalize(json.RawMessage(c), schema)
-		if nerr == nil {
-			c = normalized
+		if schema != nil {
+			normalized, nerr := Normalize(json.RawMessage(c), schema)
+			if nerr == nil {
+				c = normalized
+			}
 		}
 		return json.Unmarshal([]byte(c), v) == nil
 	}

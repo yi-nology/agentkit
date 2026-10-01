@@ -38,6 +38,10 @@ type Pool struct {
 	Run func(ctx context.Context, taskID string) error
 	N   int
 	Log logx.Logger
+	// ClaimTimeout 单次 ClaimNextPending 的挂死兜底（0 = 5 分钟缺省）。
+	// Queue 是调用方实现（GORM 等），与 runTask/claim 的 panic 隔离同一不变量：
+	// 外部代码异常不得让 worker 永久僵死——超时按 claim 失败退避重试。
+	ClaimTimeout time.Duration
 
 	mu         sync.Mutex // 保护 start/stop 生命周期状态
 	started    bool
@@ -105,11 +109,15 @@ func (p *Pool) heartbeatLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// 两个调用各自限时，互不挤占；cancel 经 defer 保证释放。
+			// 两个调用各自限时，互不挤占；并行跑——原先串行时 resetStale 慢
+			// 会把心跳挤出周期，本实例任务被对端误判过期。
 			// 心跳 goroutine panic = 本实例全部在途任务心跳停止 → 90s 后被
 			// 对端复位重跑（静默双跑），故与 claim/run 同等隔离
-			p.heartbeat()
-			p.resetStale()
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() { defer wg.Done(); p.heartbeat() }()
+			go func() { defer wg.Done(); p.resetStale() }()
+			wg.Wait()
 		}
 	}
 }
@@ -218,14 +226,20 @@ func (p *Pool) loop(loopCtx, runCtx context.Context, id int) {
 
 // claim ClaimNextPending 的 panic 隔离包装：Queue 是调用方实现（GORM 等），
 // panic 若穿透会杀死该 worker goroutine——池静默减员（与 runTask 隔离同一不变量）。
-// 恢复后按 claim 失败路径退避重试。
+// 恢复后按 claim 失败路径退避重试。挂死经 ClaimTimeout 兜底。
 func (p *Pool) claim(ctx context.Context) (taskID string, ok bool, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("worker: queue panic: %v", r)
 		}
 	}()
-	return p.Queue.ClaimNextPending(ctx)
+	timeout := p.ClaimTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+	cctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return p.Queue.ClaimNextPending(cctx)
 }
 
 // runTask 单任务执行（panic 隔离）：任务 panic 只损失该任务——worker 存活继续

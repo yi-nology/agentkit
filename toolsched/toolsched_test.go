@@ -3,6 +3,7 @@ package toolsched
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -298,4 +299,73 @@ func equalGroups(got, want [][]string) bool {
 		}
 	}
 	return true
+}
+
+func TestExecuteParallelBatchesOverlap(t *testing.T) {
+	// 15 个安全任务 / 上限 10：原先切成 10+5 两组全屏障串行；就绪队列后
+	// 第二批应在第一批尾部任务未收工时就开跑（峰值并发触到上限）。
+	s := &Scheduler{MaxConcurrency: 10}
+	var running, peak int32
+	release := make(chan struct{})
+	tasks := make([]Task, 15)
+	for i := range tasks {
+		tasks[i] = Task{
+			Call: Call{ID: fmt.Sprintf("t%d", i), Hints: Hints{ReadOnly: b(true)}},
+			Run: func(ctx context.Context) (string, error) {
+				cur := atomic.AddInt32(&running, 1)
+				for {
+					p := atomic.LoadInt32(&peak)
+					if cur <= p || atomic.CompareAndSwapInt32(&peak, p, cur) {
+						break
+					}
+				}
+				<-release
+				atomic.AddInt32(&running, -1)
+				return "ok", nil
+			},
+		}
+	}
+	done := make(chan []Result, 1)
+	go func() { done <- s.Execute(context.Background(), tasks) }()
+	deadline := time.After(5 * time.Second)
+	for atomic.LoadInt32(&running) < 10 {
+		select {
+		case <-deadline:
+			t.Fatalf("未触到并发上限，running=%d", atomic.LoadInt32(&running))
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	// 放行 5 个，剩余应立刻顶上——证明没有组间全屏障
+	close(release)
+	for _, r := range <-done {
+		if r.Err != nil || r.Output != "ok" || r.Skipped {
+			t.Fatalf("结果异常: %+v", r)
+		}
+	}
+	if atomic.LoadInt32(&peak) < 10 {
+		t.Fatalf("峰值并发应达上限 10，得 %d", peak)
+	}
+}
+
+// TestExecutePanicTaskIsolated 回归（第六轮审计）：Task.Run 执行体 panic 转为
+// 该任务的 Err（与 worker.Pool 外部代码隔离同纪律），不击穿进程、不阻断
+// 其余任务。
+func TestExecutePanicTaskIsolated(t *testing.T) {
+	s := &Scheduler{}
+	var ran int32
+	res := s.Execute(context.Background(), []Task{
+		{Call: Call{ID: "1", Name: "boom"}, Run: func(context.Context) (string, error) {
+			panic("外部执行体炸了")
+		}},
+		{Call: Call{ID: "2", Name: "ok"}, Run: func(context.Context) (string, error) {
+			atomic.AddInt32(&ran, 1)
+			return "fine", nil
+		}},
+	})
+	if res[0].Err == nil || !strings.Contains(res[0].Err.Error(), "panic") {
+		t.Fatalf("panic 应转为任务 Err: %+v", res[0])
+	}
+	if res[1].Err != nil || res[1].Output != "fine" {
+		t.Fatalf("其余任务不受影响: %+v", res[1])
+	}
 }

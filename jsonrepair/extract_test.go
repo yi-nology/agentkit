@@ -139,3 +139,19 @@ func TestUnmarshalErrorCarriesBothPaths(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+// TestRepairPreservesStringLiteralContent 回归（第六轮审计）：字符串字面量里
+// 的 `", ]"` 与合法 `\x`（转义反斜杠 + 字符）序列是内容不是损坏——全文正则
+// 修复曾把它们静默改写（修复器的错误成功比失败更贵）。
+func TestRepairPreservesStringLiteralContent(t *testing.T) {
+	in := `{"re":"[0-9, ]+","esc":"a\\xb",}` // 尾逗号是唯一语法损坏
+	want := map[string]string{"re": "[0-9, ]+", "esc": `a\xb`}
+	var got map[string]string
+	repaired := Repair(in)
+	if err := json.Unmarshal([]byte(repaired), &got); err != nil {
+		t.Fatalf("修复后应可解析: %v（%s）", err, repaired)
+	}
+	if got["re"] != want["re"] || got["esc"] != want["esc"] {
+		t.Fatalf("字符串内容被改写: %+v（want %+v）", got, want)
+	}
+}

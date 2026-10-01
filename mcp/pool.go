@@ -32,6 +32,7 @@ import (
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
+	"golang.org/x/sync/singleflight"
 
 	"git.enjoye.top/enjoydream/agentkit/procx"
 )
@@ -97,20 +98,20 @@ type ToolSpec struct {
 // Pool MCP 连接池：lazy 建连（首次 Tools 时）、连接缓存复用、Close 全量回收。
 // 闲置回收/探活租约面见 lease.go（ReapIdle/StartIdleReaper/PingServer）。
 type Pool struct {
+	// mu 护生命周期与 per-server 状态表（closed/cfgs/conns/reapStop）。
+	// 单 server 的连接/目录/闲置/在途拆到 connState 自锁——Tools 跨 server
+	// 并行后，原先一把大锁会把不同 server 的 cache-hit/touch 全串行。
 	mu sync.Mutex
 	// closed 置位后拒绝新建连接（Close 与在途建连并发时，新连接会被立即关闭，
 	// 不产生泄漏）。Close 后池不可复用。
-	closed  bool
-	cfgs    map[string]ServerConfig
-	clients map[string]client.MCPClient
-	// lastUsed 连接最近使用时刻（建连/取工具/探活成功；闲置回收时钟，lease.go）。
-	lastUsed map[string]time.Time
-	// catalog 每连接的 tools/list 目录缓存（server → 条目，含注解；见 catalog.go）。
-	// 连接被 evict/闲置回收时同 server 目录一并失效。
-	catalog map[string][]toolEntry
-	// modern 建连时协商到现代协议（2026-07-28+）的 server 集合——该代际下
-	// Ping 是 no-op（协议移除了 ping RPC），探活须改发真实轻量 RPC（lease.go）。
-	modern map[string]bool
+	closed bool
+	cfgs   map[string]ServerConfig
+	conns  map[string]*connState
+	// dialGroup 同 server 并发建连收敛：N 路并发只拨一条（stdio 场景避免
+	// 子进程惊群），其余复用 first 成果。
+	dialGroup singleflight.Group
+	// errMu 串行化 OnError（Tools 跨 server 并行后回调不得被并发调用）。
+	errMu sync.Mutex
 	// reapStop 闲置回收协程停止信号（StartIdleReaper 置位；Close 关闭）。
 	reapStop chan struct{}
 	// OnError 建连/列举失败回调（nil 安全）。返回错误不中断其余 server——
@@ -127,13 +128,21 @@ type Pool struct {
 	ElicitationHandler client.ElicitationHandler
 }
 
+// connState 单 server 连接侧状态（自锁：不同 server 的调用互不阻塞）。
+type connState struct {
+	mu       sync.Mutex
+	cli      client.MCPClient
+	lastUsed time.Time // 建连/取工具/探活成功/调用结束
+	inFlight int       // 在途工具调用（ReapIdle 跳过）
+	catalog  []toolEntry
+	modern   bool
+}
+
 // NewPool 创建连接池（建连延后到 Tools 调用时——允许启动期 MCP server 未就绪）。
 // Name 为空的配置忽略；重名保留先到者（后者忽略）——配置错误尽早收敛为确定性
 // 行为而非静默覆盖。
 func NewPool(cfgs ...ServerConfig) *Pool {
-	p := &Pool{cfgs: map[string]ServerConfig{}, clients: map[string]client.MCPClient{},
-		lastUsed: map[string]time.Time{}, catalog: map[string][]toolEntry{},
-		modern: map[string]bool{}}
+	p := &Pool{cfgs: map[string]ServerConfig{}, conns: map[string]*connState{}}
 	for _, c := range cfgs {
 		if c.Name == "" {
 			continue
@@ -143,6 +152,33 @@ func NewPool(cfgs ...ServerConfig) *Pool {
 		}
 	}
 	return p
+}
+
+// connLocked 取/建 server 状态（调用方须持 p.mu）。
+func (p *Pool) connLocked(name string) *connState {
+	c := p.conns[name]
+	if c == nil {
+		c = &connState{}
+		p.conns[name] = c
+	}
+	return c
+}
+
+// conn 取 server 状态（不建；无则 nil）。
+func (p *Pool) conn(name string) *connState {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.conns[name]
+}
+
+// connLockedOrNil 取/建 server 状态；池已关闭返回 nil。
+func (p *Pool) connLockedOrNil(name string) *connState {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return nil
+	}
+	return p.connLocked(name)
 }
 
 // Servers 返回全部配置的 server 名（字母序，可观测用）。
@@ -157,67 +193,147 @@ func (p *Pool) Servers() []string {
 	return names
 }
 
-// Tools 按 spec 白名单返回 eino 工具。
+// Tools 按 spec 白名单返回 eino 工具（跨 server 并行拉取，输出按 specs 序稳定）。
 // spec.Server 未配置 → 报错（配置错误应显式暴露）；server 建连失败 → OnError 钩子
 // 后跳过（部分失败容忍）；列举失败视为该连接失效——从缓存摘除并关闭（server 崩溃
-// 后下次调用自动重建），同样经 OnError 跳过。
+// 后下次调用自动重建），同样经 OnError 跳过。OAuth 授权必需错误 fail-fast 直通。
 func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) ([]tool.BaseTool, error) {
-	var out []tool.BaseTool
-	for _, spec := range specs {
+	// 先全量校验：配置错误是调用方 bug，不应半路并行半路报错。
+	// cfgs 读持 p.mu（与其余读路径同纪律——当前生产无写者，但任何未来的
+	// 配置更新 API 都不应把这里变成 data race）
+	p.mu.Lock()
+	var missing string
+	cfgs := make([]ServerConfig, len(specs))
+	for i, spec := range specs {
 		cfg, ok := p.cfgs[spec.Server]
 		if !ok {
-			return nil, fmt.Errorf("mcp: ToolSpec 引用未配置的 server %q（已配置: %v）",
-				spec.Server, p.Servers())
+			missing = spec.Server
+			break
 		}
-		cli, err := p.client(ctx, cfg)
-		if err != nil {
-			if client.IsOAuthAuthorizationRequiredError(err) {
-				// OAuth 授权必需（批次五十六 C）：调用方可行动的确定态而非瞬态
-				// 故障——不进部分失败容忍，直通调用方（401 → 授权单/状态面）。
-				return nil, err
-			}
-			if p.OnError != nil {
-				p.OnError(cfg.Name, err)
-			}
-			continue // 部分失败容忍
-		}
-		entries, err := p.catalogFor(ctx, cfg, cli)
-		if err != nil {
-			if client.IsOAuthAuthorizationRequiredError(err) {
-				return nil, err
-			}
-			if p.OnError != nil {
-				p.OnError(cfg.Name, err)
-			}
-			continue
-		}
-		tools := convTools(cli, entries, spec.Allow)
-		// Allow 白名单全部未命中（拼写错误等）：转换层静默返回空表，
-		// 这里经 OnError 告警，避免 agent 拿到空工具表却无从排查
-		if len(tools) == 0 && len(spec.Allow) > 0 && p.OnError != nil {
-			p.OnError(cfg.Name, fmt.Errorf("mcp: %s 白名单 %v 无一命中（返回 0 个工具）", cfg.Name, spec.Allow))
-		}
-		// 调用期自愈（批次五十）：自愈层在最外（传输层死亡重连重试），业务错误
-		// （isError:true）仍由 errorAsObservation 层转观察回喂 LLM。
-		for _, w := range WrapErrorAsObservation(tools) {
-			if it, ok := w.(tool.InvokableTool); ok {
-				info, ierr := it.Info(ctx)
-				if ierr != nil {
-					out = append(out, w)
-					continue
+		cfgs[i] = cfg
+	}
+	p.mu.Unlock()
+	if missing != "" {
+		return nil, fmt.Errorf("mcp: ToolSpec 引用未配置的 server %q（已配置: %v）",
+			missing, p.Servers())
+	}
+
+	results := make([][]tool.BaseTool, len(specs))
+	var (
+		mu       sync.Mutex
+		oauthErr error
+	)
+	var wg sync.WaitGroup
+	for i := range specs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			tools, err := p.toolsForSpec(ctx, cfgs[i], specs[i])
+			if err != nil {
+				if client.IsOAuthAuthorizationRequiredError(err) {
+					mu.Lock()
+					if oauthErr == nil {
+						oauthErr = err
+					}
+					mu.Unlock()
 				}
-				allow := spec.Allow
-				out = append(out, &selfHealTool{
-					name:   info.Name,
-					inner:  it,
-					redial: p.selfHealRedial(ctx, cfg, allow, info.Name, cli),
-				})
-				continue
+				return // 其余错误已在 toolsForSpec 内经 OnError 容忍
 			}
-			out = append(out, w)
-		}
+			results[i] = tools
+		}(i)
+	}
+	wg.Wait()
+	if oauthErr != nil {
+		return nil, oauthErr
+	}
+	var out []tool.BaseTool
+	for _, t := range results {
+		out = append(out, t...)
+	}
+	if len(out) == 0 && ctx.Err() != nil {
+		// 缓存冷 + ctx 取消：toolsForSpec 对非 OAuth 错误一律容忍为空——
+		// 调用方拿到 (空表, nil) 会把取消当"server 没有工具"静默降级；缓存热时
+		// 同样的已取消 ctx 走快路径正常返回，两种形态行为须一致（第六轮审计）
+		return nil, ctx.Err()
 	}
 	return out, nil
+}
+
+// toolsForSpec 单 spec 的建连→列目录→装配（Tools 的并发单元）。
+// 返回 error 仅 OAuth 授权态（调用方 fail-fast）；其余故障经 OnError 容忍后返回 nil。
+func (p *Pool) toolsForSpec(ctx context.Context, cfg ServerConfig, spec ToolSpec) ([]tool.BaseTool, error) {
+	cli, err := p.client(ctx, cfg)
+	if err != nil {
+		if client.IsOAuthAuthorizationRequiredError(err) {
+			return nil, err
+		}
+		p.notifyError(cfg.Name, err)
+		return nil, nil
+	}
+	entries, err := p.catalogFor(ctx, cfg, cli)
+	if err != nil {
+		if client.IsOAuthAuthorizationRequiredError(err) {
+			return nil, err
+		}
+		p.notifyError(cfg.Name, err)
+		return nil, nil
+	}
+	tools := p.assembleTools(cfg, spec.Allow, cli, entries)
+	// Allow 白名单全部未命中（拼写错误等）：转换层静默返回空表，
+	// 这里经 OnError 告警，避免 agent 拿到空工具表却无从排查
+	if len(tools) == 0 && len(spec.Allow) > 0 {
+		p.notifyError(cfg.Name, fmt.Errorf("mcp: %s 白名单 %v 无一命中（返回 0 个工具）", cfg.Name, spec.Allow))
+	}
+	return p.wrapSelfHeal(ctx, cfg, spec, cli, tools), nil
+}
+
+// assembleTools 目录条目 → eino 工具 + 在途登记（leaseUse 注入）单源：初始装配
+// （toolsForSpec）与自愈 redial（selfHealRedial）共用。此前 redial 路径裸
+// convTools——lease 注入漏迁移，自愈重试期间 inFlight==0，重试时长超过
+// maxIdle 时连接可被闲置回收（第六轮审计）。leaseUse 是唯一带 lease 的装配点，
+// 双路径手工对齐的漂移面就此消除。
+func (p *Pool) assembleTools(cfg ServerConfig, allow []string, cli client.MCPClient, entries []toolEntry) []tool.BaseTool {
+	tools := convTools(cli, entries, allow)
+	lease := p.leaseUse(cfg.Name)
+	for _, t := range tools {
+		if it, ok := t.(*invokableTool); ok {
+			it.lease = lease
+		}
+	}
+	return tools
+}
+
+// wrapSelfHeal 调用期自愈（批次五十）：自愈层在最外（传输层死亡重连重试），
+// 业务错误（isError:true）仍由 errorAsObservation 层转观察回喂 LLM。
+func (p *Pool) wrapSelfHeal(ctx context.Context, cfg ServerConfig, spec ToolSpec, cli client.MCPClient, tools []tool.BaseTool) []tool.BaseTool {
+	var out []tool.BaseTool
+	for _, w := range WrapErrorAsObservation(tools) {
+		if it, ok := w.(tool.InvokableTool); ok {
+			info, ierr := it.Info(ctx)
+			if ierr != nil {
+				out = append(out, w)
+				continue
+			}
+			out = append(out, &selfHealTool{
+				name:   info.Name,
+				inner:  it,
+				redial: p.selfHealRedial(cfg, spec.Allow, info.Name, cli),
+			})
+			continue
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
+// notifyError 串行化 OnError（Tools 跨 server 并行后回调不得被并发调用）。
+func (p *Pool) notifyError(server string, err error) {
+	if p.OnError == nil {
+		return
+	}
+	p.errMu.Lock()
+	defer p.errMu.Unlock()
+	p.OnError(server, err)
 }
 
 // client 获取（lazy 建连 + 缓存）。失败时不缓存——下次调用重试。
@@ -227,12 +343,51 @@ func (p *Pool) client(ctx context.Context, cfg ServerConfig) (client.MCPClient, 
 		p.mu.Unlock()
 		return nil, errors.New("mcp: 池已关闭")
 	}
-	if cli, ok := p.clients[cfg.Name]; ok {
-		p.lastUsed[cfg.Name] = time.Now()
-		p.mu.Unlock()
+	st := p.connLocked(cfg.Name)
+	p.mu.Unlock()
+
+	st.mu.Lock()
+	if st.cli != nil {
+		st.lastUsed = time.Now()
+		cli := st.cli
+		st.mu.Unlock()
 		return cli, nil
 	}
-	p.mu.Unlock()
+	st.mu.Unlock()
+
+	// 同 server 并发建连收敛到一条：stdio 场景原先 N 路并发各起一个子进程，
+	// 双检后 N-1 条立刻关掉——惊群 + 进程抖动。singleflight 内完成 dial+Initialize+登记。
+	// 拨号用 WithoutCancel：连接是池共享资源，不应被先到调用方的取消拖死；
+	// 各等待方经 DoChan 各自尊重自己的 ctx。
+	ch := p.dialGroup.DoChan(cfg.Name, func() (any, error) {
+		return p.dialAndRegister(context.WithoutCancel(ctx), cfg)
+	})
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		cli, ok := res.Val.(client.MCPClient)
+		if !ok || cli == nil {
+			return nil, fmt.Errorf("mcp: %s 建连结果类型异常", cfg.Name)
+		}
+		return cli, nil
+	}
+}
+
+// dialAndRegister 建连 + Initialize + 入池（仅经 singleflight 调用）。
+// 锁序纪律：p.mu 与 st.mu 互不嵌套——取状态/判 closed 在 p.mu 内完成即释放，
+// 再动 st；写完连接后二次核对 closed，防止与 Close 交错泄漏。
+func (p *Pool) dialAndRegister(ctx context.Context, cfg ServerConfig) (client.MCPClient, error) {
+	st, err := p.connForDial(cfg.Name)
+	if err != nil {
+		return nil, err
+	}
+	if cli := st.cachedClient(); cli != nil {
+		return cli, nil
+	}
 
 	timeout := cfg.Timeout
 	if timeout <= 0 {
@@ -245,70 +400,125 @@ func (p *Pool) client(ctx context.Context, cfg ServerConfig) (client.MCPClient, 
 	if err != nil {
 		return nil, fmt.Errorf("mcp: %s 建连失败: %w", cfg.Name, err)
 	}
-
-	// MCP 协议要求先 Initialize 才能调用
-	initReq := mcp.InitializeRequest{}
-	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	initReq.Params.ClientInfo = mcp.Implementation{Name: "agentkit", Version: "1.0"}
-	if p.ElicitationHandler != nil {
-		// 能力声明与 handler 同装（不声明则支持 elicitation 的 server 不会发起）
-		initReq.Params.Capabilities.Elicitation = &mcp.ElicitationCapability{}
-	}
-	if _, err := cli.Initialize(cctx, initReq); err != nil {
-		_ = cli.Close()
-		return nil, fmt.Errorf("mcp: %s Initialize 失败: %w", cfg.Name, err)
-	}
-	// 协商代际记录（Initialize 后才可知；包装前 concrete 类型仍可断言）——
-	// 现代协议 Ping 是 no-op，探活路径须分流（lease.go PingServer）
-	isModern := false
-	if cc, ok := cli.(*client.Client); ok {
-		isModern = mcp.IsModernProtocol(cc.ProtocolVersion())
+	cli, isModern, err := initializeClient(cctx, cli, p.ElicitationHandler)
+	if err != nil {
+		return nil, fmt.Errorf("mcp: %s %w", cfg.Name, err)
 	}
 
-	p.mu.Lock()
-	// 双检：并发建连时保留先到者，关闭后来者；池已关闭则立即回收新建连接
-	if p.closed {
-		p.mu.Unlock()
-		_ = cli.Close()
-		return nil, errors.New("mcp: 池已关闭")
-	}
-	if existing, ok := p.clients[cfg.Name]; ok {
-		p.mu.Unlock()
-		_ = cli.Close()
-		return existing, nil
-	}
 	if p.RequestMeta != nil {
 		// _meta 请求上下文注入（meta.go）：装饰器在 client() 单点包装——初次建连
 		// 与自愈 redial 同走此路，evict 指针比对基于装饰器一致。
 		cli = &metaClient{MCPClient: cli, metaFn: p.RequestMeta}
 	}
-	p.clients[cfg.Name] = cli
-	p.lastUsed[cfg.Name] = time.Now()
-	if isModern {
-		p.modern[cfg.Name] = true
-	} else {
-		delete(p.modern, cfg.Name)
+	return p.registerConn(cfg.Name, st, cli, isModern)
+}
+
+// connForDial 取/建 server 状态（建连前）；池已关闭报错。
+func (p *Pool) connForDial(name string) (*connState, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return nil, errors.New("mcp: 池已关闭")
 	}
+	return p.connLocked(name), nil
+}
+
+// cachedClient 双检缓存命中（singleflight 复用方可能已等到别人建好连接）。
+func (st *connState) cachedClient() client.MCPClient {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.cli == nil {
+		return nil
+	}
+	st.lastUsed = time.Now()
+	return st.cli
+}
+
+// initializeClient MCP 协议要求先 Initialize 才可调用；返回代际标记
+// （Initialize 后才可知，现代协议 Ping 是 no-op，探活路径须分流）。
+// 失败时关闭连接——调用方拿到 error 即连接已回收。
+func initializeClient(ctx context.Context, cli client.MCPClient, elicitation client.ElicitationHandler) (client.MCPClient, bool, error) {
+	initReq := mcp.InitializeRequest{}
+	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	initReq.Params.ClientInfo = mcp.Implementation{Name: "agentkit", Version: "1.0"}
+	if elicitation != nil {
+		// 能力声明与 handler 同装（不声明则支持 elicitation 的 server 不会发起）
+		initReq.Params.Capabilities.Elicitation = &mcp.ElicitationCapability{}
+	}
+	if _, err := cli.Initialize(ctx, initReq); err != nil {
+		_ = cli.Close()
+		return nil, false, fmt.Errorf("Initialize 失败: %w", err)
+	}
+	isModern := false
+	// 包装前 concrete 类型仍可断言（lease.go PingServer 分流依据）
+	if cc, ok := cli.(*client.Client); ok {
+		isModern = mcp.IsModernProtocol(cc.ProtocolVersion())
+	}
+	return cli, isModern, nil
+}
+
+// registerConn 连接入池：双检占位 + 与 Close 交错的两次 closed 核对
+// （写入后池已关则摘掉回收，防泄漏）。已存在连接时关掉传入的这条。
+func (p *Pool) registerConn(name string, st *connState, cli client.MCPClient, isModern bool) (client.MCPClient, error) {
+	p.mu.Lock()
+	closed := p.closed
 	p.mu.Unlock()
+	if closed {
+		_ = cli.Close()
+		return nil, errors.New("mcp: 池已关闭")
+	}
+
+	st.mu.Lock()
+	if st.cli != nil {
+		existing := st.cli
+		st.mu.Unlock()
+		_ = cli.Close()
+		return existing, nil
+	}
+	st.cli = cli
+	st.lastUsed = time.Now()
+	st.modern = isModern
+	st.mu.Unlock()
+
+	// 与 Close 交错兜底：写入后若池已关，摘掉并回收，防泄漏
+	p.mu.Lock()
+	closed = p.closed
+	p.mu.Unlock()
+	if closed {
+		p.evict(name, cli)
+		return nil, errors.New("mcp: 池已关闭")
+	}
 	return cli, nil
 }
 
 // evict 连接失效时从缓存摘除并关闭（仅当缓存中的仍是该连接），下次调用走重建；
 // 同 server 目录缓存一并失效（重建连接后重新列举）。
 func (p *Pool) evict(name string, cli client.MCPClient) {
-	p.mu.Lock()
-	cached, ok := p.clients[name]
-	if ok && cached == cli {
-		delete(p.clients, name)
-		delete(p.catalog, name)
-		delete(p.modern, name)
-	} else {
-		cli = nil
-	}
-	p.mu.Unlock()
-	if cli != nil {
+	st := p.conn(name)
+	if st == nil {
 		_ = cli.Close()
+		return
 	}
+	st.mu.Lock()
+	if st.cli == cli {
+		dead := st.detachLocked()
+		st.mu.Unlock()
+		_ = dead.Close()
+		return
+	}
+	st.mu.Unlock()
+	// 缓存里已是别的连接（并发自愈刚换上）：只关传入的这条，不动新连接
+	_ = cli.Close()
+}
+
+// detachLocked 摘除连接并连带失效目录/代际（evict/ReapIdle/Close 三处同构的
+// 失效逻辑单源；调用方须持 st.mu）。返回被摘下的连接供锁外 Close。
+func (st *connState) detachLocked() client.MCPClient {
+	cli := st.cli
+	st.cli = nil
+	st.catalog = nil
+	st.modern = false
+	return cli
 }
 
 // dial 按配置构造 MCP client（stdio 或 streamable http）。
@@ -324,76 +534,89 @@ func (p *Pool) dial(ctx context.Context, cfg ServerConfig) (client.MCPClient, er
 	}
 	switch {
 	case len(cfg.Command) > 0:
-		// argv[0] 只允许是可执行名：以 "-" 开头会落入下游参数解析当选项
-		// （argument injection）；Command 来自装配配置，越界即配置错误，fail-fast
-		if cfg.Command[0] == "" || strings.HasPrefix(cfg.Command[0], "-") {
-			return nil, fmt.Errorf("mcp: server %s 非法 command %q", cfg.Name, cfg.Command[0])
-		}
-		// 经 CommandFunc 接管 exec.Cmd：环境只给白名单（procx.ChildEnv，
-		// 全仓库子进程环境纪律单一事实源），绝不继承全量 os.Environ()
-		t := transport.NewStdioWithOptions(cfg.Command[0], cfg.Env, cfg.Command[1:],
-			transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
-				cmd := exec.CommandContext(ctx, command, args...)
-				cmd.Env = procx.ChildEnv(env)
-				return cmd, nil
-			}))
-		if err := t.Start(ctx); err != nil {
-			return nil, fmt.Errorf("mcp: server %s stdio 启动失败: %w", cfg.Name, err)
-		}
-		return client.NewClient(t, clientOpts()...), nil
+		return dialStdio(ctx, cfg, clientOpts()...)
 	case cfg.URL != "":
-		httpOpts := []transport.StreamableHTTPCOption{
-			transport.WithHTTPHeaders(cfg.Headers),
-			// 每请求兜底（含 tools/call）：与建连预算 Timeout 分离——误用连接级
-			// 30s 会让长工具调用在 HTTP 传输下永远失败
-			transport.WithHTTPTimeout(cfg.requestTimeoutOr(DefaultRequestTimeout)),
-		}
-		if cfg.OAuth != nil {
-			if cfg.OAuth.TokenStore == nil {
-				return nil, fmt.Errorf("mcp: server %s OAuth 配置缺 TokenStore（缺省内存 store 会在重连后丢授权态）", cfg.Name)
-			}
-			// OAuth 客户端（批次五十六 C）：静态 headers 保留（可与 Bearer 共存——
-			// 代理网关类附加头），token 注入由 transport 内 oauthHandler 承担
-			// （PKCE 恒开）。
-			httpOpts = append(httpOpts, transport.WithHTTPOAuth(client.OAuthConfig{
-				ClientID:              cfg.OAuth.ClientID,
-				ClientSecret:          cfg.OAuth.ClientSecret,
-				RedirectURI:           cfg.OAuth.RedirectURI,
-				Scopes:                cfg.OAuth.Scopes,
-				TokenStore:            cfg.OAuth.TokenStore,
-				AuthServerMetadataURL: cfg.OAuth.MetadataURL,
-				PKCEEnabled:           true,
-			}))
-		}
-		t, err := transport.NewStreamableHTTP(cfg.URL, httpOpts...)
-		if err != nil {
-			return nil, fmt.Errorf("mcp: server %s http transport 构造失败: %w", cfg.Name, err)
-		}
-		return client.NewClient(t, clientOpts()...), nil
+		return dialHTTP(ctx, cfg, clientOpts()...)
 	default:
 		return nil, fmt.Errorf("mcp: server %s stdio（command）与 http（url）均未配置", cfg.Name)
 	}
 }
 
+// dialStdio stdio 传输建连：argv[0] 只允许可执行名（防 argument injection），
+// 环境只给白名单（procx.ChildEnv，绝不继承全量 os.Environ()）。
+func dialStdio(ctx context.Context, cfg ServerConfig, clientOpts ...client.ClientOption) (client.MCPClient, error) {
+	if cfg.Command[0] == "" || strings.HasPrefix(cfg.Command[0], "-") {
+		return nil, fmt.Errorf("mcp: server %s 非法 command %q", cfg.Name, cfg.Command[0])
+	}
+	// 经 CommandFunc 接管 exec.Cmd：环境白名单纪律单一事实源
+	t := transport.NewStdioWithOptions(cfg.Command[0], cfg.Env, cfg.Command[1:],
+		transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
+			cmd := exec.CommandContext(ctx, command, args...)
+			cmd.Env = procx.ChildEnv(env)
+			return cmd, nil
+		}))
+	if err := t.Start(ctx); err != nil {
+		return nil, fmt.Errorf("mcp: server %s stdio 启动失败: %w", cfg.Name, err)
+	}
+	return client.NewClient(t, clientOpts...), nil
+}
+
+// dialHTTP streamable http 传输建连（可挂 OAuth）。
+func dialHTTP(ctx context.Context, cfg ServerConfig, clientOpts ...client.ClientOption) (client.MCPClient, error) {
+	httpOpts := []transport.StreamableHTTPCOption{
+		transport.WithHTTPHeaders(cfg.Headers),
+		// 每请求兜底（含 tools/call）：与建连预算 Timeout 分离——误用连接级
+		// 30s 会让长工具调用在 HTTP 传输下永远失败
+		transport.WithHTTPTimeout(cfg.requestTimeoutOr(DefaultRequestTimeout)),
+	}
+	if cfg.OAuth != nil {
+		if cfg.OAuth.TokenStore == nil {
+			return nil, fmt.Errorf("mcp: server %s OAuth 配置缺 TokenStore（缺省内存 store 会在重连后丢授权态）", cfg.Name)
+		}
+		// OAuth 客户端（批次五十六 C）：静态 headers 保留（可与 Bearer 共存——
+		// 代理网关类附加头），token 注入由 transport 内 oauthHandler 承担（PKCE 恒开）。
+		httpOpts = append(httpOpts, transport.WithHTTPOAuth(client.OAuthConfig{
+			ClientID:              cfg.OAuth.ClientID,
+			ClientSecret:          cfg.OAuth.ClientSecret,
+			RedirectURI:           cfg.OAuth.RedirectURI,
+			Scopes:                cfg.OAuth.Scopes,
+			TokenStore:            cfg.OAuth.TokenStore,
+			AuthServerMetadataURL: cfg.OAuth.MetadataURL,
+			PKCEEnabled:           true,
+		}))
+	}
+	t, err := transport.NewStreamableHTTP(cfg.URL, httpOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("mcp: server %s http transport 构造失败: %w", cfg.Name, err)
+	}
+	return client.NewClient(t, clientOpts...), nil
+}
+
+// firstPositive 非零胜出（Timeout/RequestTimeout/ProbeTimeout 三处回退单源）。
+func firstPositive(vals ...time.Duration) time.Duration {
+	for _, v := range vals {
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
+}
+
 // timeoutOr cfg.Timeout 的非零回退。
 func (c ServerConfig) timeoutOr(d time.Duration) time.Duration {
-	if c.Timeout > 0 {
-		return c.Timeout
-	}
-	return d
+	return firstPositive(c.Timeout, d)
 }
 
 // DefaultRequestTimeout HTTP 传输单请求兜底缺省。
 const DefaultRequestTimeout = 10 * time.Minute
 
 func (c ServerConfig) requestTimeoutOr(d time.Duration) time.Duration {
-	if c.RequestTimeout > 0 {
-		return c.RequestTimeout
-	}
-	return d
+	return firstPositive(c.RequestTimeout, d)
 }
 
 // Close 关闭全部缓存连接并拒绝后续建连（幂等）；停止闲置回收协程。Close 后池不可复用。
+// 锁序：先在 p.mu 内标记 closed 并摘出各 connState 指针，释放后再逐个收连接——
+// 绝不在持 p.mu 时抢 st.mu（与 dialAndRegister 的写入路径交叉会死锁）。
 func (p *Pool) Close() {
 	p.mu.Lock()
 	if p.closed {
@@ -401,16 +624,22 @@ func (p *Pool) Close() {
 		return
 	}
 	p.closed = true
-	clients := p.clients
-	p.clients = map[string]client.MCPClient{}
-	p.catalog = map[string][]toolEntry{}
+	states := make([]*connState, 0, len(p.conns))
+	for _, st := range p.conns {
+		states = append(states, st)
+	}
 	stop := p.reapStop
 	p.reapStop = nil
 	p.mu.Unlock()
 	if stop != nil {
 		close(stop)
 	}
-	for _, cli := range clients {
-		_ = cli.Close()
+	for _, st := range states {
+		st.mu.Lock()
+		cli := st.detachLocked()
+		st.mu.Unlock()
+		if cli != nil {
+			_ = cli.Close()
+		}
 	}
 }

@@ -28,7 +28,6 @@ type MilvusConfig struct {
 	Collection string            // 集合名，默认 "agentkit_knowledge"
 	Dimension  int               // 向量维度（需与 Embedder.Dim() 一致）
 	MetricType entity.MetricType // 距离度量，默认 COSINE
-	IndexType  string            // 索引类型，默认 "IVF_FLAT"
 	NProbe     int               // 搜索时的 nprobe，默认 16
 }
 
@@ -49,9 +48,6 @@ func (c MilvusConfig) withDefaults(dim int) MilvusConfig {
 	}
 	if c.MetricType == "" {
 		c.MetricType = entity.COSINE
-	}
-	if c.IndexType == "" {
-		c.IndexType = "IVF_FLAT"
 	}
 	if c.NProbe <= 0 { // 负数同样回退默认（透传给 SDK 会被运行期拒绝）
 		c.NProbe = 16
@@ -92,7 +88,9 @@ func (s *MilvusStore) ensureCollection(ctx context.Context) error {
 	schema := entity.NewSchema().
 		WithName(s.cfg.Collection).
 		WithDescription("agentkit knowledge base").
-		WithField(entity.NewField().WithName(milvusIDField).WithDataType(entity.FieldTypeVarChar).WithMaxLength(128).WithIsPrimaryKey(true)).
+		// 主键 = file + "#chunk_N"：上限须 ≥ file 上限 + 后缀余量（此前 128
+		// 与 file 字段 512 不一致，深路径文件的 Upsert 必因主键超长失败）
+		WithField(entity.NewField().WithName(milvusIDField).WithDataType(entity.FieldTypeVarChar).WithMaxLength(528).WithIsPrimaryKey(true)).
 		WithField(entity.NewField().WithName(milvusContentField).WithDataType(entity.FieldTypeVarChar).WithMaxLength(65535)).
 		WithField(entity.NewField().WithName(milvusFileField).WithDataType(entity.FieldTypeVarChar).WithMaxLength(512)).
 		WithField(entity.NewField().WithName(milvusHeadingField).WithDataType(entity.FieldTypeVarChar).WithMaxLength(512)).
@@ -137,31 +135,36 @@ func (s *MilvusStore) Index(ctx context.Context, file string, content string) er
 		}
 		return nil
 	}
-
-	// 准备文本用于 embedding
-	texts := make([]string, len(chunks))
-	ids := make([]string, len(chunks))
-	headings := make([]string, len(chunks))
-	files := make([]string, len(chunks))
-
-	for i, c := range chunks {
-		texts[i] = c.content
-		ids[i] = fmt.Sprintf("%s#chunk_%d", file, i)
-		headings[i] = c.heading
-		files[i] = file
-	}
+	texts, ids, headings, files := indexColumns(file, chunks)
 
 	// 批量 embedding（在动旧数据之前完成——失败时旧索引原样保留）
 	vectors, err := s.embedder.Embed(ctx, texts)
 	if err != nil {
 		return fmt.Errorf("milvus: embedding 失败: %w", err)
 	}
-
 	if err := s.DeleteFile(ctx, file); err != nil {
 		return fmt.Errorf("milvus: 清理旧索引失败: %w", err)
 	}
+	return s.upsertChunks(ctx, texts, ids, headings, files, vectors)
+}
 
-	// 插入 Milvus
+// indexColumns 索引列取值准备：主键 file#chunk_N 确定性（同文件重刷可 Upsert 覆盖）。
+func indexColumns(file string, chunks []mdChunk) (texts, ids, headings, files []string) {
+	texts = make([]string, len(chunks))
+	ids = make([]string, len(chunks))
+	headings = make([]string, len(chunks))
+	files = make([]string, len(chunks))
+	for i, c := range chunks {
+		texts[i] = c.content
+		ids[i] = fmt.Sprintf("%s#chunk_%d", file, i)
+		headings[i] = c.heading
+		files[i] = file
+	}
+	return texts, ids, headings, files
+}
+
+// upsertChunks 列构建 + Upsert + Flush（写入收尾阶段，与 Embed/Delete 解耦）。
+func (s *MilvusStore) upsertChunks(ctx context.Context, texts, ids, headings, files []string, vectors [][]float32) error {
 	idCol := entity.NewColumnVarChar(milvusIDField, ids)
 	contentCol := entity.NewColumnVarChar(milvusContentField, texts)
 	fileCol := entity.NewColumnVarChar(milvusFileField, files)
@@ -173,11 +176,9 @@ func (s *MilvusStore) Index(ctx context.Context, file string, content string) er
 	if _, err := s.client.Upsert(ctx, s.cfg.Collection, "", idCol, contentCol, fileCol, headingCol, vectorCol); err != nil {
 		return fmt.Errorf("milvus: 插入失败: %w", err)
 	}
-
 	if err := s.client.Flush(ctx, s.cfg.Collection, false); err != nil {
 		return fmt.Errorf("milvus: flush 失败: %w", err)
 	}
-
 	return nil
 }
 
@@ -192,8 +193,26 @@ func (s *MilvusStore) Retrieve(ctx context.Context, query string, topK int, filt
 	if topK <= 0 {
 		topK = defaultTopK
 	}
+	vec, err := s.embedQuery(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	expr, err := milvusFilterExpr(filter)
+	if err != nil {
+		return nil, err
+	}
+	results, err := s.searchChunks(ctx, expr, vec, topK)
+	if err != nil {
+		return nil, err
+	}
+	if len(results) == 0 {
+		return nil, nil
+	}
+	return milvusHitChunks(results[0]), nil
+}
 
-	// 查询文本 embedding
+// embedQuery 查询文本向量化（空向量=服务/配置异常，显式报错不静默空检索）。
+func (s *MilvusStore) embedQuery(ctx context.Context, query string) ([]float32, error) {
 	vectors, err := s.embedder.Embed(ctx, []string{query})
 	if err != nil {
 		return nil, fmt.Errorf("milvus: 查询 embedding 失败: %w", err)
@@ -201,42 +220,42 @@ func (s *MilvusStore) Retrieve(ctx context.Context, query string, topK int, filt
 	if len(vectors) == 0 || len(vectors[0]) == 0 {
 		return nil, fmt.Errorf("milvus: 查询 embedding 为空")
 	}
+	return vectors[0], nil
+}
 
-	// 构建过滤表达式：key 白名单（schema 外的字段名/特殊字符会让整个检索报错，
-	// 也构成表达式注入面）；value 已转义
-	var expr string
-	if filter != nil {
-		var parts []string
-		for k, v := range filter {
-			if !milvusFilterKeys[k] {
-				return nil, fmt.Errorf("milvus: 不支持的过滤字段 %q（可用: file, heading）", k)
-			}
-			parts = append(parts, fmt.Sprintf(`%s == "%s"`, k, escapeMilvus(v)))
-		}
-		expr = strings.Join(parts, " and ")
+// milvusFilterExpr 构建过滤表达式：key 白名单校验走 validateFilter 单源
+// （Local/Milvus 同一契约），value 已转义。
+func milvusFilterExpr(filter Filter) (string, error) {
+	if err := validateFilter(filter); err != nil {
+		return "", err
 	}
+	if filter == nil {
+		return "", nil
+	}
+	var parts []string
+	for k, v := range filter {
+		parts = append(parts, fmt.Sprintf(`%s == "%s"`, k, escapeMilvus(v)))
+	}
+	return strings.Join(parts, " and "), nil
+}
 
-	// 搜索参数（构造错误显式返回——吞掉后 nil sp 的报错晦涩难排查）
+// searchChunks 执行向量检索（参数构造错误显式返回——吞掉后 nil sp 的报错晦涩难排查）。
+func (s *MilvusStore) searchChunks(ctx context.Context, expr string, vec []float32, topK int) ([]client.SearchResult, error) {
 	sp, err := entity.NewIndexIvfFlatSearchParam(s.cfg.NProbe)
 	if err != nil {
 		return nil, fmt.Errorf("milvus: 搜索参数构造失败（nprobe=%d）: %w", s.cfg.NProbe, err)
 	}
-
-	// 执行搜索
-	searchVectors := []entity.Vector{entity.FloatVector(vectors[0])}
 	results, err := s.client.Search(ctx, s.cfg.Collection, nil, expr,
 		[]string{milvusContentField, milvusFileField, milvusHeadingField},
-		searchVectors, milvusVectorField, s.cfg.MetricType, topK, sp)
+		[]entity.Vector{entity.FloatVector(vec)}, milvusVectorField, s.cfg.MetricType, topK, sp)
 	if err != nil {
 		return nil, fmt.Errorf("milvus: 搜索失败: %w", err)
 	}
+	return results, nil
+}
 
-	if len(results) == 0 {
-		return nil, nil
-	}
-
-	// 解析结果
-	res := results[0]
+// milvusHitChunks 检索命中行 → Chunk（列缺失取空串，score 越界取 0）。
+func milvusHitChunks(res client.SearchResult) []Chunk {
 	chunks := make([]Chunk, 0, res.ResultCount)
 
 	var contentCol *entity.ColumnVarChar
@@ -274,8 +293,7 @@ func (s *MilvusStore) Retrieve(ctx context.Context, query string, topK int, filt
 			},
 		})
 	}
-
-	return chunks, nil
+	return chunks
 }
 
 // AsTool 实现 KnowledgeService 接口。
@@ -302,9 +320,6 @@ func columnValueAt(col *entity.ColumnVarChar, idx int) string {
 	}
 	return val
 }
-
-// milvusFilterKeys 检索过滤字段白名单（schema 标量字段）。
-var milvusFilterKeys = map[string]bool{milvusFileField: true, milvusHeadingField: true}
 
 // escapeMilvus 转义 Milvus 表达式中的特殊字符。
 func escapeMilvus(s string) string {

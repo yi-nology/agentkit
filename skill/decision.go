@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
 	"github.com/cloudwego/eino/schema"
 
 	"git.enjoye.top/enjoydream/agentkit/fence"
+	"git.enjoye.top/enjoydream/agentkit/textutil"
 )
 
 // ---------- 决策使用：use_skill 工具（渐进披露） ----------
@@ -42,15 +42,20 @@ func RenderList(metas []Meta, budget int) string {
 		strings.Join(names, ", ")
 	if len(degraded) > budget {
 		joined := strings.Join(names, ", ")
-		truncated := joined
-		if len(truncated) > budget {
-			truncated = truncated[:budget]
-			// 按字节截断可能切断多字节字符——回退到最后一个完整分隔符。
-			if i := strings.LastIndex(truncated, ", "); i > 0 {
-				truncated = truncated[:i]
-			}
+		head := "可用 skill 清单（清单过长已截断）：\n"
+		tail := " …（其余技能名见技能库）"
+		// 头尾计入预算（此前重组后必然超预算，预算契约被软化）；正文按
+		// TruncBytes rune 对齐截断（此前字节截断可切碎多字节技能名）
+		bodyBudget := budget - len(head) - len(tail)
+		if bodyBudget < 0 {
+			bodyBudget = 0
 		}
-		degraded = "可用 skill 清单（清单过长已截断）：\n" + truncated + " …（其余技能名见技能库）"
+		truncated, _ := textutil.TruncBytes(joined, bodyBudget)
+		// 回退到最后一个完整名（分隔符边界），避免截在名字中间
+		if i := strings.LastIndex(truncated, ", "); i > 0 {
+			truncated = truncated[:i]
+		}
+		degraded = head + truncated + tail
 	}
 	return degraded
 }
@@ -98,31 +103,36 @@ func AsSkillTool(p Provider, allowed []string, opts ...ToolOption) (tool.BaseToo
 	t, err := utils.InferTool("use_skill",
 		"加载指定 skill 的完整方法论内容（评分标准/检查清单/规范摘要）。"+
 			"仅当任务与可用清单中某条 skill 的描述相关时调用。",
-		func(ctx context.Context, in *useSkillIn) (*useSkillOut, error) {
-			// 别名归一化：模型可能用清单里的展示名（frontmatter name）回填，
-			// 加载与 allowed 校验一律以规范引用名为准
-			name := in.Name
-			if ar, ok := p.(AliasResolver); ok {
-				if n, hit := ar.CanonicalName(ctx, in.Name); hit {
-					name = n
-				}
-			}
-			if len(set) > 0 && !set[name] {
-				return &useSkillOut{Error: fmt.Sprintf("skill %q 不在允许清单内", name)}, nil
-			}
-			s, err := p.Resolve(ctx, Ref{Name: name})
-			if err != nil {
-				return &useSkillOut{Error: err.Error()}, nil
-			}
-			out := &useSkillOut{Name: name, Requested: in.Name, Version: s.Version,
-				Checksum: s.Checksum, Content: s.Content, Description: s.Description}
-			capContent(out, cfg.contentCap)
-			return out, nil
-		})
+		runUseSkill(p, set, cfg))
 	if err != nil {
 		return nil, err
 	}
 	return t, nil
+}
+
+// runUseSkill use_skill 工具执行体：别名归一化 → allowed 校验 → Resolve → 截断。
+func runUseSkill(p Provider, allowedSet map[string]bool, cfg skillToolCfg) func(ctx context.Context, in *useSkillIn) (*useSkillOut, error) {
+	return func(ctx context.Context, in *useSkillIn) (*useSkillOut, error) {
+		// 别名归一化：模型可能用清单里的展示名（frontmatter name）回填，
+		// 加载与 allowed 校验一律以规范引用名为准
+		name := in.Name
+		if ar, ok := p.(AliasResolver); ok {
+			if n, hit := ar.CanonicalName(ctx, in.Name); hit {
+				name = n
+			}
+		}
+		if len(allowedSet) > 0 && !allowedSet[name] {
+			return &useSkillOut{Error: fmt.Sprintf("skill %q 不在允许清单内", name)}, nil
+		}
+		s, err := p.Resolve(ctx, Ref{Name: name})
+		if err != nil {
+			return &useSkillOut{Error: err.Error()}, nil
+		}
+		out := &useSkillOut{Name: name, Requested: in.Name, Version: s.Version,
+			Checksum: s.Checksum, Content: s.Content, Description: s.Description}
+		capContent(out, cfg.contentCap)
+		return out, nil
+	}
 }
 
 // skillToolCfg use_skill 工具装配配置（ToolOption 注入）。
@@ -141,15 +151,16 @@ func WithContentCap(n int) ToolOption {
 
 // capContent 就地施加全文上限（截断 + 尾部声明；≤0 = 不限）。
 func capContent(out *useSkillOut, capBytes int) {
-	if capBytes <= 0 || len(out.Content) <= capBytes {
+	if capBytes <= 0 {
 		return
 	}
-	// rune 安全回退：字节截断可切出非法 UTF-8 尾字节（json 序列化时退化为替换符）
-	cut := capBytes
-	for cut > 0 && !utf8.RuneStart(out.Content[cut]) {
-		cut--
+	// TruncBytes：字节预算 + rune 对齐（截断可切出非法 UTF-8 尾字节，json
+	// 序列化时退化为替换符）
+	cut, truncated := textutil.TruncBytes(out.Content, capBytes)
+	if !truncated {
+		return
 	}
-	out.Content = out.Content[:cut] +
+	out.Content = cut +
 		"\n\n[系统提示] 技能全文超过上限已截断；以上为前缀内容，请基于已有信息继续，必要时申请平台侧拆分技能。"
 }
 

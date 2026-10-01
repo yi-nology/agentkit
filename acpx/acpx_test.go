@@ -530,3 +530,21 @@ func TestCapsNames(t *testing.T) {
 		t.Fatalf("零能力: supported=%v unsupported=%d 项", supported, len(unsupported))
 	}
 }
+
+func TestOpenCodeErrorEnvelope(t *testing.T) {
+	// 信封 error 如实上抛（exit=0 + {"error":...} 的部分失败形态——曾解析成功
+	// 后因 text 空、全文兜底把错误 JSON 当正文返回"成功"）。string 与
+	// {"message":...} 两形态都收。
+	for _, body := range []string{
+		`{"error":{"message":"provider quota exceeded"},"text":""}`,
+		`{"error":"provider quota exceeded","text":""}`,
+	} {
+		bin := fakeCLI(t, `echo '`+body+`'`)
+		a := NewOpenCode()
+		a.Bin = bin
+		_, err := a.Run(context.Background(), RunRequest{Prompt: "x"})
+		if err == nil || !strings.Contains(err.Error(), "quota exceeded") {
+			t.Fatalf("信封错误应上抛（%s）: %v", body, err)
+		}
+	}
+}

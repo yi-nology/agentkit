@@ -32,21 +32,8 @@ type ConveneResult struct {
 // Specialist.Name 须非空且全局唯一（构建期 fail-fast）：观察游标按 Name 键控，
 // 重名会共享游标（后执行者读到被同名者推进的 since，跳过的增量永不重看）。
 func Convene(ctx context.Context, b *Board, specialists []Specialist, opts *ConveneOptions) (*ConveneResult, error) {
-	if b == nil {
-		return nil, fmt.Errorf("blackboard: Board 不能为空")
-	}
-	if len(specialists) == 0 {
-		return nil, fmt.Errorf("blackboard: specialists 不能为空")
-	}
-	seen := make(map[string]bool, len(specialists))
-	for _, sp := range specialists {
-		if sp.Name == "" {
-			return nil, fmt.Errorf("blackboard: 专家名不能为空")
-		}
-		if seen[sp.Name] {
-			return nil, fmt.Errorf("blackboard: 专家名重复: %s（观察游标按名键控，重名会互吞增量）", sp.Name)
-		}
-		seen[sp.Name] = true
+	if err := validateConvene(b, specialists); err != nil {
+		return nil, err
 	}
 	maxRounds := 3
 	if opts != nil && opts.MaxRounds > 0 {
@@ -58,22 +45,9 @@ func Convene(ctx context.Context, b *Board, specialists []Specialist, opts *Conv
 	rounds := 0
 	for r := 0; r < maxRounds; r++ {
 		rounds++
-		contributed := false
-		for _, sp := range specialists {
-			if sp.Act == nil {
-				continue
-			}
-			did, err := sp.Act(ctx, b, cursor[sp.Name])
-			if err != nil {
-				return nil, fmt.Errorf("blackboard: 专家 %s 第 %d 轮失败: %w", sp.Name, r+1, err)
-			}
-			// 无论是否贡献，游标推进到当前最大值（错过的不重看——每轮都是新机会）
-			if max := b.maxSeq(); max > cursor[sp.Name] {
-				cursor[sp.Name] = max
-			}
-			if did {
-				contributed = true
-			}
+		contributed, err := runRound(ctx, b, specialists, cursor, r+1)
+		if err != nil {
+			return nil, err
 		}
 		if !contributed {
 			break // 共识达成：一整轮无人补充
@@ -85,6 +59,49 @@ func Convene(ctx context.Context, b *Board, specialists []Specialist, opts *Conv
 		Total:      len(entries),
 		CurrentMax: b.maxSeq(),
 	}, nil
+}
+
+// validateConvene 入参硬校验：Board/专家非空、专家名非空且唯一。
+func validateConvene(b *Board, specialists []Specialist) error {
+	if b == nil {
+		return fmt.Errorf("blackboard: Board 不能为空")
+	}
+	if len(specialists) == 0 {
+		return fmt.Errorf("blackboard: specialists 不能为空")
+	}
+	seen := make(map[string]bool, len(specialists))
+	for _, sp := range specialists {
+		if sp.Name == "" {
+			return fmt.Errorf("blackboard: 专家名不能为空")
+		}
+		if seen[sp.Name] {
+			return fmt.Errorf("blackboard: 专家名重复: %s（观察游标按名键控，重名会互吞增量）", sp.Name)
+		}
+		seen[sp.Name] = true
+	}
+	return nil
+}
+
+// runRound 单轮：按序让每位专家 Act 一次并推进其游标。
+// contributed = 本轮至少一位专家有贡献。
+func runRound(ctx context.Context, b *Board, specialists []Specialist, cursor map[string]int64, round int) (contributed bool, err error) {
+	for _, sp := range specialists {
+		if sp.Act == nil {
+			continue
+		}
+		did, actErr := sp.Act(ctx, b, cursor[sp.Name])
+		if actErr != nil {
+			return false, fmt.Errorf("blackboard: 专家 %s 第 %d 轮失败: %w", sp.Name, round, actErr)
+		}
+		// 无论是否贡献，游标推进到当前最大值（错过的不重看——每轮都是新机会）
+		if max := b.maxSeq(); max > cursor[sp.Name] {
+			cursor[sp.Name] = max
+		}
+		if did {
+			contributed = true
+		}
+	}
+	return contributed, nil
 }
 
 func (b *Board) maxSeq() int64 {

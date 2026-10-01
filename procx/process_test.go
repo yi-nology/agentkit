@@ -135,3 +135,22 @@ func TestRun(t *testing.T) {
 		t.Fatalf("取消不得同时命中 ErrTimeout: %v", err)
 	}
 }
+
+// TestRunLeaderExitsWithDaemonGrandchild 回归（第六轮审计）：leader 成功退出
+// 但守护化孙进程仍握 stdout 写端时，WaitDelay 强关管道产生的 exec.ErrWaitDelay
+// 是成功执行形态——npm 类包装器守护化后台进程曾把成功跑整体误判为失败。
+func TestRunLeaderExitsWithDaemonGrandchild(t *testing.T) {
+	stdout, _, code, err := Run(context.Background(), RunRequest{
+		Argv:    []string{"sh", "-c", "sleep 30 & echo leader-done"},
+		Timeout: 30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("应判成功（ErrWaitDelay 不算失败）: %v", err)
+	}
+	if !strings.Contains(stdout, "leader-done") {
+		t.Fatalf("stdout 应含 leader 输出: %q", stdout)
+	}
+	if code != 0 {
+		t.Fatalf("exit code = %d（成功退出应为 0）", code)
+	}
+}

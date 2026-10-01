@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"git.enjoye.top/enjoydream/agentkit/procx"
@@ -133,14 +134,26 @@ func (r *Runner) Run(ctx context.Context, event Event, payload Input) RunResult 
 	return merged
 }
 
+// eventsReCache 正则模式编译缓存（/…/ 形态）。matches 在每次事件派发的热
+// 路径上（pre_tool_use 每次工具调用都跑全部 hook），坏模式不缓存不匹配
+// （与原"编译失败即不匹配"行为一致）。
+var eventsReCache sync.Map // pattern → *regexp.Regexp
+
 func (h Hook) matches(event Event) bool {
 	pattern := strings.TrimSpace(h.Events)
 	if pattern == "" || pattern == "*" {
 		return true
 	}
 	if strings.HasPrefix(pattern, "/") && strings.HasSuffix(pattern, "/") && len(pattern) > 2 {
-		re, err := regexp.Compile(pattern[1 : len(pattern)-1])
-		return err == nil && re.MatchString(string(event))
+		v, ok := eventsReCache.Load(pattern)
+		if !ok {
+			compiled, err := regexp.Compile(pattern[1 : len(pattern)-1])
+			if err != nil {
+				return false
+			}
+			v, _ = eventsReCache.LoadOrStore(pattern, compiled)
+		}
+		return v.(*regexp.Regexp).MatchString(string(event))
 	}
 	for _, name := range strings.Split(pattern, "|") {
 		if strings.TrimSpace(name) == string(event) {
@@ -193,25 +206,43 @@ func processOutput(event Event, out *Output) RunResult {
 	if out == nil {
 		return res
 	}
+	applyContinueFlag(event, out, &res)
+	applyDecision(event, out, &res)
+	applyContexts(out, &res)
+	return res
+}
+
+// applyContinueFlag continue:false 的事件语义：非 Stop = 阻断续跑；
+// Stop 上 = 否决停止（继续跑）——协议语义反着实现会造成无限续跑。
+func applyContinueFlag(event Event, out *Output, res *RunResult) {
+	if out.Continue == nil || *out.Continue {
+		return
+	}
 	isPermission := event == EventPermissionRequest || event == EventPreToolUse
-	if out.Continue != nil && !*out.Continue && event != EventStop {
+	if event != EventStop {
 		res.BlockRequested = true
 		res.StopReason = firstNonEmpty(out.StopReason, out.Reason)
 		if isPermission {
 			res.PermissionBehavior = "deny"
 		}
 		res.PreventContinuation = true
+		return
 	}
-	if event == EventStop && out.Continue != nil && !*out.Continue {
-		// 协议语义：Stop 事件上 continue:false = 否决停止（继续跑）；continue:true
-		// 等价缺省「无异议、允许停止」——不是否决（反着实现会造成无限续跑）
-		res.StopShouldContinue = true
-		res.StopReason = firstNonEmpty(out.StopReason, out.Reason)
-	}
-	if out.Decision == "approve" && isPermission {
-		res.PermissionBehavior = "allow"
-	}
-	if out.Decision == "block" {
+	// continue:true 等价缺省「无异议、允许停止」——不是否决
+	res.StopShouldContinue = true
+	res.StopReason = firstNonEmpty(out.StopReason, out.Reason)
+}
+
+// applyDecision decision 字段：approve 放行权限段；block 阻断（Stop 上转为
+// 否决停止并附加说明）。
+func applyDecision(event Event, out *Output, res *RunResult) {
+	isPermission := event == EventPermissionRequest || event == EventPreToolUse
+	switch out.Decision {
+	case "approve":
+		if isPermission {
+			res.PermissionBehavior = "allow"
+		}
+	case "block":
 		res.BlockRequested = true
 		res.StopReason = firstNonEmpty(out.StopReason, out.Reason, out.SystemMessage)
 		if isPermission {
@@ -228,6 +259,10 @@ func processOutput(event Event, out *Output) RunResult {
 			}
 		}
 	}
+}
+
+// applyContexts 附加上下文与 UpdatedInput 透传。
+func applyContexts(out *Output, res *RunResult) {
 	if out.AdditionalContext != "" {
 		res.AdditionalContexts = append(res.AdditionalContexts, out.AdditionalContext)
 	}
@@ -237,7 +272,6 @@ func processOutput(event Event, out *Output) RunResult {
 	if out.HookSpecificOutput != nil {
 		res.UpdatedInput = out.HookSpecificOutput.UpdatedInput
 	}
-	return res
 }
 
 // merge 单调归并：阻断/deny/continue-flags 只能置位不能清除；stopReason 与

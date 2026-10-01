@@ -7,9 +7,12 @@ import (
 
 // CostTracker token 成本追踪器。
 // 按模型+阶段统计 token 消耗和成本。
+// 环形缓冲：满窗后 Record O(1) 覆盖最旧，不再每笔整体搬移。
 type CostTracker struct {
 	mu      sync.Mutex
-	records []CostRecord
+	records []CostRecord // 定长环形（len==cap==maxCostRecords 后进入环形态）
+	head    int          // 下一写入位 / 最旧记录位
+	full    bool         // 环形是否已绕回
 }
 
 // CostRecord 单次调用成本记录。
@@ -35,25 +38,51 @@ func (ct *CostTracker) Record(model, stage string, promptTokens, completionToken
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 
-	if len(ct.records) >= maxCostRecords {
-		ct.records = ct.records[1:]
+	if len(ct.records) < maxCostRecords {
+		ct.records = append(ct.records, CostRecord{
+			Model:            model,
+			Stage:            stage,
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
+			CostUSD:          costOf(promptTokens, completionTokens, costPer1K),
+		})
+		if len(ct.records) == maxCostRecords {
+			// 切满后转环形：cap 预留到位，后续 O(1) 覆盖
+			ct.records = ct.records[:maxCostRecords:maxCostRecords]
+			ct.head = 0
+			ct.full = true
+		}
+		return
 	}
-	cost := float64(promptTokens)/1000*costPer1K[0] + float64(completionTokens)/1000*costPer1K[1]
-	ct.records = append(ct.records, CostRecord{
+	// 环形覆盖最旧
+	ct.records[ct.head] = CostRecord{
 		Model:            model,
 		Stage:            stage,
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
-		CostUSD:          cost,
-	})
+		CostUSD:          costOf(promptTokens, completionTokens, costPer1K),
+	}
+	ct.head = (ct.head + 1) % maxCostRecords
 }
 
-// Records 返回所有记录的副本。
+func costOf(promptTokens, completionTokens int, costPer1K [2]float64) float64 {
+	return float64(promptTokens)/1000*costPer1K[0] + float64(completionTokens)/1000*costPer1K[1]
+}
+
+// Records 返回所有记录的副本（时间序：最旧在前）。
 func (ct *CostTracker) Records() []CostRecord {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
-	out := make([]CostRecord, len(ct.records))
-	copy(out, ct.records)
+	n := len(ct.records)
+	if !ct.full {
+		out := make([]CostRecord, n)
+		copy(out, ct.records)
+		return out
+	}
+	// 环形：从 head（最旧）展开
+	out := make([]CostRecord, 0, maxCostRecords)
+	out = append(out, ct.records[ct.head:]...)
+	out = append(out, ct.records[:ct.head]...)
 	return out
 }
 

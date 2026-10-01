@@ -94,15 +94,7 @@ func (g *GenericAgent) Run(ctx context.Context, req RunRequest) (*RunResult, err
 	if !g.IsJSON {
 		return fallbackResult(stdout, code), nil
 	}
-	var out openCodeOut
-	if err := parseJSONOut(stdout, &out); err != nil || out.Text == "" {
-		return fallbackResult(stdout, code), nil
-	}
-	r := &RunResult{Text: out.Text, SessionID: out.SessionID, ExitCode: code, Raw: []byte(stdout)}
-	if out.Tokens != nil {
-		r.Usage = Usage{InputTokens: out.Tokens.Input, OutputTokens: out.Tokens.Output}
-	}
-	return r, nil
+	return envelopeResult(req, g.Name(), stdout, code)
 }
 
 // dropFlagPair 占位符缺值时连带移除紧邻的 flag 参数：模板中 "--model {model}"

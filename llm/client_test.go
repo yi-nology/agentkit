@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
+
+	"git.enjoye.top/enjoydream/agentkit/llm/llmtest"
 )
 
 func TestClassifyLLMError(t *testing.T) {
@@ -96,8 +99,8 @@ func TestEstimateTokens(t *testing.T) {
 }
 
 func TestRetryableLLMError(t *testing.T) {
-	if !RetryableLLMError(nil) {
-		t.Error("nil 应可重试")
+	if RetryableLLMError(nil) {
+		t.Error("nil 无失败可言，不应重试（与 IsRateLimitError/IsTruncatedError 的 nil 语义一致）")
 	}
 	if RetryableLLMError(errors.New("401 unauthorized")) {
 		t.Error("401 不应重试")
@@ -122,5 +125,29 @@ func TestGenerateJSONMisuseReturnsError(t *testing.T) {
 	var ptr *struct{ A int }
 	if err := c.GenerateJSON(context.Background(), "t", nil, ptr); err == nil {
 		t.Fatal("nil 指针 out 应报错")
+	}
+}
+
+// TestClientTruncatedNoDoomedRepeat 提升 MaxTokens 后仍截断：不再以同参数
+// 重复注定失败的请求（第六轮审计——此前 truncatedBoosted 后继续按原参数重试，
+// 白烧一次钱）。
+func TestClientTruncatedNoDoomedRepeat(t *testing.T) {
+	m := &llmtest.Model{Script: []llmtest.Resp{
+		{Content: "截断输出", FinishReason: "length"},
+		{Content: "仍截断", FinishReason: "length"},
+		{Content: "不应到达的第三次", FinishReason: "length"},
+	}}
+	c := NewClient(m, "m", nil)
+	c.MaxRetries = 3
+	c.MaxOutputTokens = 1000
+	c.BaseDelay = time.Millisecond
+	c.MaxDelay = 2 * time.Millisecond
+
+	_, err := c.Generate(context.Background(), "T", msgs("hi"))
+	if err == nil {
+		t.Fatal("持续截断应报错")
+	}
+	if got := m.Calls; got != 2 {
+		t.Fatalf("调用数 = %d，应为 2（原参数 1 次 + 提升 1 次，之后不再重复）", got)
 	}
 }

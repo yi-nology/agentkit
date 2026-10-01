@@ -38,24 +38,5 @@ func (c *OpenCode) Run(ctx context.Context, req RunRequest) (*RunResult, error) 
 	if err != nil {
 		return nil, err
 	}
-	var out openCodeOut
-	if err := parseJSONOut(stdout, &out); err != nil || out.Text == "" {
-		// 非 JSON 输出（版本差异/日志混入）：全文当文本兜底
-		return fallbackResult(stdout, code), nil
-	}
-	r := &RunResult{Text: out.Text, SessionID: out.SessionID, ExitCode: code, Raw: []byte(stdout)}
-	if out.Tokens != nil {
-		r.Usage = Usage{InputTokens: out.Tokens.Input, OutputTokens: out.Tokens.Output}
-	}
-	return r, nil
-}
-
-// openCodeOut opencode --json 输出结构（同时被 GenericAgent JSON 模式复用）。
-type openCodeOut struct {
-	Text      string `json:"text"`
-	SessionID string `json:"sessionID"`
-	Tokens    *struct {
-		Input  int `json:"input"`
-		Output int `json:"output"`
-	} `json:"tokens"`
+	return envelopeResult(req, "opencode", stdout, code)
 }

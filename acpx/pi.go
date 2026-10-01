@@ -3,7 +3,6 @@ package acpx
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	"git.enjoye.top/enjoydream/agentkit/textutil"
@@ -81,6 +80,13 @@ type piEvent struct {
 
 // Run 执行 pi（--mode json 事件流解析）。
 func (p *Pi) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
+	st := &piStream{req: req}
+	stdout, code, err := runCLI(ctx, req, p.buildArgv(req), st.handleLine)
+	return st.finalize(stdout, code, err)
+}
+
+// buildArgv 构造 pi CLI 参数（协议面固定：--mode json -p 事件流；argv 语义不改）。
+func (p *Pi) buildArgv(req RunRequest) []string {
 	argv := []string{p.bin(), "--mode", "json", "-p"}
 	if req.SessionID != "" {
 		// 精确续聊：--session-id 按项目会话 ID 续（不存在则创建）
@@ -94,74 +100,80 @@ func (p *Pi) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	} else if p.DefaultModel != "" {
 		argv = append(argv, "--model", p.DefaultModel)
 	}
-	argv = append(argv, promptArg(req.Prompt))
+	return append(argv, promptArg(req.Prompt))
+}
 
-	var usage Usage
-	var cost float64
-	var lastText string
-	var sessionID string
-	var sawAssistant bool
-	var abortLine string
-	onLine := func(line string) {
-		var ev piEvent
-		if err := json.Unmarshal([]byte(line), &ev); err != nil {
-			return // 非事件行（插件告警等到 stderr，stdout 内杂行忽略）
-		}
-		if ev.Type == "session" && ev.SessionID != "" {
-			sessionID = ev.SessionID
-		}
-		switch {
-		case ev.Type == "message_end" && ev.Message != nil && ev.Message.Role == "assistant":
-			sawAssistant = true
-			var b strings.Builder
-			for _, blk := range ev.Message.Content {
-				if blk.Type == "text" && blk.Text != "" {
-					if b.Len() > 0 {
-						b.WriteString("\n")
-					}
-					b.WriteString(blk.Text)
-				}
-			}
-			lastText = b.String()
-			if u := ev.Message.Usage; u != nil {
-				usage.InputTokens = u.Input
-				usage.OutputTokens = u.Output
-				if u.Cost != nil {
-					cost = u.Cost.Total
-				}
-			}
-			if lastText != "" {
-				emitText(req, lastText, line)
-			}
-		case strings.Contains(ev.Type, "abort") || ev.Type == "error":
-			// 中止/错误事件全量转发（transcript 排障）并记录——pi 中止时
-			// 可能 exit 仍为 0，结束时如实报错
-			if abortLine == "" {
-				abortLine = line
-			}
-			emitError(req, strings.TrimSpace(string(ev.Error)), line)
-		}
-	}
+// piStream 事件流解析状态（handleLine 在 stdout 读取 goroutine 中同步执行）。
+type piStream struct {
+	req          RunRequest
+	usage        Usage
+	cost         float64
+	lastText     string
+	sessionID    string
+	sawAssistant bool
+	abortLine    string
+}
 
-	stdout, code, err := runCLI(ctx, req, argv, onLine)
-	if err != nil {
-		// 有 assistant 终态（agent 正常完成但退出码非零）：以结果为准
-		if sawAssistant && lastText != "" {
-			usage.CostUSD = cost
-			return &RunResult{Text: lastText, SessionID: sessionID, Usage: usage, ExitCode: code, Raw: []byte(stdout)}, nil
+// handleLine 单行 JSONL 事件解析（非事件行忽略）。
+func (s *piStream) handleLine(line string) {
+	var ev piEvent
+	if err := json.Unmarshal([]byte(line), &ev); err != nil {
+		return // 非事件行（插件告警等到 stderr，stdout 内杂行忽略）
+	}
+	if ev.Type == "session" && ev.SessionID != "" {
+		s.sessionID = ev.SessionID
+	}
+	switch {
+	case ev.Type == "message_end" && ev.Message != nil && ev.Message.Role == "assistant":
+		s.onAssistantEnd(&ev, line)
+	case strings.Contains(ev.Type, "abort") || ev.Type == "error":
+		// 中止/错误事件全量转发（transcript 排障）并记录——pi 中止时
+		// 可能 exit 仍为 0，结束时如实报错
+		if s.abortLine == "" {
+			s.abortLine = line
 		}
-		return nil, err
+		emitError(s.req, strings.TrimSpace(string(ev.Error)), line)
 	}
-	if abortLine != "" && !sawAssistant {
-		return nil, fmt.Errorf("acpx: pi 中止: %s", textutil.TruncEllipsis(abortLine, 400))
+}
+
+// onAssistantEnd assistant 终态：text 块拼正文、usage/cost 落状态并转发。
+func (s *piStream) onAssistantEnd(ev *piEvent, line string) {
+	s.sawAssistant = true
+	var b strings.Builder
+	for _, blk := range ev.Message.Content {
+		if blk.Type == "text" && blk.Text != "" {
+			if b.Len() > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString(blk.Text)
+		}
 	}
-	if !sawAssistant || lastText == "" {
-		r := fallbackResult(stdout, code)
-		r.SessionID = sessionID
-		return r, nil
+	s.lastText = b.String()
+	if u := ev.Message.Usage; u != nil {
+		s.usage.InputTokens = u.Input
+		s.usage.OutputTokens = u.Output
+		if u.Cost != nil {
+			s.cost = u.Cost.Total
+		}
 	}
-	usage.CostUSD = cost
-	return &RunResult{Text: lastText, SessionID: sessionID, Usage: usage, ExitCode: code, Raw: []byte(stdout)}, nil
+	if s.lastText != "" {
+		emitText(s.req, s.lastText, line)
+	}
+}
+
+// finalize 收尾装配（三段式骨架）：中止仅在无终态时如实报错（pi 中止形态
+// 可能 exit 仍为 0）；assistant message_end 到达即权威——文本可为空（纯
+// thinking 收尾/末轮以工具调用结束不是空壳，曾以 lastText=="" 误触兜底把
+// 整段 JSONL 事件流当正文返回）；无终态全文兜底。
+func (s *piStream) finalize(stdout string, code int, err error) (*RunResult, error) {
+	var streamErr error
+	if s.abortLine != "" && !s.sawAssistant {
+		streamErr = streamError("pi", "中止", textutil.TruncEllipsis(s.abortLine, 400))
+	}
+	s.usage.CostUSD = s.cost
+	return finalizeStream(stdout, code, err,
+		&RunResult{Text: s.lastText, SessionID: s.sessionID, Usage: s.usage},
+		s.sawAssistant, streamErr)
 }
 
 func (p *Pi) bin() string {

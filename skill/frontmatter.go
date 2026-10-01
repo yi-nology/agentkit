@@ -38,31 +38,37 @@ func findClosingFence(rest string) (blockEnd, bodyStart int, ok bool) {
 	}
 }
 
+// splitFrontmatter 从已 trimDocHead 且以 --- 起头的内容里切出 frontmatter 块与
+// canonical 正文（TrimSpace 后）。两解析器唯一围栏切分入口——起始围栏必须独立成行
+// （`---` 后立刻换行，CRLF 先吃 \r），闭合围栏语义见 findClosingFence。
+// ok=false：起始围栏不成立 / 闭合围栏缺失；调用方按各自策略（宽松回退 vs 严格报错）。
+func splitFrontmatter(trimmed string) (block, body string, ok bool) {
+	if !strings.HasPrefix(trimmed, "---") {
+		return "", "", false
+	}
+	rest := strings.TrimPrefix(trimmed[3:], "\r")
+	if !strings.HasPrefix(rest, "\n") {
+		return "", "", false // `---foo` 不是围栏（isFenceLine 同语义）
+	}
+	blockEnd, bodyStart, closed := findClosingFence(rest)
+	if !closed {
+		return "", "", false
+	}
+	// canonical 正文：剥壳后去首尾空白——两解析器同口径，Provider 的
+	// Content（及其 Checksum）才逐字节一致。
+	return rest[:blockEnd], strings.TrimSpace(rest[bodyStart:]), true
+}
+
 // parseFrontmatter 解析 SKILL.md 的 YAML frontmatter（Agent Skills 开放标准的
 // 最小子集：--- 围栏内的 name/description/version 行）。零依赖：不引 yaml 解析器，
 // 不认识的键忽略——skill 正文才是消费主体，元数据只服务发现与决策。
+// 宽松策略：无/未闭合围栏一律整份当正文（FileProvider 单文件损坏不阻塞发现）。
 func parseFrontmatter(content string) (name, desc, ver, body string) {
-	content = stripBOM(content)
-	trimmed := strings.TrimLeft(content, " \t\r\n")
-	if !strings.HasPrefix(trimmed, "---") {
-		return "", "", "", content
-	}
-	// 定位首个 ---（起始）与结束 ---
-	// CRLF 容忍：起始围栏后是 \r\n 时先吃 \r（闭合围栏已容忍 CRLF，两路径
-	// 围栏语义须一致——否则 Windows 编辑器保存的文件元数据静默丢失且两
-	// Provider 的 Content/Checksum 分歧）
-	rest := strings.TrimPrefix(trimmed[3:], "\r")
-	if !strings.HasPrefix(rest, "\n") {
-		return "", "", "", content
-	}
-	blockEnd, bodyStart, ok := findClosingFence(rest)
+	trimmed := trimDocHead(content)
+	block, body, ok := splitFrontmatter(trimmed)
 	if !ok {
 		return "", "", "", content
 	}
-	block := rest[:blockEnd]
-	// canonical 正文：剥壳后去首尾空白——与 ParseRichFrontmatter 同一口径，
-	// 两个 Provider 的 Content（及其 Checksum）才逐字节一致。
-	body = strings.TrimSpace(rest[bodyStart:])
 
 	for _, line := range strings.Split(block, "\n") {
 		line = strings.TrimSpace(line)
@@ -103,36 +109,26 @@ func stripBOM(content string) string {
 	return strings.TrimPrefix(content, "\ufeff")
 }
 
+// trimDocHead 剥 BOM 与前导空白（两解析器入口同一口径；围栏后语义各自保持）。
+func trimDocHead(content string) string {
+	return strings.TrimLeft(stripBOM(content), " \t\r\n")
+}
+
 // ParseRichFrontmatter 用 yaml 解析 SKILL.md frontmatter（name/description/mode/
 // version/maturity/requires_mcp/deprecated/compatibility）。返回元数据与正文。
 // frontmatter name 写入 Title（展示名）；目录名仍作规范 Name。
+// 严格策略：起始围栏出现但未闭合 → 报错（Library fail-fast，与 FileProvider 宽松回退相对）。
 func ParseRichFrontmatter(dirName, content string) (LibMeta, string, error) {
 	meta := LibMeta{Name: dirName, Mode: ModeStatic}
 	body := content
-	// BOM/前导空白容忍（与 parseFrontmatter 口径对齐）：带前导空行或 UTF-8 BOM
-	// 的 SKILL.md 曾被整份当正文，元数据静默丢失
-	content = stripBOM(content)
-	trimmed := strings.TrimLeft(content, "\r\n\t ")
+	trimmed := trimDocHead(content)
 	if !strings.HasPrefix(trimmed, "---") {
 		return meta, body, nil
 	}
-	content = trimmed
-	inner := content[3:]
-	rest := strings.TrimPrefix(inner, "\n")
-	// 空 frontmatter：`---\n---` 经剥壳后 rest 以 --- 开头（无前置换行）。
-	if strings.HasPrefix(rest, "---") {
-		after := strings.TrimPrefix(rest, "---")
-		if after == "" || after[0] == '\n' || after[0] == '\r' {
-			return meta, strings.TrimSpace(strings.TrimPrefix(after, "\n")), nil
-		}
-	}
-	// 定位独立成行的闭合 ---（围栏语义唯一事实源见 findClosingFence）。
-	blockEnd, bodyStart, closed := findClosingFence(rest)
-	if !closed {
+	fmRaw, body, ok := splitFrontmatter(trimmed)
+	if !ok {
 		return meta, body, fmt.Errorf("skill: frontmatter 未闭合")
 	}
-	fmRaw := rest[:blockEnd]
-	body = strings.TrimSpace(rest[bodyStart:])
 
 	// 直接解进 LibMeta（schema 唯一事实源）；Name/Title 语义 fixup 在下方。
 	var fm LibMeta

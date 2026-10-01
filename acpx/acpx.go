@@ -118,7 +118,9 @@ type RunRequest struct {
 	// Sandbox 沙箱级别：readonly | workspace | full（Codex 原生支持；
 	// claude 族映射 permission-mode）。
 	Sandbox string
-	// Env 额外环境变量白名单（按名从当前进程透传）。
+	// Env 额外环境变量白名单，两种形态：纯名（"HF_TOKEN"）按名从当前进程
+	// 透传；"KEY=VALUE" 字面注入（同名父进程值不透传——显式注入优先，见
+	// procx.ChildEnv）。值会进入子进程环境，调用方自负泄漏面。
 	Env []string
 	// Timeout 单次运行超时（0 = 10 分钟缺省）。
 	Timeout time.Duration
@@ -139,7 +141,8 @@ const (
 // 各适配器转发覆盖（v0.10.10 起错误事件全量转发——此前只转 text，纯错误跑的
 // transcript 为空、排障断链）：mimo=error/text/result(step_finish)；codex=
 // error/text；claude=text/thinking/tool_call/result(is_error 以 error 型转发)；
-// kimi=text；gemini/opencode 非流式（错误走 Run 返回值，无流式事件）。
+// pi=error(含 abort)/text/assistant 终态(result)；kimi=text；gemini/
+// opencode 非流式（错误走 Run 返回值，无流式事件）。
 type Event struct {
 	Type string // text | thinking | tool_call | tool_result | error | result
 	Text string

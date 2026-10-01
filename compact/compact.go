@@ -28,11 +28,10 @@ package compact
 import (
 	"math"
 	"time"
-)
+	"unicode/utf8"
 
-// token 估算口径：字符数 / 3（与 ZCode ESTIMATED_TOKEN_CHAR_DIVISOR 同值——
-// 中英混合语料的经验系数；精确计量归 provider usage 回传）。
-const tokenCharDivisor = 3
+	"git.enjoye.top/enjoydream/agentkit/textutil"
+)
 
 // 策略常量（对标 ZCode policy.ts；每个值都是生产调过的，别拍脑袋改）。
 const (
@@ -136,13 +135,19 @@ type ToolCall struct {
 func EstimateTokens(msgs []Message) int {
 	total := 0
 	for _, m := range msgs {
-		n := len([]rune(m.Text))
-		for _, tc := range m.ToolCalls {
-			n += len(tc.Name) + len([]rune(tc.ArgsJSON))
-		}
-		total += int(math.Ceil(float64(n) / tokenCharDivisor))
+		total += msgTokens(m)
 	}
 	return total
+}
+
+// msgTokens 单条消息的 token 估算（与 EstimateTokens 同口径）——增量改写时
+// 只算被触碰条目，免整表二次扫描。
+func msgTokens(m Message) int {
+	n := utf8.RuneCountInString(m.Text)
+	for _, tc := range m.ToolCalls {
+		n += utf8.RuneCountInString(tc.Name) + utf8.RuneCountInString(tc.ArgsJSON)
+	}
+	return textutil.EstTokens(n)
 }
 
 // HasEnoughToCompact 消息量是否值得压缩（<2 个 assistant 轮次压缩无意义——
@@ -318,63 +323,89 @@ func MaybeMicrocompact(msgs []Message, cfg MicroConfig, lastAssistantDone, now t
 		res.Reason = MicroDisabled
 		return res
 	}
-	// 触发判定：idle 优先于 token 压力（空闲场景即使 token 不高也值得清）
-	if !lastAssistantDone.IsZero() {
-		idle := cfg.Idle
-		if idle == 0 {
-			idle = DefaultIdle
-		}
-		if idle > 0 && now.Sub(lastAssistantDone) > idle {
-			res.Trigger = TriggerIdle
-		}
-	}
-	if res.Trigger == "" && cfg.ThresholdTokens > 0 && before >= cfg.ThresholdTokens {
-		res.Trigger = TriggerTokens
-	}
+	res.Trigger = microTrigger(cfg, lastAssistantDone, now, before)
 	if res.Trigger == "" {
 		res.Reason = MicroNotTriggered
 		return res
 	}
 
 	groups := collectClearableGroups(msgs, cfg)
-	if len(groups) == 0 {
-		res.Reason = MicroNoCandidates
-		return res
-	}
-	keep := cfg.KeepRecent
-	if keep <= 0 {
-		keep = DefaultKeepRecent
-	}
-	clearCount := len(groups) - max(1, keep)
+	clearCount := clearableCount(groups, cfg.KeepRecent)
 	if clearCount <= 0 {
-		res.Reason = MicroNothingToClear
+		res.Reason = pickEmptyClearReason(groups)
 		return res
 	}
 
-	out := make([]Message, len(msgs))
-	copy(out, msgs)
-	for _, g := range groups[:clearCount] {
-		for _, idx := range g {
-			out[idx].Text = ClearedPlaceholder
-			res.ClearedIDs = append(res.ClearedIDs, msgs[idx].ToolCallID)
-		}
-	}
-	after := EstimateTokens(out)
-	saved := max(0, before-after)
-	minSavings := cfg.MinTokenSavings
-	if minSavings <= 0 {
-		minSavings = DefaultMinTokenSavings
-	}
-	if saved < minSavings {
+	out, clearedIDs, saved := applyClears(msgs, groups[:clearCount])
+	res.ClearedIDs = clearedIDs
+	if saved < minSavingsOf(cfg) {
 		// 节省不足门槛：返回原转写，不让会话形态为微小收益抖动
 		res.Reason = MicroBelowSavings
 		return res
 	}
 	res.Reason = MicroApplied
 	res.Messages = out
-	res.TokensAfter = after
+	res.TokensAfter = before - saved
 	res.TokensSaved = saved
 	return res
+}
+
+// clearableCount 本轮可清除的组数（总数 − 保留数；≤0 = 不动）。
+func clearableCount(groups [][]int, keepRecent int) int {
+	keep := keepRecent
+	if keep <= 0 {
+		keep = DefaultKeepRecent
+	}
+	return len(groups) - max(1, keep)
+}
+
+// pickEmptyClearReason 无可清除时的细分原因：无候选 vs 组数不足保留数。
+func pickEmptyClearReason(groups [][]int) MicroReason {
+	if len(groups) == 0 {
+		return MicroNoCandidates
+	}
+	return MicroNothingToClear
+}
+
+// minSavingsOf 最小节省门槛缺省落位。
+func minSavingsOf(cfg MicroConfig) int {
+	if cfg.MinTokenSavings <= 0 {
+		return DefaultMinTokenSavings
+	}
+	return cfg.MinTokenSavings
+}
+
+// microTrigger 触发判定：idle 优先于 token 压力（空闲场景即使 token 不高也值得清）。
+func microTrigger(cfg MicroConfig, lastAssistantDone, now time.Time, tokens int) MicroTrigger {
+	if !lastAssistantDone.IsZero() {
+		idle := cfg.Idle
+		if idle == 0 {
+			idle = DefaultIdle
+		}
+		if idle > 0 && now.Sub(lastAssistantDone) > idle {
+			return TriggerIdle
+		}
+	}
+	if cfg.ThresholdTokens > 0 && tokens >= cfg.ThresholdTokens {
+		return TriggerTokens
+	}
+	return ""
+}
+
+// applyClears 把待清组的工具结果替换为占位符；节省按被改写条目的前后差增量
+// 累计（ΣΔ ≡ before−after，免整表二次估算）。
+func applyClears(msgs []Message, clearGroups [][]int) (out []Message, clearedIDs []string, saved int) {
+	out = make([]Message, len(msgs))
+	copy(out, msgs)
+	for _, g := range clearGroups {
+		for _, idx := range g {
+			was := msgTokens(msgs[idx])
+			out[idx].Text = ClearedPlaceholder
+			saved += was - msgTokens(out[idx])
+			clearedIDs = append(clearedIDs, msgs[idx].ToolCallID)
+		}
+	}
+	return out, clearedIDs, max(0, saved)
 }
 
 // collectClearableGroups 收集可清除工具结果的分组：组 = 同一 assistant 轮次

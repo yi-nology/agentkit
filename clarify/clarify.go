@@ -15,6 +15,7 @@ import (
 	"io/fs"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -102,12 +103,12 @@ func OrdinalIndex(lower string) (int, bool) {
 	for _, suf := range []string{"个", "选项", "方案", "的", ".", "。", "、"} {
 		s = strings.TrimSuffix(s, suf)
 	}
-	if n := len([]rune(s)); n != 1 {
+	if utf8.RuneCountInString(s) != 1 {
 		return 0, false
 	}
 	digits := map[rune]int{'一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9,
 		'1': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9}
-	r := []rune(s)[0]
+	r, _ := utf8.DecodeRuneInString(s)
 	n, ok := digits[r]
 	return n, ok
 }
@@ -139,8 +140,14 @@ func ResolveAnswer(options []string, fallback, answer string) (picked string, is
 		}
 	}
 	fb := strip(fallback)
-	if fb != "" && (strings.Contains(a, fb) || strings.Contains(fb, a)) {
-		return "", true, true
+	if fb != "" {
+		// 逃生命中两种形态：答案包含完整逃生短语（明确选择）；答案是逃生短语的
+		// 前缀（「不清楚」对「不清楚，全面查」的缩写形态）。此前是双向子串包含
+		//——「全面」「不」这类词也命中，把有效回答误消解为放弃细分（第六轮审计）
+		if strings.Contains(a, fb) ||
+			(utf8.RuneCountInString(a) >= 2 && strings.HasPrefix(fb, a)) {
+			return "", true, true
+		}
 	}
 	return "", false, false
 }

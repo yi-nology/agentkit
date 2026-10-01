@@ -558,3 +558,32 @@ func TestResilientUserCancelDoesNotTripBreaker(t *testing.T) {
 		t.Fatalf("取消不得熔断模型（下一次调用仍应打到它）: %d", bm.calls.Load())
 	}
 }
+
+// TestResilientGenerateJSONSameModelTransientRetry JSON 路径的同模型瞬态重试
+// （第六轮审计回归）：首个瞬态 500 应在模型内重试解决，不切备选——此前 JSON
+// 路径固定经 Client.GenerateJSON 按 Client 字段推导 policy（buildClient 设
+// MaxRetries=1），一个瞬态错误直接切模型，与 Generate 路径行为不对称。
+func TestResilientGenerateJSONSameModelTransientRetry(t *testing.T) {
+	p1 := newFakeProvider("primary",
+		llmtest.Resp{Err: errors.New("500 internal server error")},
+		llmtest.Resp{Content: `{"answer":"ok"}`},
+	)
+	p2 := newFakeProvider("fallback", llmtest.Resp{Content: `{"answer":"fallback"}`})
+	r := newResilient(t, p1, p2)
+
+	var out struct {
+		Answer string `json:"answer"`
+	}
+	if err := r.GenerateJSON(context.Background(), "R1", msgs("hi"), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Answer != "ok" {
+		t.Fatalf("answer = %q", out.Answer)
+	}
+	if r.LastModel() != "primary-model" {
+		t.Fatalf("瞬态失败应在同模型内重试解决，LastModel = %q", r.LastModel())
+	}
+	if p2.ModelValue.(*llmtest.Model).Calls != 0 {
+		t.Fatal("不应切换备选模型")
+	}
+}

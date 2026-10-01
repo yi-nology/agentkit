@@ -2,9 +2,42 @@
 // （对标 ZCode 的表驱动形态：每命令声明安全 flag 及其值形态）。
 package bashguard
 
+import "sync"
+
+// 缺省表预编译一次：defaultCommands 是百余行字面量 + 数十个小 map，原先
+// Analyze(t==nil) 每次都整表重建，纯属热路径浪费。模板只读共享；对外
+// DefaultTable 仍返回可安全改写的副本。
+var (
+	defaultTableOnce sync.Once
+	defaultTableTpl  *Table
+)
+
+// defaultTable 只读共享模板（调用方不得改写；仅供 Analyze 缺省路径）。
+func defaultTable() *Table {
+	defaultTableOnce.Do(func() {
+		defaultTableTpl = &Table{Commands: defaultCommands()}
+	})
+	return defaultTableTpl
+}
+
 // DefaultTable 内置缺省策略表（副本：调用方改表不影响后续 DefaultTable）。
 func DefaultTable() *Table {
-	return &Table{Commands: defaultCommands()}
+	tpl := defaultTable()
+	return &Table{Commands: clonePolicies(tpl.Commands)}
+}
+
+// clonePolicies 浅拷贝策略映射：外层键值独立，SafeFlags/Subcommands 内层共享
+// 模板（缺省表调用方按契约只增删命令/改 ReadOnly/UnsafeFlags，不动内层 map；
+// 需要内层可写时自建 Table 而不是改副本里的共享引用）。
+func clonePolicies(src map[string]Policy) map[string]Policy {
+	if src == nil {
+		return nil
+	}
+	out := make(map[string]Policy, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
 }
 
 func defaultCommands() map[string]Policy {
@@ -30,31 +63,39 @@ func defaultCommands() map[string]Policy {
 
 	commands := map[string]Policy{
 		// ---- 查看类 ----
-		"cat":       ro(bools("-n", "-b", "-E", "-T", "-s", "-A", "-v", "-u", "-e")),
-		"ls":        ro(bools("-l", "-a", "-la", "-lah", "-lh", "-1", "-R", "-d", "-F", "-h", "-i", "-r", "-S", "-t", "-Z", "-p", "-A")),
-		"head":      ro(with(bools("-q", "-v"), "-n", "string", "-c", "string")),
-		"tail":      ro(with(bools("-q", "-v", "-f"), "-n", "string", "-c", "string")),
-		"wc":        ro(bools("-l", "-w", "-c", "-m", "-L")),
-		"grep":      ro(with(bools("-i", "-v", "-n", "-r", "-R", "-E", "-F", "-w", "-x", "-c", "-l", "-L", "-h", "-H", "-q", "-s", "-o", "-a", "-b", "-P", "-Z", "-m", "-A", "-B", "-C", "-G"), "-e", "string", "-f", "string", "--color", "optional", "--include", "string", "--exclude", "string", "--exclude-dir", "string")),
-		"egrep":     ro(bools("-i", "-v", "-n", "-r", "-c", "-l", "-q", "-s", "-o", "-a"), "-e", "string"),
-		"fgrep":     ro(bools("-i", "-v", "-n", "-r", "-c", "-l", "-q", "-s", "-o", "-a")),
-		"diff":      ro(with(bools("-u", "-c", "-q", "-s", "-r", "-y", "-i", "-w", "-B", "-N", "-a", "-p", "-l", "-h"), "-U", "string", "-L", "string", "-x", "string", "--color", "optional")),
-		"find":      ro(with(bools("-print", "-print0", "-ls", "-H", "-L", "-P"), "-name", "string", "-iname", "string", "-path", "string", "-ipath", "string", "-regex", "string", "-type", "string", "-maxdepth", "string", "-mindepth", "string", "-size", "string", "-mtime", "string", "-atime", "string", "-ctime", "string", "-newer", "string", "-user", "string", "-group", "string", "-perm", "string"), "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fls"),
-		"file":      ro(bools("-b", "-z", "-L", "-h", "-i", "-k")),
-		"stat":      ro(with(bools("-f", "-L", "-c"), "-t", "string", "-s", "string", "-F", "string")),
-		"du":        ro(with(bools("-h", "-s", "-a", "-c", "-k", "-m", "-x", "-H", "-L", "-S", "-t"), "-d", "string", "--max-depth", "string", "--threshold", "string")),
-		"df":        ro(bools("-h", "-H", "-k", "-l", "-P", "-T", "-i", "-a", "-B", "-g", "-m")),
-		"ps":        ro(with(bools("-a", "-u", "-x", "-e", "-f", "-F", "-l", "-j", "-A", "-r", "-v", "-p"), "-o", "string", "-U", "string", "-G", "string", "-s", "string")),
-		"which":     ro(bools("-a", "-s", "-v")),
-		"whereis":   ro(with(bools("-b", "-m", "-s", "-u"), "-B", "string", "-M", "string", "-S", "string")),
-		"type":      ro(bools("-a", "-t", "-P", "-p", "-f")),
-		"command":   ro(bools("-v", "-V", "-p")),
-		"uname":     ro(with(bools("-a", "-s", "-n", "-r", "-v", "-m", "-p", "-i", "-o"), "-K", "string")),
-		"id":        ro(with(bools("-u", "-g", "-G", "-n", "-r", "-Z", "-z"), "-a", "bool")),
-		"whoami":    ro(bools()),
-		"hostname":  ro(bools("-f", "-s", "-i", "-I", "-a", "-d", "-y", "-n")),
-		"pwd":       ro(bools("-L", "-P")),
-		"date":      ro(with(bools("-u", "-R", "-r", "-q", "-I", "-U"), "-d", "string", "-s", "string", "+FORMAT", "string", "-v", "string", "-j", "string", "-f", "string")),
+		"cat":     ro(bools("-n", "-b", "-E", "-T", "-s", "-A", "-v", "-u", "-e")),
+		"ls":      ro(bools("-l", "-a", "-la", "-lah", "-lh", "-1", "-R", "-d", "-F", "-h", "-i", "-r", "-S", "-t", "-Z", "-p", "-A")),
+		"head":    ro(with(bools("-q", "-v"), "-n", "string", "-c", "string")),
+		"tail":    ro(with(bools("-q", "-v", "-f"), "-n", "string", "-c", "string")),
+		"wc":      ro(bools("-l", "-w", "-c", "-m", "-L")),
+		"grep":    ro(with(bools("-i", "-v", "-n", "-r", "-R", "-E", "-F", "-w", "-x", "-c", "-l", "-L", "-h", "-H", "-q", "-s", "-o", "-a", "-b", "-P", "-Z", "-m", "-A", "-B", "-C", "-G"), "-e", "string", "-f", "string", "--color", "optional", "--include", "string", "--exclude", "string", "--exclude-dir", "string")),
+		"egrep":   ro(bools("-i", "-v", "-n", "-r", "-c", "-l", "-q", "-s", "-o", "-a"), "-e", "string"),
+		"fgrep":   ro(bools("-i", "-v", "-n", "-r", "-c", "-l", "-q", "-s", "-o", "-a")),
+		"diff":    ro(with(bools("-u", "-c", "-q", "-s", "-r", "-y", "-i", "-w", "-B", "-N", "-a", "-p", "-l", "-h"), "-U", "string", "-L", "string", "-x", "string", "--color", "optional")),
+		"find":    ro(with(bools("-print", "-print0", "-ls", "-H", "-L", "-P"), "-name", "string", "-iname", "string", "-path", "string", "-ipath", "string", "-regex", "string", "-type", "string", "-maxdepth", "string", "-mindepth", "string", "-size", "string", "-mtime", "string", "-atime", "string", "-ctime", "string", "-newer", "string", "-user", "string", "-group", "string", "-perm", "string"), "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fls"),
+		"file":    ro(bools("-b", "-z", "-L", "-h", "-i", "-k")),
+		"stat":    ro(with(bools("-f", "-L", "-c"), "-t", "string", "-s", "string", "-F", "string")),
+		"du":      ro(with(bools("-h", "-s", "-a", "-c", "-k", "-m", "-x", "-H", "-L", "-S", "-t"), "-d", "string", "--max-depth", "string", "--threshold", "string")),
+		"df":      ro(bools("-h", "-H", "-k", "-l", "-P", "-T", "-i", "-a", "-B", "-g", "-m")),
+		"ps":      ro(with(bools("-a", "-u", "-x", "-e", "-f", "-F", "-l", "-j", "-A", "-r", "-v", "-p"), "-o", "string", "-U", "string", "-G", "string", "-s", "string")),
+		"which":   ro(bools("-a", "-s", "-v")),
+		"whereis": ro(with(bools("-b", "-m", "-s", "-u"), "-B", "string", "-M", "string", "-S", "string")),
+		"type":    ro(bools("-a", "-t", "-P", "-p", "-f")),
+		// command 是命令派发元字符：必须 Wrapper 化（剥 flag 后按内核命令判
+		// 定）——此前无 Wrapper 无子命令表，`command git push` 的裸操作数被当
+		// 不透明数据放行、判只读（第六轮审计 C 级）
+		"command":  Policy{Wrapper: true, SafeFlags: bools("-v", "-V", "-p")},
+		"uname":    ro(with(bools("-a", "-s", "-n", "-r", "-v", "-m", "-p", "-i", "-o"), "-K", "string")),
+		"id":       ro(with(bools("-u", "-g", "-G", "-n", "-r", "-Z", "-z"), "-a", "bool")),
+		"whoami":   ro(bools()),
+		"hostname": ro(bools("-f", "-s", "-i", "-I", "-a", "-d", "-y", "-n")),
+		"pwd":      ro(bools("-L", "-P")),
+		// date：-s/--set 设系统时钟=写（GNU 形态）；macOS 裸操作数设时钟
+		//（031812002025）→ NoBareOperands，+FORMAT 格式串豁免；-r 消费文件名
+		//（GNU date -r FILE 显示文件时间，值型）
+		"date": Policy{ReadOnly: true, NoBareOperands: true, AllowBareOperandsPrefix: []string{"+"},
+			SafeFlags:   with(bools("-u", "-R", "-q", "-I", "-U"), "-d", "string", "-r", "string", "-v", "string", "-j", "string", "-f", "string"),
+			UnsafeFlags: []string{"-s", "--set"}},
 		"printenv":  ro(bools("-0")),
 		"echo":      ro(bools("-n", "-e")),
 		"printf":    ro(bools()),

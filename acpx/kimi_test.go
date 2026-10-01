@@ -73,3 +73,22 @@ func TestKimiArgBuilding(t *testing.T) {
 		}
 	}
 }
+
+// TestKimiExitNonZeroWithResult 已收到 assistant 消息（终态）但进程退出码
+// 非零：以结果为准（终态优先，与 claude/codex/pi/mimo 同契约）。
+func TestKimiExitNonZeroWithResult(t *testing.T) {
+	bin := fakeCLI(t, `cat <<'JSONL'
+{"role":"assistant","content":"kimi 部分完成"}
+JSONL
+exit 2
+`)
+	k := NewKimi()
+	k.Bin = bin
+	res, err := k.Run(context.Background(), RunRequest{Prompt: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Text != "kimi 部分完成" || res.ExitCode != 2 {
+		t.Fatalf("res: %+v", res)
+	}
+}

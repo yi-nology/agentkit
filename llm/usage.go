@@ -94,45 +94,51 @@ func NewUsageHandler(onRecord Sink) callbacks.Handler {
 			return context.WithValue(ctx, startKey{}, time.Now())
 		}).
 		OnEndFn(func(ctx context.Context, info *callbacks.RunInfo, output callbacks.CallbackOutput) context.Context {
-			// Client 侧已记账（OnUsage/Budget 配置时 generateRetry 打点）→ 跳过。
-			if clientAccounted(ctx) {
-				return ctx
-			}
-			// 只认带 RunInfo 的 OnEnd，否则 token 双计、iteration 虚增。
-			if info == nil || info.Type == "" {
-				return ctx
-			}
-			out := model.ConvCallbackOutput(output)
-			if out == nil {
-				return ctx
-			}
-			// 真实用量提取（含 compose 只透传 Message 的回退）单源 obsx.TokenUsageOf。
-			usage := obsx.TokenUsageOf(out)
-			if usage == nil {
-				return ctx
-			}
-			rec := UsageRecord{
-				Model:            info.Type,
-				PromptTokens:     usage.PromptTokens,
-				CachedTokens:     usage.PromptTokenDetails.CachedTokens,
-				CompletionTokens: usage.CompletionTokens,
-				ReasoningTokens:  usage.CompletionTokensDetails.ReasoningTokens,
-				TotalTokens:      usage.TotalTokens,
-				Labels:           labelsFrom(ctx),
-			}
-			if start, ok := ctx.Value(startKey{}).(time.Time); ok && !start.IsZero() {
-				rec.DurationMS = time.Since(start).Milliseconds()
-			}
-			if c, ok := ctx.Value(counterKey{}).(*UsageCallCounter); ok {
-				rec.Iteration = c.n.Add(1)
-			}
-			if out.Message != nil && out.Message.ResponseMeta != nil {
-				rec.FinishReason = out.Message.ResponseMeta.FinishReason
-			}
-			if onRecord != nil {
+			if rec, ok := usageRecordFrom(ctx, info, output); ok && onRecord != nil {
 				onRecord(rec)
 			}
 			return ctx
 		}).
 		Build()
+}
+
+// usageRecordFrom 从 OnEnd 上下文与回调输出提取用量记录。
+// ok=false 表示应静默跳过（Client 已记账 / 无 RunInfo / 无真实用量）。
+func usageRecordFrom(ctx context.Context, info *callbacks.RunInfo, output callbacks.CallbackOutput) (UsageRecord, bool) {
+	// Client 侧已记账（OnUsage/Budget 配置时 generateRetry 打点）→ 跳过。
+	if clientAccounted(ctx) {
+		return UsageRecord{}, false
+	}
+	// 只认带 RunInfo 的 OnEnd，否则 token 双计、iteration 虚增。
+	if info == nil || info.Type == "" {
+		return UsageRecord{}, false
+	}
+	out := model.ConvCallbackOutput(output)
+	if out == nil {
+		return UsageRecord{}, false
+	}
+	// 真实用量提取（含 compose 只透传 Message 的回退）单源 obsx.TokenUsageOf。
+	usage := obsx.TokenUsageOf(out)
+	if usage == nil {
+		return UsageRecord{}, false
+	}
+	rec := UsageRecord{
+		Model:            info.Type,
+		PromptTokens:     usage.PromptTokens,
+		CachedTokens:     usage.PromptTokenDetails.CachedTokens,
+		CompletionTokens: usage.CompletionTokens,
+		ReasoningTokens:  usage.CompletionTokensDetails.ReasoningTokens,
+		TotalTokens:      usage.TotalTokens,
+		Labels:           labelsFrom(ctx),
+	}
+	if start, ok := ctx.Value(startKey{}).(time.Time); ok && !start.IsZero() {
+		rec.DurationMS = time.Since(start).Milliseconds()
+	}
+	if c, ok := ctx.Value(counterKey{}).(*UsageCallCounter); ok {
+		rec.Iteration = c.n.Add(1)
+	}
+	if out.Message != nil && out.Message.ResponseMeta != nil {
+		rec.FinishReason = out.Message.ResponseMeta.FinishReason
+	}
+	return rec, true
 }

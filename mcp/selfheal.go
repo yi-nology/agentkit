@@ -28,6 +28,9 @@ func isTransportDead(err error) bool {
 	if err == nil {
 		return false
 	}
+	if _, ok := asToolResultError(err); ok {
+		return false // 业务失败（isError:true）不可自愈
+	}
 	if errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) {
 		return true
 	}
@@ -80,13 +83,16 @@ var _ tool.InvokableTool = (*selfHealTool)(nil)
 // 重连 → GetTools → 按名解析同名工具（errorAsObservation 包装保持与其他工具
 // 同形态）。evict 带实例比对（cached == dead）——并发自愈时后来者不得摘除
 // 别的自愈刚建好的新连接（曾把健康连接关掉、造成伪失败与重复建连）。
-func (p *Pool) selfHealRedial(ctx context.Context, cfg ServerConfig, allow []string, name string, dead client.MCPClient) func(context.Context) (tool.InvokableTool, error) {
+// 不接收装配期 ctx：重连应使用调用期 ctx（闭包参数），装配期 ctx 在此无义。
+func (p *Pool) selfHealRedial(cfg ServerConfig, allow []string, name string, dead client.MCPClient) func(context.Context) (tool.InvokableTool, error) {
 	return func(ctx context.Context) (tool.InvokableTool, error) {
-		p.mu.Lock()
-		cached, ok := p.clients[cfg.Name]
-		p.mu.Unlock()
-		if ok && cached == dead {
-			p.evict(cfg.Name, cached)
+		if st := p.conn(cfg.Name); st != nil {
+			st.mu.Lock()
+			cached := st.cli
+			st.mu.Unlock()
+			if cached == dead {
+				p.evict(cfg.Name, cached)
+			}
 		}
 		cli, err := p.client(ctx, cfg)
 		if err != nil {
@@ -96,7 +102,7 @@ func (p *Pool) selfHealRedial(ctx context.Context, cfg ServerConfig, allow []str
 		if err != nil {
 			return nil, err
 		}
-		for _, t := range WrapErrorAsObservation(convTools(cli, entries, allow)) {
+		for _, t := range WrapErrorAsObservation(p.assembleTools(cfg, allow, cli, entries)) {
 			if it, ok := t.(tool.InvokableTool); ok {
 				if info, ierr := it.Info(ctx); ierr == nil && info.Name == name {
 					return it, nil

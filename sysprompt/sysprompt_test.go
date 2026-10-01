@@ -9,9 +9,9 @@ import (
 
 func TestBuildOrderingAndBlocks(t *testing.T) {
 	b := &Builder{}
-	b.Add(NewSection("dyn-a", "", "", "动态A"))                    // system/dynamic（缺省）
-	b.Add(IdentitySection("你是审查助手"))                            // system/stable
-	b.Add(NewSection("dyn-b", "", "", "动态B"))                    // system/dynamic
+	b.Add(NewSection("dyn-a", "", "", "动态A"))                         // system/dynamic（缺省）
+	b.Add(IdentitySection("你是审查助手"))                                  // system/stable
+	b.Add(NewSection("dyn-b", "", "", "动态B"))                         // system/dynamic
 	b.Add(DateSection(time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC))) // user_context/dynamic
 	res := b.Build()
 

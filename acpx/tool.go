@@ -27,7 +27,7 @@ type toolOut struct {
 // 不判空就挂进工具表。
 func (r *Registry) AsTool() tool.BaseTool {
 	t, err := utils.InferTool("run_coding_agent",
-		"调用 CLI 编码 agent（claude/zcode/codex/opencode/minimax/kimi/gemini/qwen/mimo）"+
+		"调用 CLI 编码 agent（claude/zcode/codex/opencode/minimax/kimi/gemini/qwen/mimo/pi/dsh）"+
 			"执行编码任务（写代码/改代码/跑命令/审查等）。prompt 要具体明确，包含期望产出与验收标准。",
 		func(ctx context.Context, in *toolIn) (*toolOut, error) {
 			// 透传 eino 传入的 ctx：上层取消/超时必须能终止 CLI 子进程，

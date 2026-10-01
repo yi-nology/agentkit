@@ -52,22 +52,32 @@ func WrapErrorAsObservation(tools []tool.BaseTool) []tool.BaseTool {
 }
 
 // mcpErrorObservation 识别「MCP 工具执行了但业务失败」（isError:true）并剥出错误文本
-// 作为观察；传输层错误（不可达/超时）不在此列。
+// 作为观察；传输层错误（不可达/超时）不在此列。优先 errors.As 穿透包装识别
+// toolResultError；文案匹配仅兜底外部手工构造的旧形态。
 func mcpErrorObservation(err error) (string, bool) {
+	if tre, ok := asToolResultError(err); ok {
+		return observationFromPayload(tre.Payload()), true
+	}
 	msg := err.Error()
 	if !strings.Contains(msg, "mcp server return error") {
 		return "", false
 	}
 	if i := strings.Index(msg, "{"); i >= 0 {
-		var m struct {
-			Content []struct {
-				Text string `json:"text"`
-			} `json:"content"`
-		}
-		if json.Unmarshal([]byte(msg[i:]), &m) == nil && len(m.Content) > 0 {
-			return "MCP 工具执行失败（真实工具反馈，请据此修正参数、先列出存在的资源再取详情，或改用其他工具；不要重复同一调用）：\n" +
-				m.Content[0].Text, true
-		}
+		return observationFromPayload([]byte(msg[i:])), true
 	}
 	return "MCP 工具执行失败（真实工具反馈）：\n" + msg, true
+}
+
+// observationFromPayload 从 CallToolResult JSON 剥首条 text 作为 LLM 可读观察。
+func observationFromPayload(payload []byte) string {
+	var m struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if json.Unmarshal(payload, &m) == nil && len(m.Content) > 0 {
+		return "MCP 工具执行失败（真实工具反馈，请据此修正参数、先列出存在的资源再取详情，或改用其他工具；不要重复同一调用）：\n" +
+			m.Content[0].Text
+	}
+	return "MCP 工具执行失败（真实工具反馈）：\n" + string(payload)
 }

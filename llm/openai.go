@@ -39,42 +39,9 @@ type OpenAIProviderConfig struct {
 
 // NewOpenAIProvider 创建 OpenAI 兼容提供者。
 func NewOpenAIProvider(ctx context.Context, cfg OpenAIProviderConfig) (*OpenAIProvider, error) {
-	if cfg.ContextTokens <= 0 {
-		cfg.ContextTokens = 128_000
-	}
-	// 0 = 从窗口派生缺省；<0 = 不下发 max_tokens 参数（部分推理模型要求
-	// max_completion_tokens 或拒绝该参数）
-	if cfg.MaxOutputTokens == 0 {
-		cfg.MaxOutputTokens = cfg.ContextTokens * 5 / 100
-		if cfg.MaxOutputTokens < 4096 {
-			cfg.MaxOutputTokens = 4096
-		}
-	}
-	if cfg.Timeout <= 0 {
-		cfg.Timeout = 60 * time.Second
-	}
-
-	var httpClient *http.Client
-	if cfg.CaptureRetryAfter {
-		httpClient = &http.Client{
-			Timeout:   cfg.Timeout,
-			Transport: retryAfterTransport{base: http.DefaultTransport},
-		}
-	}
-
-	var maxTokens *int
-	if cfg.MaxOutputTokens > 0 {
-		t := cfg.MaxOutputTokens
-		maxTokens = &t
-	}
-	chatModel, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
-		BaseURL:    cfg.BaseURL,
-		APIKey:     cfg.APIKey,
-		Model:      cfg.Model,
-		MaxTokens:  maxTokens,
-		Timeout:    cfg.Timeout,
-		HTTPClient: httpClient,
-	})
+	cfg.fillDefaults()
+	httpClient := cfg.httpClient()
+	chatModel, err := openai.NewChatModel(ctx, cfg.chatModelConfig(httpClient))
 	if err != nil {
 		return nil, err
 	}
@@ -87,6 +54,53 @@ func NewOpenAIProvider(ctx context.Context, cfg OpenAIProviderConfig) (*OpenAIPr
 		costPer1K:       [2]float64{cfg.CostPer1KPrompt, cfg.CostPer1KCompletion},
 		chatModel:       chatModel,
 	}, nil
+}
+
+// fillDefaults 配置缺省落位：窗口 128k、输出 5%（下限 4096）、超时 60s。
+// MaxOutputTokens 0 = 从窗口派生缺省；<0 = 不下发 max_tokens 参数（部分推理
+// 模型要求 max_completion_tokens 或拒绝该参数）。
+func (c *OpenAIProviderConfig) fillDefaults() {
+	if c.ContextTokens <= 0 {
+		c.ContextTokens = 128_000
+	}
+	if c.MaxOutputTokens == 0 {
+		c.MaxOutputTokens = c.ContextTokens * 5 / 100
+		if c.MaxOutputTokens < 4096 {
+			c.MaxOutputTokens = 4096
+		}
+	}
+	if c.Timeout <= 0 {
+		c.Timeout = 60 * time.Second
+	}
+}
+
+// httpClient 需要捕获 Retry-After 时注入带 retryAfterTransport 的 Client
+// （Timeout 语义由注入的 Client 自带保留）；否则走 openai 包内部缺省。
+func (c *OpenAIProviderConfig) httpClient() *http.Client {
+	if !c.CaptureRetryAfter {
+		return nil
+	}
+	return &http.Client{
+		Timeout:   c.Timeout,
+		Transport: retryAfterTransport{base: http.DefaultTransport},
+	}
+}
+
+// chatModelConfig 组装 eino openai.ChatModelConfig（maxTokens 指针化）。
+func (c *OpenAIProviderConfig) chatModelConfig(httpClient *http.Client) *openai.ChatModelConfig {
+	var maxTokens *int
+	if c.MaxOutputTokens > 0 {
+		t := c.MaxOutputTokens
+		maxTokens = &t
+	}
+	return &openai.ChatModelConfig{
+		BaseURL:    c.BaseURL,
+		APIKey:     c.APIKey,
+		Model:      c.Model,
+		MaxTokens:  maxTokens,
+		Timeout:    c.Timeout,
+		HTTPClient: httpClient,
+	}
 }
 
 func (p *OpenAIProvider) Name() string               { return "openai" }

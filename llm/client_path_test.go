@@ -133,17 +133,17 @@ func TestClientBackoffDelay(t *testing.T) {
 	c.MaxDelay = 30 * time.Second
 
 	// 普通错误：指数增长
-	d1 := backoffDelay(1, c.BaseDelay, c.MaxDelay, errors.New("500"))
+	d1 := backoffDelay(1, c.BaseDelay, c.MaxDelay, false)
 	if d1 < 2*time.Second || d1 > 3*time.Second {
 		t.Fatalf("attempt1 退避应约 2s+jitter，实际 %v", d1)
 	}
 	// 429：下限 5s
-	d429 := backoffDelay(1, c.BaseDelay, c.MaxDelay, errors.New("429 rate limit"))
+	d429 := backoffDelay(1, c.BaseDelay, c.MaxDelay, true)
 	if d429 < 5*time.Second {
 		t.Fatalf("429 退避下限 5s，实际 %v", d429)
 	}
 	// 上限封顶
-	dMax := backoffDelay(10, c.BaseDelay, c.MaxDelay, errors.New("500"))
+	dMax := backoffDelay(10, c.BaseDelay, c.MaxDelay, false)
 	if dMax > 30*time.Second {
 		t.Fatalf("退避应封顶 30s，实际 %v", dMax)
 	}

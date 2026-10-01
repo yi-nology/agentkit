@@ -26,6 +26,7 @@ package permgate
 
 import (
 	"context"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -68,7 +69,10 @@ type Rule struct {
 	// ToolName 工具名；Edit 规则同时匹配 Write（写面等价，对标 ZCode 特例）。
 	ToolName string
 	// Content 输入内容模式（command/url/路径）：空 = 该工具全部调用；
-	// "git status:*" 前缀；含 * 通配；否则精确等值。
+	// "git status:*" 前缀（空白边界，命令形态专用）；含 * 通配；否则精确等值。
+	// ⚠ 路径规则用 wildcard 形态（"/repo/data/*"）而非前缀形态——前缀边界是
+	// 空格/制表符，对路径子树形同虚设；路径 subject 匹配前会 filepath.Clean
+	//（`..` 穿越不命中），符号链接围栏归执行器。
 	Content string
 }
 
@@ -103,69 +107,90 @@ type Service struct {
 }
 
 // Check 判定一次工具调用。input 为工具入参（string 或 map 形态）。
+// 分段优先级见包注释——顺序是踩坑固化的，别调换。
 func (s *Service) Check(ctx context.Context, tool string, input any, mode Mode, cap Capability) Decision {
-	d := func(b Behavior, ruleID, reason string) Decision {
-		return Decision{Behavior: b, RuleID: ruleID, Reason: reason}
+	switch {
+	case cap.RequiresUserInteraction:
+		return s.checkUserInteraction(tool, input)
+	case cap.AlwaysAsk:
+		return s.checkAlwaysAsk(tool, input)
+	default:
+		return s.checkStandard(ctx, tool, input, mode, cap)
 	}
-	if cap.RequiresUserInteraction {
-		// 硬禁与项目 deny 同样压过交互段——被 deny 的交互型工具不该退化成
-		// 「弹窗一点就能跑」（与 alwaysAsk 段同纪律）
-		if s.DisallowedTools[tool] {
-			return d(Deny, "rule.disallowedTools", "工具被显式禁用: "+tool)
-		}
-		if s.matchRules(&s.ProjectRules.Deny, tool, input) {
-			return d(Deny, "rule.project.deny", "项目规则拒绝: "+tool)
-		}
-		return d(Ask, "tool.userInteraction", "交互型工具需要用户参与: "+tool)
-	}
+}
 
-	// alwaysAsk：先走硬阻断，再看会话授权，最后问——不可被模式/白名单放行
-	if cap.AlwaysAsk {
-		if s.DisallowedTools[tool] {
-			return d(Deny, "rule.disallowedTools", "工具被显式禁用: "+tool)
-		}
-		if s.matchRules(&s.ProjectRules.Deny, tool, input) {
-			return d(Deny, "rule.project.deny", "项目规则拒绝: "+tool)
-		}
-		if matchRules(s.sessionRuleSet().Allow, tool, input) {
-			return d(Allow, "rule.session.allow", "本会话已授权: "+tool)
-		}
-		return d(Ask, "tool.alwaysAsk", "工具要求逐次确认: "+tool)
-	}
+// decision 构造判定结果（RuleID 结构化审计）。
+func decision(b Behavior, ruleID, reason string) Decision {
+	return Decision{Behavior: b, RuleID: ruleID, Reason: reason}
+}
 
-	// 与 ZCode 的历史差异：一切「禁」压过 yolo（其源码注释自述 yolo 先于硬禁是
-	// 兼容遗留——新装配没有这个包袱）。yolo 跳过的是「问」，不是「禁」。
+// checkUserInteraction 交互型工具：硬禁与项目 deny 压过交互段——被 deny 的
+// 交互型工具不该退化成「弹窗一点就能跑」（与 alwaysAsk 段同纪律）。
+func (s *Service) checkUserInteraction(tool string, input any) Decision {
+	if s.DisallowedTools[tool] {
+		return decision(Deny, "rule.disallowedTools", "工具被显式禁用: "+tool)
+	}
+	if s.matchRules(&s.ProjectRules.Deny, tool, input) {
+		return decision(Deny, "rule.project.deny", "项目规则拒绝: "+tool)
+	}
+	return decision(Ask, "tool.userInteraction", "交互型工具需要用户参与: "+tool)
+}
+
+// checkAlwaysAsk 逐次确认工具：先走硬阻断，再看会话授权，最后问——
+// 不可被模式/白名单放行。
+func (s *Service) checkAlwaysAsk(tool string, input any) Decision {
+	if s.DisallowedTools[tool] {
+		return decision(Deny, "rule.disallowedTools", "工具被显式禁用: "+tool)
+	}
+	if s.matchRules(&s.ProjectRules.Deny, tool, input) {
+		return decision(Deny, "rule.project.deny", "项目规则拒绝: "+tool)
+	}
+	if matchRules(s.sessionRuleSet().Allow, tool, input) {
+		return decision(Allow, "rule.session.allow", "本会话已授权: "+tool)
+	}
+	return decision(Ask, "tool.alwaysAsk", "工具要求逐次确认: "+tool)
+}
+
+// checkStandard 常规判定主干：与 ZCode 的历史差异——一切「禁」压过 yolo
+// （其源码注释自述 yolo 先于硬禁是兼容遗留——新装配没有这个包袱）。
+// yolo 跳过的是「问」，不是「禁」。
+func (s *Service) checkStandard(ctx context.Context, tool string, input any, mode Mode, cap Capability) Decision {
 	switch {
 	case s.DisallowedTools[tool]:
-		return d(Deny, "rule.disallowedTools", "工具被显式禁用: "+tool)
+		return decision(Deny, "rule.disallowedTools", "工具被显式禁用: "+tool)
 	case s.matchRules(&s.ProjectRules.Deny, tool, input):
-		return d(Deny, "rule.project.deny", "项目规则拒绝: "+tool)
+		return decision(Deny, "rule.project.deny", "项目规则拒绝: "+tool)
 	case mode == ModeYolo:
-		return d(Allow, "mode.yolo", "yolo 模式直通")
+		return decision(Allow, "mode.yolo", "yolo 模式直通")
 	case s.matchRules(&s.ProjectRules.Ask, tool, input):
-		return d(Ask, "rule.project.ask", "项目规则要求确认: "+tool)
+		return decision(Ask, "rule.project.ask", "项目规则要求确认: "+tool)
 	case mode == ModeReadOnly:
 		if cap.ReadOnly {
-			return d(Allow, "mode.read_only", "只读模式放行只读工具")
+			return decision(Allow, "mode.read_only", "只读模式放行只读工具")
 		}
-		return d(Deny, "mode.read_only", "只读模式拦下写入: "+tool)
+		return decision(Deny, "mode.read_only", "只读模式拦下写入: "+tool)
 	case s.matchRules(&s.ProjectRules.Allow, tool, input):
-		return d(Allow, "rule.project.allow", "项目规则放行: "+tool)
+		return decision(Allow, "rule.project.allow", "项目规则放行: "+tool)
 	}
 	if ruleID, ok := s.preapproved(ctx, tool, input); ok {
-		return d(Allow, ruleID, "预批放行: "+tool)
+		return decision(Allow, ruleID, "预批放行: "+tool)
 	}
+	return s.checkFallback(tool, input, cap)
+}
+
+// checkFallback 兜底段：配置白名单 → 会话授权 → 只读放行 → 默认确认。
+func (s *Service) checkFallback(tool string, input any, cap Capability) Decision {
 	switch {
 	case s.AllowedTools[tool]:
-		return d(Allow, "rule.allowedTools", "白名单放行: "+tool)
+		return decision(Allow, "rule.allowedTools", "白名单放行: "+tool)
 	case matchRules(s.sessionRuleSet().Allow, tool, input):
 		// 会话授权同样覆盖普通工具的 ask 兜底（比 ZCode 只在 alwaysAsk 段查
 		// 会话规则更完整——用户点了「总是允许」不该再被问）
-		return d(Allow, "rule.session.allow", "本会话已授权: "+tool)
+		return decision(Allow, "rule.session.allow", "本会话已授权: "+tool)
 	case cap.ReadOnly:
-		return d(Allow, "cap.readOnly", "只读工具放行")
+		return decision(Allow, "cap.readOnly", "只读工具放行")
 	default:
-		return d(Ask, "mode.default", "默认确认: "+tool)
+		return decision(Ask, "mode.default", "默认确认: "+tool)
 	}
 }
 
@@ -220,14 +245,28 @@ func matchToolName(ruleTool, tool string) bool {
 	return tool == "Write" && ruleTool == "Edit"
 }
 
+// subjectKeys 工具输入里承载「匹配对象」的字段名（与 ruleSubjects 清单同步）。
+// file_path/path 类 subject 先 filepath.Clean 再匹配：wildcard 路径规则
+// （"/repo/data/*"）可被 `..` 穿越与重复分隔符绕过，Clean 后
+// "/repo/data/../../etc/passwd" 归一为 "/etc/passwd"，不再误命中（fail-closed；
+// 第六轮审计）。符号链接绕过须执行器侧 EvalSymlinks 治理——本包不做文件系统
+// 访问，保持纯函数判定。
+var subjectKeys = []string{"command", "url", "file_path", "path", "pattern", "patch_text"}
+
+// pathSubjectKeys 匹配前须 Clean 的路径类字段。
+var pathSubjectKeys = map[string]bool{"file_path": true, "path": true}
+
 // subjects 从工具输入提取匹配对象（对标 ruleSubjects 的字段清单）。
 func subjects(input any, tool string) []string {
 	switch v := input.(type) {
 	case string:
 		return []string{v}
 	case map[string]any:
-		for _, key := range []string{"command", "url", "file_path", "path", "pattern", "patch_text"} {
+		for _, key := range subjectKeys {
 			if s, ok := v[key].(string); ok && s != "" {
+				if pathSubjectKeys[key] {
+					s = filepath.Clean(s)
+				}
 				return []string{s}
 			}
 		}

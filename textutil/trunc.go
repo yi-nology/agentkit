@@ -3,6 +3,23 @@ package textutil
 
 import "unicode/utf8"
 
+// TokenCharDivisor 字符→token 估算除数（与 ZCode ESTIMATED_TOKEN_CHAR_DIVISOR
+// 同值——中英混合语料的经验系数；精确计量归 provider usage 回传）。
+const TokenCharDivisor = 3
+
+// EstTokensOf 字符串 token 估算（rune 数 / TokenCharDivisor 向上取整）。
+func EstTokensOf(s string) int {
+	return EstTokens(utf8.RuneCountInString(s))
+}
+
+// EstTokens 已知 rune 数时的 token 估算（向上取整）。
+func EstTokens(runes int) int {
+	if runes <= 0 {
+		return 0
+	}
+	return (runes + TokenCharDivisor - 1) / TokenCharDivisor
+}
+
 // SplitRunes 按 rune 等分为 ≤n 字符的块（最后一块可不足）。
 // n<=0 返回整串单块。大文本分块送 LLM 的公共原语。
 func SplitRunes(s string, n int) []string {
@@ -35,6 +52,24 @@ func TruncRunes(s string, n int) (string, bool) {
 	}
 	r := []rune(s)
 	return string(r[:n]), true
+}
+
+// TruncBytes 按字节预算截断（rune 对齐：预算落点切进多字节字符时回退到
+// RuneStart 边界，不产生非法 UTF-8 尾字节）。第二个返回值 = 是否真发生了
+// 截断。budget<0 视为非法上限，按"全部截断"处理（返回空串），不 panic。
+// 字节预算面的唯一原语（skill 清单降级/全文上限共用——此前各写一份回退逻辑）。
+func TruncBytes(s string, budget int) (string, bool) {
+	if budget < 0 {
+		return "", true
+	}
+	if len(s) <= budget {
+		return s, false
+	}
+	cut := budget
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut], true
 }
 
 // TruncEllipsis 截断并追加省略号（列表/标题/事件载荷展示面统一语义）。

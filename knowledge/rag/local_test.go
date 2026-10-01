@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestLocalRetrieve(t *testing.T) {
@@ -296,6 +297,24 @@ func TestChunkMarkdownHardCap(t *testing.T) {
 	for i, c := range chunkMarkdown(unclosed) {
 		if len([]rune(c.content)) > maxChunkRunes*2 {
 			t.Fatalf("未闭合代码块 %d 超过硬上限: %d runes", i, len([]rune(c.content)))
+		}
+	}
+}
+
+// TestChunkMarkdownOverlongLineInCodeBlock 回归（第六轮审计 C 级）：代码块内
+// 单条超长行（粘贴 base64/超长日志恰恰常包在围栏里）按 maxChunkRunes 硬切成
+// 多块——此前单行守卫只在正文路径，代码块路径 flush 出的单块越过 Milvus
+// VarChar 65535 字节上限，整个文件（含正常段落）索引失败。
+func TestChunkMarkdownOverlongLineInCodeBlock(t *testing.T) {
+	long := strings.Repeat("a", maxChunkRunes*3+100)
+	md := "# 标题\n\n```go\n" + long + "\n```\n\n正文段落"
+	chunks := chunkMarkdown(md)
+	if len(chunks) < 4 {
+		t.Fatalf("超长行应硬切成多块，得到 %d 块", len(chunks))
+	}
+	for _, c := range chunks {
+		if utf8.RuneCountInString(c.content) > maxChunkRunes {
+			t.Fatalf("存在超限块: %d runes", utf8.RuneCountInString(c.content))
 		}
 	}
 }

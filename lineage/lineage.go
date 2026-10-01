@@ -10,8 +10,8 @@ package lineage
 
 import (
 	"sort"
+	"sync/atomic"
 
-	"git.enjoye.top/enjoydream/agentkit/hotplug"
 	"git.enjoye.top/enjoydream/agentkit/pack"
 	"git.enjoye.top/enjoydream/agentkit/skill"
 )
@@ -98,7 +98,15 @@ func Build(experts []Expert, skills []Skill, manifests map[string]*pack.ToolMani
 		Skills:  map[string]SkillEdges{},
 		MCPS:    map[string]MCPEdges{},
 	}
-	// 技能节点：全库登记（未被引用的技能也要能作焦点查询）。
+	registerSkills(lin, skills)     // 技能节点：全库登记（未被引用的技能也要能作焦点查询）
+	linkGrants(lin, experts)        // 专家 → 技能引用 / MCP 授予边
+	linkSkillMCPDeps(lin)           // 技能 → MCP 依赖边
+	attachManifests(lin, manifests) // 契约清单挂上 MCP 节点
+	stabilize(lin)                  // 稳定排序（API 展示与 diff 的确定性契约）
+	return lin
+}
+
+func registerSkills(lin *Lineage, skills []Skill) {
 	for _, s := range skills {
 		lin.Skills[s.Name] = SkillEdges{
 			RequiresMCP: s.RequiresMCP, Provides: s.Provides,
@@ -106,8 +114,13 @@ func Build(experts []Expert, skills []Skill, manifests map[string]*pack.ToolMani
 			Source: s.Source, Deprecated: s.Deprecated,
 		}
 	}
+}
+
+func linkGrants(lin *Lineage, experts []Expert) {
 	for _, e := range experts {
 		grants := make([]string, 0, len(e.Grants))
+		// 同 server 多 grant 时 seen 提到外层，免每 grant 重建
+		seenByServer := map[string]map[string]bool{}
 		for _, g := range e.Grants {
 			grants = append(grants, g.Server)
 			edge := lin.MCPS[g.Server]
@@ -115,13 +128,18 @@ func Build(experts []Expert, skills []Skill, manifests map[string]*pack.ToolMani
 			if len(g.Allow) == 0 {
 				edge.Unlimited = true // allow 空=该 server 全部工具
 			}
-			seen := map[string]bool{}
-			for _, t := range edge.Tools {
-				seen[t] = true
+			seen := seenByServer[g.Server]
+			if seen == nil {
+				seen = make(map[string]bool, len(edge.Tools))
+				for _, t := range edge.Tools {
+					seen[t] = true
+				}
+				seenByServer[g.Server] = seen
 			}
 			for _, t := range g.Allow {
 				if !seen[t] {
 					edge.Tools = append(edge.Tools, t)
+					seen[t] = true
 				}
 			}
 			lin.MCPS[g.Server] = edge
@@ -133,7 +151,9 @@ func Build(experts []Expert, skills []Skill, manifests map[string]*pack.ToolMani
 			lin.Skills[n] = edge
 		}
 	}
-	// 技能 → MCP 依赖边。
+}
+
+func linkSkillMCPDeps(lin *Lineage) {
 	for n, edge := range lin.Skills {
 		for _, dep := range edge.RequiresMCP {
 			m := lin.MCPS[dep.Server]
@@ -141,13 +161,17 @@ func Build(experts []Expert, skills []Skill, manifests map[string]*pack.ToolMani
 			lin.MCPS[dep.Server] = m
 		}
 	}
-	// 契约清单挂上 MCP 节点。
+}
+
+func attachManifests(lin *Lineage, manifests map[string]*pack.ToolManifest) {
 	for server, m := range manifests {
 		edge := lin.MCPS[server]
 		edge.Manifest = m
 		lin.MCPS[server] = edge
 	}
-	// 稳定排序（API 展示与 diff 的确定性契约）。
+}
+
+func stabilize(lin *Lineage) {
 	for slug, e := range lin.Experts {
 		sort.Strings(e.Skills)
 		sort.Strings(e.Grants)
@@ -163,7 +187,6 @@ func Build(experts []Expert, skills []Skill, manifests map[string]*pack.ToolMani
 		sort.Strings(e.Tools)
 		lin.MCPS[s] = e
 	}
-	return lin
 }
 
 // Impact reload 前后的结构化影响项（进 reload 响应；warnings 仍保留人读摘要）。
@@ -193,13 +216,20 @@ func Diff(prev, cur *Lineage) []Impact {
 		return nil
 	}
 	var out []Impact
-	empty := func(s []string) bool { return len(s) == 0 }
-	// 技能元数据跃迁（version/maturity/弃用）。
+	out = diffSkills(prev, cur, out)
+	out = diffTools(prev, cur, out)
+	out = diffRefs(prev, cur, out)
+	sortImpacts(out)
+	return out
+}
+
+// diffSkills 技能元数据跃迁（version/maturity/弃用）。
+func diffSkills(prev, cur *Lineage, out []Impact) []Impact {
 	for name, e := range cur.Skills {
 		p, had := prev.Skills[name]
 		usedBy := e.UsedBy
 		if !had {
-			if !empty(usedBy) {
+			if len(usedBy) > 0 {
 				out = append(out, Impact{Type: "skill_version_changed", Skill: name, From: "(新增)", To: e.Version, UsedBy: usedBy})
 			}
 			continue
@@ -218,20 +248,26 @@ func Diff(prev, cur *Lineage) []Impact {
 			out = append(out, Impact{Type: "deprecation", Skill: name, To: to, UsedBy: usedBy})
 		}
 	}
-	// 工具面增减 = manifest 声明 ∪ 显式授予（edge.Tools；仅 diff manifest 会让
-	// 授予变更静默）。allow 空=全部工具无法枚举对账 → 该侧跳过不产出。
-	toolSet := func(lin *Lineage, server string) map[string]bool {
-		set := map[string]bool{}
-		if m := lin.MCPS[server].Manifest; m != nil {
-			for _, t := range m.Tools {
-				set[t.Name] = true
-			}
+	return out
+}
+
+// toolSet 工具面 = manifest 声明 ∪ 显式授予（edge.Tools；仅 diff manifest 会让
+// 授予变更静默）。
+func toolSet(lin *Lineage, server string) map[string]bool {
+	set := map[string]bool{}
+	if m := lin.MCPS[server].Manifest; m != nil {
+		for _, t := range m.Tools {
+			set[t.Name] = true
 		}
-		for _, t := range lin.MCPS[server].Tools {
-			set[t] = true
-		}
-		return set
 	}
+	for _, t := range lin.MCPS[server].Tools {
+		set[t] = true
+	}
+	return set
+}
+
+// diffTools MCP 工具面增减。allow 空=全部工具无法枚举对账 → 该侧跳过不产出。
+func diffTools(prev, cur *Lineage, out []Impact) []Impact {
 	servers := map[string]bool{}
 	for s := range prev.MCPS {
 		servers[s] = true
@@ -263,17 +299,21 @@ func Diff(prev, cur *Lineage) []Impact {
 				UsedBy: cur.MCPS[server].GrantedBy})
 		}
 	}
-	// 引用边增减（文件基座/覆盖变化；覆盖感知的边变化如实上报）。
+	return out
+}
+
+// diffRefs 引用边增减（文件基座/覆盖变化；覆盖感知的边变化如实上报）。
+func diffRefs(prev, cur *Lineage, out []Impact) []Impact {
 	for slug, e := range cur.Experts {
 		p, had := prev.Experts[slug]
 		if !had {
 			continue // 新专家属新增资产，不算引用变化
 		}
-		prevSet := map[string]bool{}
+		prevSet := make(map[string]bool, len(p.Skills))
 		for _, n := range p.Skills {
 			prevSet[n] = true
 		}
-		curSet := map[string]bool{}
+		curSet := make(map[string]bool, len(e.Skills))
 		for _, n := range e.Skills {
 			curSet[n] = true
 		}
@@ -295,13 +335,23 @@ func Diff(prev, cur *Lineage) []Impact {
 				SkillsAdded: added, SkillsRemoved: removed})
 		}
 	}
+	return out
+}
+
+func sortImpacts(out []Impact) {
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Type != out[j].Type {
 			return out[i].Type < out[j].Type
 		}
-		return out[i].Skill+out[i].Expert+out[i].Server < out[j].Skill+out[j].Expert+out[j].Server
+		// 逐字段比较：免每对拼接三个键串
+		if out[i].Skill != out[j].Skill {
+			return out[i].Skill < out[j].Skill
+		}
+		if out[i].Expert != out[j].Expert {
+			return out[i].Expert < out[j].Expert
+		}
+		return out[i].Server < out[j].Server
 	})
-	return out
 }
 
 // LineageNode / LineageEdge / LineageFocus 焦点查询结果（邻接子图）。
@@ -320,6 +370,41 @@ type LineageFocus struct {
 	Edges []LineageEdge `json:"edges"`
 }
 
+// adjacent 焦点图上的无向邻接（方向由 relation 语义决定，遍历本身无向）。
+type adjacent struct {
+	to       LineageNode
+	relation string
+}
+
+// neighbors 节点的一跳邻接。
+func (l *Lineage) neighbors(n LineageNode) []adjacent {
+	var out []adjacent
+	switch n.Kind {
+	case "expert":
+		for _, s := range l.Experts[n.Name].Skills {
+			out = append(out, adjacent{LineageNode{"skill", s}, "skill"})
+		}
+		for _, s := range l.Experts[n.Name].Grants {
+			out = append(out, adjacent{LineageNode{"server", s}, "grants"})
+		}
+	case "skill":
+		for _, u := range l.Skills[n.Name].UsedBy {
+			out = append(out, adjacent{LineageNode{"expert", u}, "skill"})
+		}
+		for _, dep := range l.Skills[n.Name].RequiresMCP {
+			out = append(out, adjacent{LineageNode{"server", dep.Server}, "requires_mcp"})
+		}
+	case "server":
+		for _, g := range l.MCPS[n.Name].GrantedBy {
+			out = append(out, adjacent{LineageNode{"expert", g}, "grants"})
+		}
+		for _, s := range l.MCPS[n.Name].UsedBySkills {
+			out = append(out, adjacent{LineageNode{"skill", s}, "requires_mcp"})
+		}
+	}
+	return out
+}
+
 // Focus 焦点邻接子图（无向遍历 depth 跳；depth 上限 2）。未知焦点返回 false。
 func (l *Lineage) Focus(focus string, depth int) (*LineageFocus, bool) {
 	if l == nil {
@@ -331,19 +416,7 @@ func (l *Lineage) Focus(focus string, depth int) (*LineageFocus, bool) {
 	if depth > 2 {
 		depth = 2
 	}
-	kindOf := func(name string) (string, bool) {
-		if _, ok := l.Experts[name]; ok {
-			return "expert", true
-		}
-		if _, ok := l.Skills[name]; ok {
-			return "skill", true
-		}
-		if _, ok := l.MCPS[name]; ok {
-			return "server", true
-		}
-		return "", false
-	}
-	kind, ok := kindOf(focus)
+	kind, ok := l.kindOf(focus)
 	if !ok {
 		return nil, false
 	}
@@ -351,61 +424,10 @@ func (l *Lineage) Focus(focus string, depth int) (*LineageFocus, bool) {
 	seen := map[LineageNode]bool{res.Focus: true}
 	res.Nodes = append(res.Nodes, res.Focus)
 	frontier := []LineageNode{res.Focus}
-	neighbors := func(n LineageNode) []struct {
-		to       LineageNode
-		relation string
-	} {
-		var out []struct {
-			to       LineageNode
-			relation string
-		}
-		switch n.Kind {
-		case "expert":
-			for _, s := range l.Experts[n.Name].Skills {
-				out = append(out, struct {
-					to       LineageNode
-					relation string
-				}{LineageNode{"skill", s}, "skill"})
-			}
-			for _, s := range l.Experts[n.Name].Grants {
-				out = append(out, struct {
-					to       LineageNode
-					relation string
-				}{LineageNode{"server", s}, "grants"})
-			}
-		case "skill":
-			for _, u := range l.Skills[n.Name].UsedBy {
-				out = append(out, struct {
-					to       LineageNode
-					relation string
-				}{LineageNode{"expert", u}, "skill"})
-			}
-			for _, dep := range l.Skills[n.Name].RequiresMCP {
-				out = append(out, struct {
-					to       LineageNode
-					relation string
-				}{LineageNode{"server", dep.Server}, "requires_mcp"})
-			}
-		case "server":
-			for _, g := range l.MCPS[n.Name].GrantedBy {
-				out = append(out, struct {
-					to       LineageNode
-					relation string
-				}{LineageNode{"expert", g}, "grants"})
-			}
-			for _, s := range l.MCPS[n.Name].UsedBySkills {
-				out = append(out, struct {
-					to       LineageNode
-					relation string
-				}{LineageNode{"skill", s}, "requires_mcp"})
-			}
-		}
-		return out
-	}
 	for d := 0; d < depth && len(frontier) > 0; d++ {
 		var next []LineageNode
 		for _, n := range frontier {
-			for _, nb := range neighbors(n) {
+			for _, nb := range l.neighbors(n) {
 				res.Edges = append(res.Edges, LineageEdge{From: n, To: nb.to, Relation: nb.relation})
 				if !seen[nb.to] {
 					seen[nb.to] = true
@@ -416,6 +438,24 @@ func (l *Lineage) Focus(focus string, depth int) (*LineageFocus, bool) {
 		}
 		frontier = next
 	}
+	sortFocus(res)
+	return res, true
+}
+
+func (l *Lineage) kindOf(name string) (string, bool) {
+	if _, ok := l.Experts[name]; ok {
+		return "expert", true
+	}
+	if _, ok := l.Skills[name]; ok {
+		return "skill", true
+	}
+	if _, ok := l.MCPS[name]; ok {
+		return "server", true
+	}
+	return "", false
+}
+
+func sortFocus(res *LineageFocus) {
 	sort.Slice(res.Nodes, func(i, j int) bool {
 		if res.Nodes[i].Kind != res.Nodes[j].Kind {
 			return res.Nodes[i].Kind < res.Nodes[j].Kind
@@ -432,14 +472,13 @@ func (l *Lineage) Focus(focus string, depth int) (*LineageFocus, bool) {
 		}
 		return a.To.Name < b.To.Name
 	})
-	return res, true
 }
 
 // Hub 血缘中枢：reload/Resync 时重建（Set），list API 与 lineage 端点共享读。
-// 快照持有点复用 hotplug.Holder（读无锁整体原子换——与 Plugboard 同一并发纪律）。
+// 快照用 atomic.Pointer 整体原子换（与 hotplug.Holder 同一并发纪律，内联省一层依赖）。
 // 零值可用；nil *Hub 的全部方法安全 no-op（测试/未接线路径）。
 type Hub struct {
-	st hotplug.Holder[hubState]
+	st atomic.Pointer[hubState]
 }
 
 // hubState 一次装配快照：血缘图 + 契约清单（Set 整体换，消双字段中间态）。

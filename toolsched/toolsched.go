@@ -1,20 +1,25 @@
 // Package toolsched 工具并发调度器：一条模型消息里的多个工具调用按注解与依赖
-// 分组调度——组内并发（上限约束）、组间有序。
+// 调度——依赖就绪即跑、并发受上限约束、独占任务不与他人并发。
 //
 // 对标 ZCode tool/scheduler.ts + executor/batch-runner.ts：并发判定由注解驱动
 // （destructive 一票否决 → concurrentSafe 显式优先 → readOnly 次之 → 具名未声明
 // 保守不并行）；注解生产面见 mcp.ToolHints（tools/list 注解归一），本包只消费
 // 同构的 Hints 三态声明，不依赖 MCP。
 //
-// 失败不阻断后续组：前序非并发安全工具的本地失败（如 todo 写盘）不应误截断
+// 失败不阻断后续：前序非并发安全工具的本地失败（如 todo 写盘）不应误截断
 // 后续任务的执行——后续任务的去留由其自身的执行结果与调用方取消信号决定。
 // 这是 ZCode 踩坑后固化的语义（曾因失败跳过全部后续组导致误截断）。
+//
+// 执行模型（v0.10.32 起）：Execute 按 DependsOn 就绪队列调度 + MaxConcurrency
+// 信号量限流，不再按「组」做全屏障——同层可并行任务被切成多组时原先组间串行
+// （15 个安全任务 / 上限 10 会跑成 10+5 两段串行）。Schedule.Groups 保留为
+// 静态规划视图（分层/切组/独占，可测试可检视），不再驱动执行序。
 //
 // 用法：
 //
 //	s := &toolsched.Scheduler{MaxConcurrency: 10}
-//	sched, err := s.Schedule(calls)   // 分组（可测试的纯函数）
-//	results := s.Execute(ctx, tasks)  // 按调度执行
+//	sched, err := s.Schedule(calls)   // 规划分组（可测试的纯函数）
+//	results := s.Execute(ctx, tasks)  // 按依赖就绪执行
 package toolsched
 
 import (
@@ -53,10 +58,12 @@ type Item struct {
 	CanRunParallel bool
 }
 
-// Schedule 调度结果：分组可执行（Groups），也可仅检视（Items）。
+// Schedule 调度结果：静态规划视图（Groups）+ 输入序判定（Items）。
 type Schedule struct {
-	Items  []Item     // 输入序
-	Groups [][]string // 并行组：组内可并发、组间有序（组大小 ≤ MaxConcurrency）
+	Items []Item // 输入序（含 CanRunParallel）
+	// Groups 规划分组：依赖分层 + 并行切组（≤ MaxConcurrency）+ 非并行独占。
+	// 仅供检视/测试/审计；Execute 不按组屏障执行（见包注释「执行模型」）。
+	Groups [][]string
 }
 
 // Scheduler 调度器。零值可用（MaxConcurrency 缺省 DefaultMaxConcurrency）。
@@ -195,7 +202,9 @@ func groupByParallel(sorted []*Item, maxConcurrency int) [][]string {
 		byLevel[level] = append(byLevel[level], it)
 	}
 	var groups [][]string
-	for level := 0; level <= maxLevel(byLevel); level++ {
+	// 层上界一次算好：原先每层循环内 maxLevel 全扫 map，O(L²)
+	top := maxLevel(byLevel)
+	for level := 0; level <= top; level++ {
 		items := byLevel[level]
 		if len(items) == 0 {
 			continue
@@ -237,6 +246,9 @@ func maxLevel(byLevel map[int][]*Item) int {
 type Task struct {
 	Call
 	// Run 执行体（nil 视为任务错误，不阻断其余任务）。
+	// 契约：不得阻塞不返回（长操作应尊重 ctx）；不得 panic——执行体来自外部
+	//（MCP 工具适配层等），panic 由调度器隔离转为该任务的 Err（与 worker.Pool
+	// 的外部代码隔离同纪律），不击穿进程。
 	Run func(ctx context.Context) (string, error)
 }
 
@@ -249,8 +261,8 @@ type Result struct {
 	Skipped bool // 因 StopAfter/ctx 取消未执行
 }
 
-// Execute 按调度执行：组内并发、组间顺序；结果按输入序返回。
-// 组内失败不阻断后续组；ctx 取消时在途任务透传取消信号、剩余组跳过（Skipped）。
+// Execute 按依赖就绪执行（引擎见 runner）。结果按输入序返回。
+// 前序失败不阻断后续；ctx 取消或 StopAfter 成功后，未启动任务记 Skipped。
 func (s *Scheduler) Execute(ctx context.Context, tasks []Task) []Result {
 	calls := make([]Call, len(tasks))
 	for i, t := range tasks {
@@ -264,69 +276,174 @@ func (s *Scheduler) Execute(ctx context.Context, tasks []Task) []Result {
 		}
 		return res
 	}
-	byID := make(map[string]*Task, len(tasks))
+	results := make([]Result, len(tasks))
+	if len(tasks) == 0 {
+		return results
+	}
+	r := newRunner(ctx, s.maxConcurrency(), tasks, sched.Items, results)
+	r.run()
 	for i := range tasks {
-		byID[tasks[i].ID] = &tasks[i]
+		if !r.filled[i] {
+			results[i] = Result{ID: tasks[i].ID, Name: tasks[i].Name, Skipped: true}
+		}
 	}
-	results := make(map[string]Result, len(tasks))
-	var mu sync.Mutex
-	record := func(r Result) {
-		mu.Lock()
-		results[r.ID] = r
-		mu.Unlock()
+	return results
+}
+
+// runner 就绪队列执行引擎：依赖计数放行 + 信号量限流 + 独占写锁 + 停轮门。
+// 结果按索引独槽写入（validate 保证 ID 唯一），无需结果表互斥。
+type runner struct {
+	ctx     context.Context
+	tasks   []Task
+	items   []Item
+	results []Result
+	filled  []bool
+
+	sem  chan struct{}
+	gate sync.RWMutex // 并行持读锁；独占持写锁
+
+	mu         sync.Mutex
+	remaining  []int // 未完成前置计数
+	dependents [][]int
+	ready      []int
+	inFlight   int
+	stopped    bool
+	// 收口状态：inFlight==0 && len(ready)==0 即全部完成（曾并存一个从未 Wait
+	// 的 wg——纯死代码，第六轮审计移除）。
+	allDone  chan struct{}
+	doneOnce sync.Once
+}
+
+func newRunner(ctx context.Context, maxC int, tasks []Task, items []Item, results []Result) *runner {
+	r := &runner{
+		ctx:        ctx,
+		tasks:      tasks,
+		items:      items,
+		results:    results,
+		filled:     make([]bool, len(tasks)),
+		sem:        make(chan struct{}, maxC),
+		remaining:  make([]int, len(tasks)),
+		dependents: make([][]int, len(tasks)),
+		allDone:    make(chan struct{}),
+	}
+	// 依赖图（就绪 = 未完成前置计数归零）
+	index := make(map[string]int, len(tasks))
+	for i := range tasks {
+		index[tasks[i].ID] = i
+	}
+	for i := range tasks {
+		for _, dep := range tasks[i].DependsOn {
+			j := index[dep]
+			r.remaining[i]++
+			r.dependents[j] = append(r.dependents[j], i)
+		}
+	}
+	return r
+}
+
+func (r *runner) record(i int, res Result) {
+	r.results[i] = res
+	r.filled[i] = true
+}
+
+// launchMore 在 mu 内放行就绪任务。停轮门/独占优先且一次只放一个——
+// 同轮就绪的并行任务必须等关门结果，否则 StopAfter 失去截断意义。
+func (r *runner) launchMore() {
+	if !r.stopped && r.ctx.Err() == nil {
+		for k, i := range r.ready {
+			if !r.items[i].CanRunParallel || r.tasks[i].StopAfter {
+				r.ready = append(r.ready[:k], r.ready[k+1:]...)
+				r.inFlight++
+				go r.runOne(i)
+				return
+			}
+		}
+	}
+	for len(r.ready) > 0 {
+		i := r.ready[0]
+		r.ready = r.ready[1:]
+		r.inFlight++
+		go r.runOne(i) // 停轮/取消路径由 runOne 记 Skipped，保证依赖链能收口
+	}
+}
+
+// runOne 单任务：跳过判定 → 并发门 → 执行 → 停轮登记 → 唤醒后继。
+func (r *runner) runOne(i int) {
+	defer func() {
+		r.mu.Lock()
+		r.inFlight--
+		for _, d := range r.dependents[i] {
+			r.remaining[d]--
+			if r.remaining[d] == 0 {
+				r.ready = append(r.ready, d)
+			}
+		}
+		if r.inFlight == 0 && len(r.ready) == 0 {
+			r.doneOnce.Do(func() { close(r.allDone) })
+		} else {
+			r.launchMore()
+		}
+		r.mu.Unlock()
+	}()
+
+	t := &r.tasks[i]
+	r.mu.Lock()
+	skip := r.stopped || r.ctx.Err() != nil
+	r.mu.Unlock()
+	if skip {
+		r.record(i, Result{ID: t.ID, Name: t.Name, Skipped: true})
+		return
+	}
+	if t.Run == nil {
+		r.record(i, Result{ID: t.ID, Name: t.Name, Err: fmt.Errorf("toolsched: 任务 %q 缺执行体", t.ID)})
+		return
 	}
 
-	// skipRest 把指定组起的所有未完成任务记为 Skipped（含嵌套展平）。
-	skipRest := func(fromGroup int) {
-		for _, group := range sched.Groups[fromGroup:] {
-			for _, id := range group {
-				if _, done := results[id]; !done {
-					record(Result{ID: id, Name: byID[id].Name, Skipped: true})
-				}
-			}
-		}
+	// 并发门：独占先抢写锁（等在途读者收尾并挡住新读者），并行限流+读锁
+	if r.items[i].CanRunParallel {
+		r.sem <- struct{}{}
+		r.gate.RLock()
+		defer func() { r.gate.RUnlock(); <-r.sem }()
+	} else {
+		r.gate.Lock()
+		defer r.gate.Unlock()
 	}
 
-exec:
-	for gi, group := range sched.Groups {
-		if ctx.Err() != nil {
-			skipRest(gi)
-			break
-		}
-		var wg sync.WaitGroup
-		for _, id := range group {
-			t := byID[id]
-			if t == nil {
-				continue
-			}
-			wg.Add(1)
-			go func(t *Task) {
-				defer wg.Done()
-				if t.Run == nil {
-					record(Result{ID: t.ID, Name: t.Name, Err: fmt.Errorf("toolsched: 任务 %q 缺执行体", t.ID)})
-					return
-				}
-				out, err := t.Run(ctx)
-				record(Result{ID: t.ID, Name: t.Name, Output: out, Err: err})
-			}(t)
-		}
-		wg.Wait()
+	out, err := runGuarded(r.ctx, t)
+	r.record(i, Result{ID: t.ID, Name: t.Name, Output: out, Err: err})
+	if t.StopAfter && err == nil {
+		r.mu.Lock()
+		r.stopped = true
+		r.mu.Unlock()
+	}
+}
 
-		// 停轮判定：本组内有 StopAfter 任务成功 → 剩余组全部跳过
-		for _, id := range group {
-			t := byID[id]
-			if t == nil || !t.StopAfter {
-				continue
-			}
-			if r := results[id]; r.Err == nil && !r.Skipped {
-				skipRest(gi + 1)
-				break exec
-			}
+// runGuarded 执行任务并隔离 panic：Task.Run 契约禁止 panic，但执行体来自外部
+// （MCP 工具适配层等）不可全信——panic 转为该任务的 Err，不阻断其余任务、
+// 不击穿进程（与 worker.Pool 的外部代码隔离同纪律；第六轮审计）。
+func runGuarded(ctx context.Context, t *Task) (out string, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("toolsched: 任务 %q 执行体 panic: %v", t.ID, p)
+		}
+	}()
+	return t.Run(ctx)
+}
+
+// run 点火就绪集并等全部收口。
+func (r *runner) run() {
+	r.mu.Lock()
+	for i := range r.tasks {
+		if r.remaining[i] == 0 {
+			r.ready = append(r.ready, i)
 		}
 	}
-	out := make([]Result, len(tasks))
-	for i, t := range tasks {
-		out[i] = results[t.ID]
+	if len(r.ready) == 0 {
+		// 全部有前置却无就绪 = 理论上被 topoSort 拒掉；防御性收口防挂死
+		r.doneOnce.Do(func() { close(r.allDone) })
+	} else {
+		r.launchMore()
 	}
-	return out
+	r.mu.Unlock()
+	<-r.allDone
 }

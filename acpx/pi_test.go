@@ -152,3 +152,28 @@ JSONL`)
 		t.Fatalf("首跑应一次性: %s", raw)
 	}
 }
+
+// TestPiThinkingOnlyFinalMessageIsEmptySuccess 终态只含 thinking 块（推理模型
+// 纯思考收尾/末轮以工具调用结束）：message_end 到达即权威，空文本是合法成功
+// ——不得退回全文兜底把 JSONL 事件流原文当正文返回（第六轮审计 C 级回归）。
+func TestPiThinkingOnlyFinalMessageIsEmptySuccess(t *testing.T) {
+	bin := fakeCLI(t, `cat <<'JSONL'
+{"type":"session","id":"s1"}
+{"type":"message_start","message":{"role":"assistant"}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"纯思考收尾"}]}}
+{"type":"agent_settled"}
+JSONL
+`)
+	p := NewPi()
+	p.Bin = bin
+	res, err := p.Run(context.Background(), RunRequest{Prompt: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Text != "" {
+		t.Fatalf("空文本终态应返回空文本，而非事件流兜底: %q", res.Text)
+	}
+	if res.SessionID != "s1" {
+		t.Fatalf("SessionID = %q（兜底路径保留会话 ID）", res.SessionID)
+	}
+}
