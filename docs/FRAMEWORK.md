@@ -1466,6 +1466,14 @@ flowchart TD
   DiffPath/HunkLines）+ textutil.FirstNonEmpty——收编 argus diffprep/inject
 - **v0.10.39**：工具链三件下沉——workcopy 浅克隆补全 / 确定性 SAST / 配置卫生
   助手（并发会话发布）
+- **v0.11.2（第八轮审计修复轮）**：v0.10.32 以来七轮新增（wrap/codeintel/
+  流式 OnUsage/diffx/sast/pacer）的独立复查——2C+13I+15L。C：wrap FitModel
+  L3 小结果死循环、workcopy deepen 丢自签证书环境、pacer 超帽缓冲滞留。
+  I 择要：wrap 校准改响应直采（并发错位/After 口径/ctx 吞没）；usage 面板
+  补流式时机（开流默认下静默失明）；mcp stdio 生命周期与拨号预算解绑 +
+  cli.Start 双向 handler；sast 脱敏/限容/引用名卫生；codeintel 六处；
+  diffx CRLF；Beta 下限；egress localhost；agentrun 词表锚定；
+  estimateTokens 切 EstTokensCJK
 - **v0.11.0（版本线升版，代码面=v0.10.41）**：0.10.35~41 七轮破坏式变更序列
   按 pre-1.0 semver 约定升 minor 划线——0.10.x 冻结为旧 API 面，0.11.0 起为
   新 API 面（破坏面全景与迁移指引见 CHANGELOG v0.11.0 条目：agentrun RunOption

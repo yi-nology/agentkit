@@ -1,5 +1,67 @@
 # Changelog
 
+## v0.11.2 (2026-10-02)
+
+第八轮审计修复轮：并发会话 v0.10.32 以来新增的七轮代码（wrap/codeintel/
+流式 OnUsage/diffx/sast/pacer 等）此前未经独立审查——本轮 6 面 code-reviewer
+并行复查，2C + 13I + 15L，高置信项全部修复并带回归。
+
+### Fixed（第八轮审计）
+
+Critical：
+
+- **llm/wrap**：FitModel L3 零进展死循环——被截工具结果 ≤ 占位符长度时置换后
+  不缩反涨，循环挂死 100% CPU（数百轮 "OK" 级小结果 + 长正文即触发）；
+  「置换后必须变小」守卫统一 rune 口径（L1 的字节/rune 混用一并修）。
+- **workcopy**：deepen fetch 丢 GIT_SSL_NO_VERIFY——自签 https 平台的
+  clone/PR fetch 成功而补全 fetch 确定性失败、静默丢 range 审查；新增
+  `EnsureMergeBaseTLS`（insecureTLS 形态，原签名保留）。
+- **pacer**：超帽后迟到分片仍无限滞留缓冲（深度思考尾部数百 KB 内存 +
+  O(n²) 拼接拖停 drain 循环）——超帽检测前移至累加前，新增 `Buffered()`
+  观测面；「字符窗」语义如实钉为字节口径。
+
+Important（择要）：
+
+- **llm/wrap**：校准配对三处——usage 与实发 rune 数改**响应直采**（Generate
+  返回值/Stream 包装流末帧 usage，同调用原子配对，消灭全局单槽并发错位）；
+  配对量 Before→After（拟合后实发）；`RecordUsage` 降级为单 goroutine 手工
+  兜底。ContinueModel 不再吞 ctx 取消（腰斩输出不再被当正常完成品）。
+- **llm**：`NewUsageHandler` 补流式时机（OnEndWithStreamOutput，eino 官方
+  推荐位）——开流默认下（v0.10.32 起）仅注册 OnEnd 的用量面板一条记录都
+  不产生、静默失明；流式分支消费 handler 副本流取末帧汇总。agentrun 的
+  Config.OnUsage 与本面板择一装配（无共享防重标记）。
+- **mcp**：stdio 连接生命周期与拨号预算彻底解绑——transport 存活期 ctx 此前
+  绑在 dialAndRegister 的 cctx 上（返回即 cancel），带外 server→client 请求
+  （elicitation/sampling）全灭；且池从未调 cli.Start 注册双向 handler。现
+  NewPool 建池级 baseCtx（Close 收口）+ dial/Start 走 baseCtx + cli.Start
+  注册 handler（幂等）。
+- **sast**：semgrep `extra.message` 可内插仓库原文（secrets 规则集即命中密钥
+  片段）——Comment 统一过 logredact.Redact；gitleaks 报告文件旁路 stdout
+  限容——回读设 8MB LimitReader 同口径；baseRef 引用名卫生（拒空白/控制
+  字符/- 前缀，防 --log-opts 空格切分注入面）；FocusPaths 按路径段判 ..
+  （`v1..v2.go` 不再误伤）。
+- **codeintel**：GoCallers 正则缓存 LoadOrStore 参数急切求值（每次调用白付
+  一次编译、按名无界累积）→ Load 命中才复用；Python `async def` 全漏采；
+  Doc 提取无条件取首个非空行（"pass" 级正文/多行参数表参数名被当文档）→
+  仅三引号/注释形态提取；根路径错误静默返回空索引（Go/poly 两侧上抛）；
+  buildRefs 去 重 map-of-maps + 每 token 字符串拼接 → name→line 单层 map；
+  scanPy/scanJS 语言分派反转（py 正则此前跑在 js 文件上）；文件封顶
+  SkipDir→SkipAll；TouchedByLines 输出排序确定化。
+- **diffx**：CRLF diff 路径残留 `\r`（map 查询按真实路径必落空=整块静默
+  丢失）——stripTab 统一 TrimSuffix。
+- **reportutil**：BetaConfidence restore 下限钳 1→2（先验）——超量 restore
+  进参可越过先验置信度，「不可洗白」不闭合；hexRe 误杀纯 a-f 英文词
+  （decade/facade 归一同键）→ ≥8 位且含数字位才剥。
+- **egress**：AllowLoopback 补 localhost 域形态（探测本机自建服务的最典型
+  URL 此前仍被拒）。
+- **agentrun**：事件词表钉住「调用轮 text_delta 以 tool_call 为吸收锚、拼
+  接口径=各轮窗口正文按序拼接」契约（此前「拼接恰为终稿」与调用轮前导
+  正文外发矛盾，无吸收锚的增量会污染终稿渲染）；DisableStreaming 旁路补
+  回归覆盖。
+- **llm/textutil**：estimateTokens 切换 `EstTokensCJK`（v0.10.40 的纯
+  rune/3 口径对中文低估约 3 倍——CJK 计 2 单位、units/3+1）；EstTokensCJK
+  补部首/CJK 笔画/竖排/兼容/小形式变体漏段。
+
 ## v0.11.1 (2026-10-02)
 
 扁鹊下沉轮：流式节拍/出口围栏参数化/文本分片三面收编 bianque 手写实现。
