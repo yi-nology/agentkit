@@ -119,6 +119,7 @@
 | `obsx` | eino callbacks 追踪（结构化日志 + 真实 usage 回流） | eino, ekit | v0.4.0 |
 | `langfuse` | Langfuse Public API 只读客户端（FetchBatch 分页/GetTrace/Query 选择口径 + Trace/Observation 契约，UsageTokens/UsageCost 新旧口径兜底） | 无 | v0.10.0 |
 | `reportutil` | 评审/评测报告后处理：严重度归一 + best-of-N 聚簇 + Wilson/McNemar 统计 + 模式键/Beta 置信度 | 无 | v0.10.11（三包合并）；v0.10.33（pattern 收编 argus） |
+| `diffx` | unified diff 结构解析（切块/路径/hunk 区间）；纯函数零依赖 | 无 | v0.10.37（收编 argus diffprep/inject） |
 | `codeintel` | 轻量代码符号索引：Go AST 符号图（定义/出现/调用形态）+ 多语言词法符号表；只读并发安全 | 无 | v0.10.34（收编 argus codegraph） |
 | `llm/wrap` | eino BaseChatModel 装饰器集：FitModel 三级窗口拟合+真实 usage 校准 / ContinueModel 截断续写 / RateModel 限速；WithTools 绑定透传可组合 | 无 | v0.10.33（收编 argus ctxfit/ctxcontinue/ctxrate） |
 | `audit` | 审计日志 | ekit | v0.1.0 |

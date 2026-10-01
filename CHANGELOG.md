@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.10.37 (2026-10-01)
+
+diffx unified diff 解析纯函数（新包）+ textutil.FirstNonEmpty——收编自 argus。
+
+### Added
+
+- **diffx（新包）**：git 风格 unified diff 的结构性解析——`SplitChunks`
+  （保序切块，同路径后者覆盖等确定性语义可用）/`SplitUnifiedDiff`
+  （path→完整块，保留 "diff --git " 前缀）/`DiffPath`（+++ b/<path> 为准，
+  删除文件回退 --- a/<path>，行尾制表符附加信息剥除）/`HunkLines`
+  （hunk 新行闭区间，纯删除块不计；LineRange=[2]int 别名嵌入方签名零改动）。
+  纯函数零依赖；语义级 diff 归 go-git-platform 侧，本包只管结构标记。
+- **textutil**：`FirstNonEmpty(vals ...string)`——多候选回退语义单源。
+
+收编来源：argus internal/context/diffprep（parseDiffByFile/rawDiffPath）与
+internal/runner/inject（parseHunkLines）、runner+requirement 两处
+firstNonEmpty；argus 侧保留 API 门面。
+
 ## v0.10.36 (2026-10-01)
 
 mcp stdio 子进程与拨号预算层解绑 + agentrun 流式用量回调。
