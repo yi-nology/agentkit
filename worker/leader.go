@@ -78,7 +78,7 @@ func NewLeaderElector(store LeaseStore, key, holder string, ttl, interval time.D
 		holder:   holder,
 		ttl:      ttl,
 		interval: interval,
-		log:      logx.NewSlogLogger("agentkit-leader"),
+		log:      logx.Delegating("agentkit-leader"),
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
 	}
@@ -96,7 +96,9 @@ func (e *LeaderElector) Start(ctx context.Context) {
 		// started 同步置位（在拉起 goroutine 之前）：Stop 若在 goroutine 尚未
 		// 跑到 Store(true) 时读到 false 会直接返回，既不等待也不让位，租约泄漏。
 		e.started.Store(true)
-		async.GoSafe(func() {
+		// GoWithContext（ekit v0.29 补齐的携带 ctx 安全 goroutine）：tick 与
+		// select 消费同一个显式传入的 ctx
+		async.GoWithContext(ctx, func(ctx context.Context) {
 			defer close(e.done)
 			defer e.started.Store(false)
 			ticker := time.NewTicker(e.interval)

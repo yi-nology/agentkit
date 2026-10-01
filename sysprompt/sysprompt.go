@@ -24,6 +24,7 @@ package sysprompt
 import (
 	"context"
 	"fmt"
+	"git.enjoye.top/enjoydream/ekit/concurrency/async"
 	"os"
 	"runtime"
 	"strings"
@@ -317,7 +318,9 @@ func DetectEnv(ctx context.Context, dir string) (EnvInfo, *GitInfo, error) {
 func collectEnvRaw(ctx context.Context, dir string) envRaw {
 	var raw envRaw
 	var wg sync.WaitGroup
-	run := func(fn func()) { wg.Add(1); go func() { defer wg.Done(); fn() }() }
+	// async.GoSafe：采集 fn 含 procx 子进程与外部 provider 回调——panic 隔离
+	// 后 wg.Done 照常执行，采集组仍可收口（ekit 裸 go 收编纪律）
+	run := func(fn func()) { wg.Add(1); async.GoSafe(func() { defer wg.Done(); fn() }) }
 
 	run(func() { raw.isGit, _ = gitOut(ctx, dir, "rev-parse", "--is-inside-work-tree") })
 	if runtime.GOOS != "windows" {

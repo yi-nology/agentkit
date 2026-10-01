@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"git.enjoye.top/enjoydream/ekit/concurrency/async"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
@@ -159,7 +160,9 @@ func (p *Pool) StartIdleReaper(interval, maxIdle time.Duration) {
 	p.reapStop = make(chan struct{})
 	stop := p.reapStop
 	p.mu.Unlock()
-	go func() {
+	// async.GoSafe：回收协程静默 panic 死亡 = 闲置回收从此失效且无任何信号
+	//（ekit 裸 go 收编纪律）
+	async.GoSafe(func() {
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {
@@ -170,7 +173,7 @@ func (p *Pool) StartIdleReaper(interval, maxIdle time.Duration) {
 				p.ReapIdle(maxIdle)
 			}
 		}
-	}()
+	})
 }
 
 // touch 记录 server 连接最近使用时刻。

@@ -25,6 +25,7 @@ package toolsched
 import (
 	"context"
 	"fmt"
+	"git.enjoye.top/enjoydream/ekit/concurrency/async"
 	"sync"
 )
 
@@ -364,7 +365,7 @@ func (r *runner) launchMore() {
 			if !r.items[i].CanRunParallel || r.tasks[i].StopAfter {
 				r.ready = append(r.ready[:k], r.ready[k+1:]...)
 				r.inFlight++
-				go r.runOne(i)
+				async.GoSafe(func() { r.runOne(i) })
 				return
 			}
 		}
@@ -373,7 +374,9 @@ func (r *runner) launchMore() {
 		i := r.ready[0]
 		r.ready = r.ready[1:]
 		r.inFlight++
-		go r.runOne(i) // 停轮/取消路径由 runOne 记 Skipped，保证依赖链能收口
+		// runGuarded 已隔离任务执行体 panic；GoSafe 是外层兜底（runner 记账
+		// 逻辑自身的 bug 不打死进程——依赖链推进在 defer 内仍会执行）
+		async.GoSafe(func() { r.runOne(i) }) // 停轮/取消路径由 runOne 记 Skipped，保证依赖链能收口
 	}
 }
 

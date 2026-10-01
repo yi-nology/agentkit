@@ -7,9 +7,8 @@ package skill
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
+	"git.enjoye.top/enjoydream/ekit/pkg/encoding"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,9 +37,10 @@ type Skill struct {
 }
 
 // contentChecksum canonical 校验和（sha256 hex 前 16 位），两个 Provider 共用单源。
+// 哈希经 ekit pkg/encoding 单源（v0.31：弱哈希入口已在该包治理移除，本函数
+// 只取前 16 hex 的截断口径）。
 func contentChecksum(body string) string {
-	sum := sha256.Sum256([]byte(body))
-	return hex.EncodeToString(sum[:])[:16]
+	return encoding.Sha256(body)[:16]
 }
 
 // Meta skill 元数据（不含正文——渐进披露：提示词只注入这一层）。

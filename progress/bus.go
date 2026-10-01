@@ -71,7 +71,7 @@ func (b *Bus[T]) Subscribe(ctx context.Context) (<-chan T, func()) {
 		delete(b.subs, ch)
 		b.mu.Unlock()
 	}
-	async.GoSafe(func() {
+	async.GoWithContext(ctx, func(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			unsubscribe()

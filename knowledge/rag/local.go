@@ -19,6 +19,11 @@ import (
 	"git.enjoye.top/enjoydream/ekit/observability/logx"
 )
 
+// ragLog 包级组件 logger（ekit v0.31 Delegating 纪律：包归属用 component 属性
+// 标识、懒解析到 logx.Default()——消费方可 SetDefault 统一接管级别/后端；
+// 此前每次告警现场 NewSlogLogger 构造独立后端）。
+var ragLog = logx.Delegating("agentkit-rag")
+
 const (
 	defaultTopK      = 5
 	chunkTargetRunes = 600
@@ -162,7 +167,7 @@ func (l *Local) AsTool() tool.BaseTool {
 // 知识库"消失"且无任何信号。
 func (l *Local) Rescan() {
 	if _, err := os.Stat(l.dir); err != nil {
-		logx.NewSlogLogger("agentkit-rag").Warn("agentkit.rag.rescan_root_missing", "dir", l.dir, "error", err.Error())
+		ragLog.Warn("agentkit.rag.rescan_root_missing", "dir", l.dir, "error", err.Error())
 		return
 	}
 	l.mu.Lock()
@@ -200,7 +205,7 @@ func (l *Local) scanMarkdown() (index []indexedChunk, df map[string]int, walkErr
 			if walkErr == nil {
 				walkErr = err
 			}
-			logx.NewSlogLogger("agentkit-rag").Warn("agentkit.rag.rescan_entry_error", "path", path, "error", err.Error())
+			ragLog.Warn("agentkit.rag.rescan_entry_error", "path", path, "error", err.Error())
 			return nil
 		}
 		if d.IsDir() || !strings.HasSuffix(path, ".md") {

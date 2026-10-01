@@ -5,8 +5,7 @@
 package reportutil
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"git.enjoye.top/enjoydream/ekit/pkg/encoding"
 	"regexp"
 	"strings"
 
@@ -58,8 +57,7 @@ func PatternKey(pluginName, comment string) string {
 		pluginName = "unknown"
 	}
 	norm := NormalizePatternText(comment)
-	sum := sha256.Sum256([]byte(pluginName + "\x00" + norm))
-	return hex.EncodeToString(sum[:])[:16]
+	return encoding.Sha256(pluginName + "\x00" + norm)[:16]
 }
 
 // PatternSample 返回入库的人读样本（规范化后截断），便于审计与提示词注入展示。

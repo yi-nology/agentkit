@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"git.enjoye.top/enjoydream/ekit/concurrency/async"
 	"io"
 	"os"
 	"os/exec"
@@ -138,10 +139,10 @@ func startAndWait(cmd *exec.Cmd, stdin []byte, pgidKill func(syscall.Signal) err
 	if stdinPipe != nil {
 		// 异步写：子进程不读 stdin 且长寿时，同步 Write 会满管道阻塞到超时才进
 		// Wait，错误分类被拖死。进程退出/被杀后 Write 得 EPIPE 自然收口。
-		go func(pipe io.WriteCloser, payload []byte) {
-			_, _ = pipe.Write(payload)
-			_ = pipe.Close()
-		}(stdinPipe, stdin)
+		async.GoSafe(func() {
+			_, _ = stdinPipe.Write(stdin)
+			_ = stdinPipe.Close()
+		})
 	}
 	waitErr = cmd.Wait()
 	if waitErr != nil {

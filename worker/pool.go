@@ -58,7 +58,7 @@ type Pool struct {
 
 func (p *Pool) logger() logx.Logger {
 	if p.Log == nil {
-		return logx.NewSlogLogger("agentkit-worker")
+		return logx.Delegating("agentkit-worker")
 	}
 	return p.Log
 }
@@ -93,9 +93,9 @@ func (p *Pool) Start(ctx context.Context) {
 	})
 	// 心跳独立等待：Stop 在任务排空后才停心跳（在途任务的心跳不能先死），
 	// 故不与 worker 同 wg——done 关闭不依赖心跳退出
-	async.GoSafe(func() {
+	async.GoWithContext(p.hbCtx, func(ctx context.Context) {
 		defer close(p.hbDone)
-		p.heartbeatLoop(p.hbCtx)
+		p.heartbeatLoop(ctx)
 	})
 	p.mu.Unlock()
 	p.logger().Info("agentkit.worker.started", "workers", p.N)
@@ -115,8 +115,10 @@ func (p *Pool) heartbeatLoop(ctx context.Context) {
 			// 对端复位重跑（静默双跑），故与 claim/run 同等隔离
 			var wg sync.WaitGroup
 			wg.Add(2)
-			go func() { defer wg.Done(); p.heartbeat() }()
-			go func() { defer wg.Done(); p.resetStale() }()
+			// 心跳探测 goroutine 与 claim/run 同等 panic 隔离（ekit async 收编
+			// 裸 go 的治理纪律——探测死一个不能打死本实例全部心跳）
+			async.GoSafe(func() { defer wg.Done(); p.heartbeat() })
+			async.GoSafe(func() { defer wg.Done(); p.resetStale() })
 			wg.Wait()
 		}
 	}

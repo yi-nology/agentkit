@@ -23,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"git.enjoye.top/enjoydream/ekit/concurrency/async"
 	"os/exec"
 	"sort"
 	"strings"
@@ -242,8 +243,11 @@ func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) (ToolsResult, error)
 	var wg sync.WaitGroup
 	for i := range specs {
 		wg.Add(1)
-		go func(i int) {
+		// async.GoSafe：fanout 体跑 dial/Initialize/SDK 解析——外部 SDK panic
+		// 不得打死进程（ekit 裸 go 收编纪律）
+		async.GoSafe(func() {
 			defer wg.Done()
+			i := i
 			tools, err := p.toolsForSpec(ctx, cfgs[i], specs[i])
 			if err != nil {
 				if client.IsOAuthAuthorizationRequiredError(err) {
@@ -268,7 +272,7 @@ func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) (ToolsResult, error)
 				return // 失败已在 toolsForSpec 内经 OnError 发射、连接已摘除
 			}
 			results[i] = tools
-		}(i)
+		})
 	}
 	wg.Wait()
 	if oauthErr != nil {
