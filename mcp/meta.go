@@ -36,3 +36,20 @@ func (c *metaClient) CallTool(ctx context.Context, req mcp.CallToolRequest) (*mc
 }
 
 var _ client.MCPClient = (*metaClient)(nil)
+
+// callMetaKey 任务级调用元数据的 ctx 键（包级单键；与 metaClient 配套的
+// 装配方标准实现——此前 argus/bianque 各写一份同型键）。
+type callMetaKey struct{}
+
+// WithCallMeta 在 ctx 上注入任务级调用元数据（Runner/任务层调用一次，随 ctx
+// 流入该任务全部 MCP 工具调用）。
+func WithCallMeta(ctx context.Context, meta map[string]any) context.Context {
+	return context.WithValue(ctx, callMetaKey{}, meta)
+}
+
+// CallMeta 从 ctx 取调用元数据；无注入返回 nil（metaClient 对空不注入 _meta）。
+// 返回值可直接作 Pool.RequestMeta：pool.RequestMeta = mcp.CallMeta。
+func CallMeta(ctx context.Context) map[string]any {
+	meta, _ := ctx.Value(callMetaKey{}).(map[string]any)
+	return meta
+}

@@ -94,6 +94,7 @@ git.enjoye.top/enjoydream/agentkit
 | `procx` | 子进程托管纪律单源（进程组执行/超时整组终止/限容采集/环境白名单） | 无 |
 | `httpx` | HTTP+JSON 调用纪律单源（限容读体 + rune 安全错误摘要） | 无 |
 | `reportutil` | 评审/评测报告后处理（严重度归一 + 采样聚簇 + Wilson/McNemar 统计 + 模式键/Beta） | 无 |
+| `sast` | 确定性 SAST 前置扫描：gitleaks/semgrep 执行+JSON 归一（范围/聚焦扫描、密钥红线、环境白名单） | 无 |
 | `diffx` | unified diff 结构解析：保序切块/path→块/目标路径/hunk 新行区间（纯函数） | 无 |
 | `codeintel` | 轻量代码符号索引：Go AST 定义/引用/调用边 + JS/TS/Python 词法符号表（get_symbol/get_references/get_callers 数据面） | 无 |
 | `llm/wrap` | eino BaseChatModel 装饰器集：窗口拟合（三级拟合+usage 校准）/截断续写/限速，WithTools 透传可组合 | 无 |

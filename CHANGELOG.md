@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.10.39 (2026-10-01)
+
+工具链三件下沉（收编自 argus）：workcopy 浅克隆补全 + sast 确定性扫描新包 + mcp 配置卫生助手。
+
+### Added
+
+- **workcopy**：`EnsureMergeBase(ctx, dir, baseBranch, timeout)`——浅克隆工作
+  副本按需历史补全：先本地探测 merge-base 可达性（零网络），不可达且
+  .git/shallow 存在再 `git fetch --deepen` 指数加深（64 起步 ×2，8 轮覆盖
+  8k+ 提交，时间预算兜底）；refspec 显式全量（--single-branch 克隆下
+  origin/<base> 唯一可靠补全入口）；错误全程 logredact（传输失败回显带凭证
+  clone URL）。收编自 argus internal/gitdeepen（v3.9.3 起生产验证）。
+- **sast（新包）**：确定性 SAST 前置扫描——gitleaks/semgrep 执行+JSON 归一
+  为结构化 `Finding`（与嵌入方契约解耦）：baseRef 非空走
+  origin/<base>..HEAD 范围扫描、semgrep 聚焦变更文件（FocusPaths 防穿越/
+  超限回退全仓）、单工具 findings 封顶留痕、失败置 Err 不中断其它工具。
+  安全纪律：bin 只来自部署方信任源、gitleaks 恒 --redact 且 Secret/Commit
+  绝不进 Finding、子进程环境白名单（EnvAllow）。收编自 argus internal/sastscan
+  （v3.15.0 起 PR 审查生产验证）。
+- **mcp**：`ExpandEnvRefs`/`ExpandEnvRef`——ServerConfig 头部  环境引用
+  展开（token 不落配置文件；未定义保留原样+告警回调）；`WithCallMeta`/
+  `CallMeta`——任务级 _meta 的 ctx 键标准实现（可直接作 Pool.RequestMeta，
+  此前 argus/bianque 各写一份同型键）。
+
 ## v0.10.38 (2026-10-01)
 
 第七轮：重构收口轮——第六轮审计「留观察」的结构性重构清单落地（破坏式）。
