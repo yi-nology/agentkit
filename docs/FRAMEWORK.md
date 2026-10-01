@@ -1466,6 +1466,11 @@ flowchart TD
   DiffPath/HunkLines）+ textutil.FirstNonEmpty——收编 argus diffprep/inject
 - **v0.10.39**：工具链三件下沉——workcopy 浅克隆补全 / 确定性 SAST / 配置卫生
   助手（并发会话发布）
+- **v0.12.0（八轮审计重构落地轮，0.12 线首版）**：wrap 校准注册表整体删除→
+  FitModel 实例内响应直采（RecordUsage API 删除）；codeintel GoCallers 改建
+  索引期 token 对采集（正则/缓存/预筛/扫行四层删除，O(1) 查询）；pacer
+  chars→bytes 更名（字节口径如实）；diffx DiffPath @@ 早断 + quoted path/
+  no-prefix/CRLF 三形态收口（HunkLines 宽松模式取舍声明）
 - **v0.11.2（第八轮审计修复轮）**：v0.10.32 以来七轮新增（wrap/codeintel/
   流式 OnUsage/diffx/sast/pacer）的独立复查——2C+13I+15L。C：wrap FitModel
   L3 小结果死循环、workcopy deepen 丢自签证书环境、pacer 超帽缓冲滞留。

@@ -1,5 +1,44 @@
 # Changelog
 
+## v0.12.0 (2026-10-02)
+
+第八轮审计「重构机会」清单落地（破坏式，0.12 线首版）。
+
+### Changed（破坏式）
+
+- **llm/wrap**：校准注册表整体删除——`RecordUsage` 公开 API 与进程级全局
+  单槽（calibUsage/calibChars）删除，校准内化为 **FitModel 实例槽**：Generate
+  响应/Stream 包装流末帧 usage 与本次实发 rune 数在实例上原子配对（v0.11.2
+  的响应直采方案收口到实例级——不同 Stage/模型装饰互不串槽，同实例并发下
+  last-writer-wins 恒为完整配对）。迁移：原 `wrap.RecordUsage(model, tokens)`
+  调用点直接删除（主路径已自动校准）；需要显式干预的测试用 `FitModel` 的
+  非导出 calibRecord。`FitModel.MaxOutputSize` 字段名顺正为 `MaxOutput`。
+- **codeintel**：GoCallers 从「查询期正则扫全文件」改为**建索引期 token 对
+  采集**——buildRefs 同遍记录 IDENT 紧跟 `(` 的调用位入 `calls` 表，查询 O(1)
+  查表；正则、按名正则缓存、子串预筛、逐行匹配四层全部删除。收益：token
+  扫描无视空白（`Serve (w)` 命中，正则时代漏报）、字符串/注释不产 token
+  （假命中根除）、无缓存泄漏面。
+- **pacer**：`DefaultChars`→`DefaultBytes`、`NewStream(interval, chars, …)`→
+  `NewStream(interval, bytes, …)`、`Stream.chars`→`Stream.bytes`——实现一直是
+  `len(text)` 字节比较，命名与口径对齐（CJK 场景 200 字节≈66 汉字，命名按
+  字符理解会低估节拍密度 3 倍）。
+- **diffx**：`DiffPath` 识别止于首个 `@@`（hunk 体内容行不参与——正文
+  `++ b/x` 加行后即 `+++ b/x` 的歧义形态在单块路径提取上根除）；`headerPath`
+  统一收口三形态：**quoted path**（`+++ b/"a b.go"` C 风格转义——去引号并
+  反转义 \t \" \\ \八进制）、**--no-prefix** 裸路径（无 b/ 侧前缀）、CRLF
+  残留剥除。HunkLines 刻意保持宽松逐行识别（兼容无 diff --git 分隔的拼接/
+  截断形态），残留歧义（hunk 体中恰为完整 `+++ b/x` 形态的内容行会被当新
+  文件头）作为宽松模式的有意取舍在包注释声明。
+
+### 迁移指引
+
+- `wrap.RecordUsage(...)` 调用点删除即可（校准自动）；`FitModel` 字段访问
+  `MaxOutputSize`→`MaxOutput`。
+- `pacer.DefaultChars`→`DefaultBytes`；`NewStream` 第二参数语义不变（字节窗）
+  仅更名。
+- `GoCallers`/`DiffPath`/`HunkLines`/`SplitChunks`/`SplitUnifiedDiff` 签名
+  均不变，行为面只有增强（新形态支持 + 假命中减少）。
+
 ## v0.11.2 (2026-10-02)
 
 第八轮审计修复轮：并发会话 v0.10.32 以来新增的七轮代码（wrap/codeintel/
