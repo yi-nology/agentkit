@@ -118,7 +118,8 @@
 | `httpx` | HTTP+JSON 调用纪律单源：限容读体 + rune 安全错误摘要 + StatusError 类型化与 DoJSONWithRetry 重试骨架（langfuse/rag/websearch 共用） | 无 | v0.10.11 |
 | `obsx` | eino callbacks 追踪（结构化日志 + 真实 usage 回流） | eino, ekit | v0.4.0 |
 | `langfuse` | Langfuse Public API 只读客户端（FetchBatch 分页/GetTrace/Query 选择口径 + Trace/Observation 契约，UsageTokens/UsageCost 新旧口径兜底） | 无 | v0.10.0 |
-| `reportutil` | 评审/评测报告后处理：严重度归一 + best-of-N 聚簇 + Wilson/McNemar 统计 | 无 | v0.10.11（severity/sampling/stats 三包合并） |
+| `reportutil` | 评审/评测报告后处理：严重度归一 + best-of-N 聚簇 + Wilson/McNemar 统计 + 模式键/Beta 置信度 | 无 | v0.10.11（三包合并）；v0.10.33（pattern 收编 argus） |
+| `llm/wrap` | eino BaseChatModel 装饰器集：FitModel 三级窗口拟合+真实 usage 校准 / ContinueModel 截断续写 / RateModel 限速；WithTools 绑定透传可组合 | 无 | v0.10.33（收编 argus ctxfit/ctxcontinue/ctxrate） |
 | `audit` | 审计日志 | ekit | v0.1.0 |
 
 | `fence` | 提示词数据区围栏：不可信内容显式包裹 + 逃逸序列中和（返回中和计数作注入特征信号） | 无 | v0.10.5 |

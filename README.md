@@ -93,7 +93,8 @@ git.enjoye.top/enjoydream/agentkit
 | `jsonrepair` | LLM 宽容 JSON 修复（栅栏/尾逗号/全角/散文包裹 + 标量归一 + ExtractJSON/Unmarshal 解析链） | 无 |
 | `procx` | 子进程托管纪律单源（进程组执行/超时整组终止/限容采集/环境白名单） | 无 |
 | `httpx` | HTTP+JSON 调用纪律单源（限容读体 + rune 安全错误摘要） | 无 |
-| `reportutil` | 评审/评测报告后处理（严重度归一 + 采样聚簇 + Wilson/McNemar 统计） | 无 |
+| `reportutil` | 评审/评测报告后处理（严重度归一 + 采样聚簇 + Wilson/McNemar 统计 + 模式键/Beta） | 无 |
+| `llm/wrap` | eino BaseChatModel 装饰器集：窗口拟合（三级拟合+usage 校准）/截断续写/限速，WithTools 透传可组合 | 无 |
 | `audit` | 审计日志 | ekit |
 | `textutil` | rune 安全截断 + 等分块 + TruncEllipsis + 近重复检测（bigram 集合 + Jaccard） | 无 |
 | `workcopy` | Git 工作副本沙箱（singleflight + 引用计数 + TTL 回收） | ekit, x/sync |

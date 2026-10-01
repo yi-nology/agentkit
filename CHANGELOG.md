@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.10.33 (2026-10-01)
+
+llm/wrap 模型装饰器集（eino BaseChatModel 窗口拟合/截断续写/限速）+ reportutil 模式键/Beta 统计——收编自 argus 生产验证实现。
+
+### Added
+
+- **llm/wrap（新包）**：eino BaseChatModel 装饰器三件，职责正交可组合
+  （推荐 Rate→Fit→Continue），WithTools 均绑定透传再包装——ReAct 绑定后装饰
+  不失效：
+  - **FitModel**：发送前输入自守恒，三级递进（L1 microcompact 工具结果轮次组
+    置换占位/L2 截最长 user TruncNote 留痕/L3 病理态迭代截最大工具结果），
+    错误/提醒结果全级别保护；真实 usage 校准（RecordUsage 回灌配对
+    tokens/char 系数，只紧不松，脏样本 0.02~4 界外不采信）；观测回调
+    OnFit/OnBreakdown（按 role 分桶 rune 量）可 nil。
+  - **ContinueModel**：finish reason=length/max_tokens 且无 tool_calls 时
+    保留部分输出续写 ≤3 轮顺序拼接（拼接补全 JSON 恰是 jsonrepair 前置救济）；
+    续写失败返回已得部分。
+  - **RateModel**：x/time/rate 限速，直调旁路与 Generator 链同桶真全局。
+  与 llm.Client.fitInput 分工：Client 侧服务 Generator 链单级截断，wrap
+  服务直调旁路三级拟合，同进程并存无副作用。
+- **reportutil**：模式级学习环确定性数学与键派生单源——`PatternKey`
+  （sha256(plugin\x00normalize)[:16]，plugin 空落 unknown）、
+  `NormalizePatternText`（小写/剥路径/hex/反引号/数字/折叠，截 160 rune）、
+  `PatternSample`、`BetaConfidence`（Beta 后验：先验 0.5，Posted 抬、
+  Regret/Suppress 压、Restore 只回抬不加正证据——suppress+restore 成对循环
+  不可洗白）、`PatternSamples`。与 WilsonCI/McNemarExact 同族。
+
+收编来源：argus internal/context（ctxfit/ctxcontinue/ctxrate，v3.36.0 起
+生产验证）与 internal/learning；argus 侧保留 API 门面零改动。
+
 ## v0.10.32 (2026-10-01)
 
 agentrun 真流式：ReAct 默认开流，思考/正文增量事件外发。
