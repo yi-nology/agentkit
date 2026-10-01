@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.10.34 (2026-10-01)
+
+codeintel 轻量代码符号索引（Go AST + 多语言词法）——收编自 argus internal/codegraph。
+
+### Added
+
+- **codeintel（新包）**：工作副本目录索引——Go 侧 go/parser+go/scanner 建
+  顶层符号定义表（func/type/var/const，含 receiver/签名片段）与标识符出现
+  反向索引（建索引期一次付清，查询 O(1)）；JS/TS/Python 词法符号表（def/
+  function/const 箭头函数，含参数表与 docstring 首行）；get_callers 词法调用
+  边（pkg.F( 与 F( 形态，定义行不计）。API：`NewIndex(dir, maxFiles)`/
+  `Definitions`/`References`/`GoCallers`/`PolyDefinitions`/`TouchedByLines`/
+  `IndexedFiles`/`SkippedFiles`。只读并发安全；vendor/node_modules/testdata
+  等噪声目录跳过；坏语法文件跳过计数不致命；maxFiles 封顶防超大仓。
+  词法级边界（字符串/注释内命中、动态调用）由工具描述向 agent 声明核实，
+  不做类型解析级调用图。收编自 argus（v3.15.0 起 PR 审查生产验证），
+  argus 侧保留 API 门面。
+
 ## v0.10.33 (2026-10-01)
 
 llm/wrap 模型装饰器集（eino BaseChatModel 窗口拟合/截断续写/限速）+ reportutil 模式键/Beta 统计——收编自 argus 生产验证实现。
