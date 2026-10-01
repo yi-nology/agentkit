@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.10.32 (2026-10-01)
+
+agentrun 真流式：ReAct 默认开流，思考/正文增量事件外发。
+
+### Added
+
+- **agentrun**：`Config.DisableStreaming`（缺省开流）——ADK Runner
+  `EnableStreaming: true`，assistant 流式消息在 `reactHandler` 逐分片消费，
+  新增 `reasoning_delta`/`text_delta` 增量事件（Text=分片非快照）；流收束后
+  concat 成完整消息走既有派发逻辑——tool_calls 派发/终稿判定/最终 text 事件
+  语义不变，消费方零改动兼容（增量是纯增量通道）。携带 tool_calls 分片的
+  正文不外发增量（调用轮片段拼接非可读答复，其前导正文分片仍外发）。
+  消费方节流建议：token 级分片直接落库会洪泛，按时间窗/字符合并后再发。
+
 ## v0.10.31 (2026-09-28)
 
 pi 会话续聊 + 第五轮审计（1 确认 + 1 前四轮漏网绕过）。

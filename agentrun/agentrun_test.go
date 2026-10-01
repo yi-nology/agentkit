@@ -3,8 +3,10 @@ package agentrun
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -44,6 +46,14 @@ func newMockOpenAI(t *testing.T, responses ...mockResponse) (*mockOpenAI, *opena
 			i = len(m.responses) - 1
 		}
 		resp := m.responses[i]
+
+		// 流式请求（EnableStreaming 后 adk 走模型 Stream）：OpenAI SSE chunk 线缆格式——
+		// reasoning/正文拆多片发增量 delta，tool_call 按 id/name 首片 + arguments 片段
+		// 两段式，与真实兼容网关同构。
+		if reqStream(r) {
+			m.writeStreamChunks(w, resp)
+			return
+		}
 
 		msg := map[string]any{"role": "assistant", "content": resp.content}
 		if resp.reasoning != "" {
@@ -86,6 +96,81 @@ func newMockOpenAI(t *testing.T, responses ...mockResponse) (*mockOpenAI, *opena
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// reqStream 判定请求体是否 stream:true（OpenAI 语义）。
+func reqStream(r *http.Request) bool {
+	var body struct {
+		Stream bool `json:"stream"`
+	}
+	_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body)
+	return body.Stream
+}
+
+// sseChunk 一条 OpenAI 流式 chunk 帧（delta+finish_reason）。
+func sseChunk(delta map[string]any, finish any) string {
+	b, _ := json.Marshal(map[string]any{
+		"id": "cmpl-test", "object": "chat.completion.chunk", "created": 1, "model": "mock",
+		"choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finish}},
+	})
+	return "data: " + string(b) + "\n\n"
+}
+
+// writeStreamChunks 把一条响应按 OpenAI 流式协议拆片输出：role 首片 → reasoning 增量
+// → tool_call 两段式（id/name 片 + arguments 片）或正文增量 → 收尾片 → [DONE]。
+func (m *mockOpenAI) writeStreamChunks(w http.ResponseWriter, resp mockResponse) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	fl, _ := w.(http.Flusher)
+	write := func(s string) {
+		_, _ = io.WriteString(w, s)
+		if fl != nil {
+			fl.Flush()
+		}
+	}
+	write(sseChunk(map[string]any{"role": "assistant"}, nil))
+	if resp.reasoning != "" {
+		for _, part := range splitChunks(resp.reasoning, 2) {
+			write(sseChunk(map[string]any{"reasoning_content": part}, nil))
+		}
+	}
+	if resp.toolCall != nil {
+		write(sseChunk(map[string]any{"tool_calls": []any{map[string]any{
+			"index": 0, "id": resp.toolCall.id, "type": "function",
+			"function": map[string]any{"name": resp.toolCall.name, "arguments": ""},
+		}}}, nil))
+		write(sseChunk(map[string]any{"tool_calls": []any{map[string]any{
+			"index": 0,
+			"function": map[string]any{"arguments": resp.toolCall.arguments},
+		}}}, nil))
+		write(sseChunk(map[string]any{}, "tool_calls"))
+	} else {
+		for _, part := range splitChunks(resp.content, 2) {
+			write(sseChunk(map[string]any{"content": part}, nil))
+		}
+		write(sseChunk(map[string]any{}, "stop"))
+	}
+	write("data: [DONE]\n\n")
+}
+
+// splitChunks 把文本按 rune 均分为 n 片（单片至少 1 rune；空串不拆）。
+func splitChunks(s string, n int) []string {
+	if s == "" {
+		return nil
+	}
+	rs := []rune(s)
+	if len(rs) <= n {
+		return []string{s}
+	}
+	size := (len(rs) + n - 1) / n
+	var out []string
+	for i := 0; i < len(rs); i += size {
+		end := i + size
+		if end > len(rs) {
+			end = len(rs)
+		}
+		out = append(out, string(rs[i:end]))
+	}
+	return out
 }
 
 // newEchoTool 测试工具：回显输入文本。
@@ -152,6 +237,76 @@ func TestRunReActLoopWithToolCall(t *testing.T) {
 	}
 }
 
+// TestRunStreamingDeltas 流式增量通道语义（默认开流）：思考/正文逐分片先于权威快照
+// 到达；分片拼接 = 快照全文；调用轮（含 tool_calls 分片）不外发正文增量——其前导正文
+// 分片（无 tool_calls 的 chunk）仍外发；权威事件序列与关流时一致。
+func TestRunStreamingDeltas(t *testing.T) {
+	_, cm := newMockOpenAI(t,
+		mockResponse{reasoning: "先想清楚再动手", toolCall: &mockToolCall{id: "c1", name: "echo", arguments: `{"text":"hi"}`}},
+		mockResponse{content: "最终结论"},
+	)
+
+	var events []Event
+	out, err := RunWithEvents(context.Background(), Config{
+		Name: "test", Instruction: "inst", Model: cm,
+		Tools: []tool.BaseTool{newEchoTool(t)},
+	}, "调用工具", func(e Event) { events = append(events, e) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "最终结论" {
+		t.Fatalf("out = %q", out)
+	}
+
+	// 思考增量：全部先于权威 reasoning；拼接 = 快照全文。
+	var rDelta, tDelta strings.Builder
+	authorityIdx := map[string]int{}
+	for i, e := range events {
+		switch e.Type {
+		case EventReasoningDelta:
+			if _, ok := authorityIdx[EventReasoning]; ok {
+				t.Fatalf("reasoning_delta 出现在权威 reasoning 之后：%+v", events[:i+1])
+			}
+			rDelta.WriteString(e.Text)
+		case EventReasoning:
+			authorityIdx[EventReasoning] = i
+			if rDelta.String() != e.Text {
+				t.Fatalf("思考分片拼接 %q ≠ 快照 %q", rDelta.String(), e.Text)
+			}
+		case EventTextDelta:
+			if _, ok := authorityIdx[EventText]; ok {
+				t.Fatalf("text_delta 出现在权威 text 之后：%+v", events[:i+1])
+			}
+			tDelta.WriteString(e.Text)
+		case EventText:
+			authorityIdx[EventText] = i
+			if tDelta.String() != e.Text {
+				t.Fatalf("正文分片拼接 %q ≠ 快照 %q", tDelta.String(), e.Text)
+			}
+		}
+	}
+	if len(authorityIdx) != 2 {
+		t.Fatalf("应各有一条权威 reasoning/text：%+v", events)
+	}
+	// 调用轮不外发正文增量（reasoning 增量可以有）：全部 text_delta 拼接恰为终稿。
+	if tDelta.String() != "最终结论" {
+		t.Fatalf("正文增量应为终稿全文（调用轮不夹带）：%q", tDelta.String())
+	}
+	// 增量确实在流动：至少 2 片 reasoning_delta（mock 按 2 片拆分）。
+	if n := strings.Count(eventsString(events), "reasoning_delta"); n < 2 {
+		t.Fatalf("reasoning_delta 应 ≥2 片，实得 %d：%+v", n, events)
+	}
+}
+
+func eventsString(events []Event) string {
+	var b strings.Builder
+	for _, e := range events {
+		b.WriteString(e.Type)
+		b.WriteByte(',')
+	}
+	return b.String()
+}
+
 func TestRunEventsReasoningAndToolCallArgs(t *testing.T) {
 	// 回归：推理型模型的 reasoning_content 要以 reasoning 事件先行外发；
 	// tool_call 事件携带原始 JSON 参数串（观测面需要看到调用命令）
@@ -167,7 +322,12 @@ func TestRunEventsReasoningAndToolCallArgs(t *testing.T) {
 	out, err := RunWithEvents(context.Background(), Config{
 		Name: "test", Instruction: "inst", Model: cm,
 		Tools: []tool.BaseTool{newEchoTool(t)},
-	}, "调用工具", func(e Event) { events = append(events, e) })
+	}, "调用工具", func(e Event) {
+		if e.Type == EventReasoningDelta || e.Type == EventTextDelta {
+			return // 流式增量通道：本测试只对账权威事件（增量语义由 TestRunStreamingDeltas 专测）
+		}
+		events = append(events, e)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -19,6 +19,7 @@ package agentrun
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -58,12 +59,16 @@ type Config struct {
 	// 首轮调过变更类工具后失败不再重跑——重复副作用风险，如实上抛交调用方降级）。
 	// 只读/幂等工具场景可置 true 恢复无条件重试。
 	RetryAfterMutation bool
+	// DisableStreaming 关闭流式（默认 false=开）：开流时思考/正文以 *_delta 增量事件
+	// 外发（真流式观测面），每轮收流后仍按完整消息走既有派发与终稿判定——消费方
+	// 语义不变，只多出增量通道。模型/网关不兼容流式时的逃生开关。
+	DisableStreaming bool
 }
 
 // Event agent 运行过程事件（OnEvent 回调载荷，观测/进度展示用）。
 type Event struct {
-	Type   string // reasoning | text | tool_call | tool_result
-	Text   string
+	Type   string // reasoning | reasoning_delta | text | text_delta | tool_call | tool_result
+	Text   string // *_delta 时为增量分片（非累积快照）
 	Tool   string // tool_call/tool_result 的工具名
 	Args   string // tool_call 的 JSON 参数串
 	CallID string // tool_call/tool_result 的原生调用 ID（声明 tc.ID / 结果 ToolCallID）——观测面精确配对依据
@@ -72,11 +77,17 @@ type Event struct {
 // 事件类型词表。
 // 注意与 acpx 包事件词表（text/tool_call/tool_result）互为平行词汇：
 // 两侧有意保持同名字面量以便消费方对译；改动任一侧词表时同步检查另一侧。
+//
+// 流式语义（默认开流）：reasoning_delta/text_delta 在生成过程中逐分片到达
+// （真流式），同轮收束后仍发完整 reasoning/text 快照（权威口径，回放/对账以它为
+// 准；增量只服务实况渲染）。消费方以「同轮快照到达即吸收增量缓冲」去重。
 const (
-	EventReasoning  = "reasoning"
-	EventText       = "text"
-	EventToolCall   = "tool_call"
-	EventToolResult = "tool_result"
+	EventReasoning       = "reasoning"
+	EventText            = "text"
+	EventToolCall        = "tool_call"
+	EventToolResult      = "tool_result"
+	EventReasoningDelta  = "reasoning_delta"
+	EventTextDelta       = "text_delta"
 )
 
 // Validate 校验配置必需项。
@@ -178,60 +189,123 @@ func run(ctx context.Context, cfg Config, query string, onEvent func(Event)) (st
 	if err != nil {
 		return "", fmt.Errorf("agentrun: 构造 agent 失败: %w", err)
 	}
-	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent, EnableStreaming: false})
+	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent, EnableStreaming: !cfg.DisableStreaming})
 	iter := runner.Query(ctx, query)
 
-	var (
-		finalText  string
-		sawFinal   bool
-		toolCalled = map[string]string{} // tool_call id → 工具名（回填 tool_result 事件）
-	)
-	err = drainEvents(iter, "agent", func(mv *adk.MessageVariant) error {
-		if mv.Message != nil {
-			for _, tc := range mv.Message.ToolCalls {
-				toolCalled[tc.ID] = tc.Function.Name
-			}
-		}
-		// 工具结果消息：回填 tool_result 事件（观测/进度展示需要工具返回）
-		if onEvent != nil && mv.Role == schema.Tool && mv.Message != nil {
-			name := toolCalled[mv.Message.ToolCallID]
-			onEvent(Event{Type: EventToolResult, CallID: mv.Message.ToolCallID, Tool: name, Text: mv.Message.Content})
-			return nil
-		}
-		if mv.Role == schema.Assistant && mv.Message != nil {
-			// 思考过程先于动作/答复（同一 assistant 消息内 reasoning_content 先产出）
-			if onEvent != nil && mv.Message.ReasoningContent != "" {
-				onEvent(Event{Type: EventReasoning, Text: mv.Message.ReasoningContent})
-			}
-			// ReAct 出口判定：assistant 且无 tool_calls 即最终答复——
-			// 空内容也记录（部分推理型模型会有空最终消息），错误文案区分"空答复"与"没答复"
-			if len(mv.Message.ToolCalls) == 0 {
-				sawFinal = true
-				finalText = mv.Message.Content
-				if onEvent != nil && finalText != "" {
-					onEvent(Event{Type: EventText, Text: finalText})
-				}
-				return nil
-			}
-			// 中间过程：tool_calls 声明 → 工具调用事件（含参数与原生 ID，观测面需要看到调用命令并精确配对）
-			if onEvent != nil {
-				for _, tc := range mv.Message.ToolCalls {
-					onEvent(Event{Type: EventToolCall, CallID: tc.ID, Tool: tc.Function.Name, Args: tc.Function.Arguments})
-				}
-			}
-		}
-		return nil
-	})
+	h := &reactHandler{onEvent: onEvent, toolCalled: map[string]string{}}
+	err = drainEvents(iter, "agent", h.handle)
 	if err != nil {
 		return "", err
 	}
-	if !sawFinal {
+	if !h.sawFinal {
 		return "", fmt.Errorf("agentrun: agent 未产出最终文本（iterations=%d）", cfg.maxIterations())
 	}
-	if strings.TrimSpace(finalText) == "" {
+	if strings.TrimSpace(h.finalText) == "" {
 		return "", fmt.Errorf("agentrun: agent 最终答复为空（iterations=%d）", cfg.maxIterations())
 	}
-	return finalText, nil
+	return h.finalText, nil
+}
+
+// reactHandler ReAct 事件流消费：工具声明/结果/思考/最终答复分路派发。
+type reactHandler struct {
+	onEvent   func(Event)
+	toolCalled map[string]string // tool_call id → 工具名（回填 tool_result）
+	finalText string
+	sawFinal  bool
+}
+
+func (h *reactHandler) handle(mv *adk.MessageVariant) error {
+	if mv == nil {
+		return nil
+	}
+	// 流式消息：先消费分片流发增量事件（真流式观测面），收流后以完整消息走下方
+	// 既有派发逻辑——tool_calls 派发/终稿判定/最终文本事件语义与关流时完全一致。
+	if mv.IsStreaming && mv.MessageStream != nil {
+		full, err := h.streamDeltas(mv)
+		if err != nil {
+			return err
+		}
+		mv.Message = full
+		mv.IsStreaming = false
+		mv.MessageStream = nil
+	}
+	if mv.Message == nil {
+		return nil
+	}
+	for _, tc := range mv.Message.ToolCalls {
+		h.toolCalled[tc.ID] = tc.Function.Name
+	}
+	// 工具结果消息：回填 tool_result 事件（观测/进度展示需要工具返回）
+	if mv.Role == schema.Tool {
+		if h.onEvent != nil {
+			h.onEvent(Event{Type: EventToolResult, CallID: mv.Message.ToolCallID,
+				Tool: h.toolCalled[mv.Message.ToolCallID], Text: mv.Message.Content})
+		}
+		return nil
+	}
+	if mv.Role != schema.Assistant {
+		return nil
+	}
+	// 思考过程先于动作/答复（同一 assistant 消息内 reasoning_content 先产出）
+	if h.onEvent != nil && mv.Message.ReasoningContent != "" {
+		h.onEvent(Event{Type: EventReasoning, Text: mv.Message.ReasoningContent})
+	}
+	// ReAct 出口判定：assistant 且无 tool_calls 即最终答复——
+	// 空内容也记录（部分推理型模型会有空最终消息），错误文案区分"空答复"与"没答复"
+	if len(mv.Message.ToolCalls) == 0 {
+		h.sawFinal = true
+		h.finalText = mv.Message.Content
+		if h.onEvent != nil && h.finalText != "" {
+			h.onEvent(Event{Type: EventText, Text: h.finalText})
+		}
+		return nil
+	}
+	// 中间过程：tool_calls 声明 → 工具调用事件（含参数与原生 ID，观测面需要看到调用命令并精确配对）
+	if h.onEvent != nil {
+		for _, tc := range mv.Message.ToolCalls {
+			h.onEvent(Event{Type: EventToolCall, CallID: tc.ID, Tool: tc.Function.Name, Args: tc.Function.Arguments})
+		}
+	}
+	return nil
+}
+
+// streamDeltas 消费流式消息：assistant 的思考/正文以 *_delta 增量事件逐分片外发；
+// 携带 tool_calls 分片的正文不外发（那是调用轮的片段拼接，非可读答复；其前导正文
+// 分片不携带 tool_calls，会先行外发）。tool 角色结果流不外发增量，静默收流。
+// 返回 concat 后的完整消息，交回既有完整消息逻辑。
+func (h *reactHandler) streamDeltas(mv *adk.MessageVariant) (*schema.Message, error) {
+	var chunks []*schema.Message
+	for {
+		chunk, err := mv.MessageStream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			mv.MessageStream.Close()
+			return nil, fmt.Errorf("agentrun: 流式消息接收失败: %w", err)
+		}
+		if chunk == nil {
+			continue
+		}
+		chunks = append(chunks, chunk)
+		if h.onEvent == nil || mv.Role != schema.Assistant {
+			continue
+		}
+		if chunk.ReasoningContent != "" {
+			h.onEvent(Event{Type: EventReasoningDelta, Text: chunk.ReasoningContent})
+		}
+		if chunk.Content != "" && len(chunk.ToolCalls) == 0 {
+			h.onEvent(Event{Type: EventTextDelta, Text: chunk.Content})
+		}
+	}
+	if len(chunks) == 0 {
+		return &schema.Message{Role: mv.Role}, nil
+	}
+	full, err := schema.ConcatMessages(chunks)
+	if err != nil {
+		return nil, fmt.Errorf("agentrun: 流式消息合并失败: %w", err)
+	}
+	return full, nil
 }
 
 // drainEvents ADK 事件流消费骨架（run 与 PlanAndExecute 共用）：迭代 → 空事件跳过 →
