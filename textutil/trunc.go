@@ -2,6 +2,7 @@
 package textutil
 
 import (
+	"unicode"
 	"unicode/utf8"
 
 	"git.enjoye.top/enjoydream/ekit/pkg/stringx"
@@ -26,6 +27,35 @@ func EstTokens(runes int) int {
 		return 0
 	}
 	return (runes + TokenCharDivisor - 1) / TokenCharDivisor
+}
+
+// EstTokensCJK CJK 感知的 token 估算：Han/Hangul/Kana/全角形式计 2 单位，
+// 其余计 1，tokens ≈ units/3 + 1（非空下限 1）。纯 rune 计数口径对中文系统性
+// 低估（经验上中文 ≈ 1 字 0.67 token、英文 ≈ 4 字符 1 token）——中文为主的
+// 文本（提示词/会话历史/报告）用本函数；精确计量仍归 provider usage 回传。
+func EstTokensCJK(s string) int {
+	if s == "" {
+		return 0
+	}
+	units := 0
+	for _, r := range s {
+		if runeUnitsCJK(r) == 2 {
+			units += 2
+		} else {
+			units++
+		}
+	}
+	return units/3 + 1
+}
+
+func runeUnitsCJK(r rune) int {
+	if unicode.Is(unicode.Han, r) || unicode.Is(unicode.Hangul, r) ||
+		unicode.Is(unicode.Hiragana, r) || unicode.Is(unicode.Katakana, r) ||
+		(r >= 0x3000 && r <= 0x303F) || // CJK 标点
+		(r >= 0xFF00 && r <= 0xFFEF) { // 全角形式
+		return 2
+	}
+	return 1
 }
 
 // SplitRunes 按 rune 等分为 ≤n 字符的块（最后一块可不足）。

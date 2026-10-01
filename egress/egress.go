@@ -46,9 +46,39 @@ func Check(rawURL string) error {
 	return CheckHost(u.Hostname())
 }
 
+// Options IP 策略放行开关（缺省零值 = 全拒，与 Check/CheckHost 同语义）。
+// 典型场景：运维平台探测内网服务/内网 IM 网关是能力本身（AllowPrivate），
+// 探测本机自建服务同理（AllowLoopback）。
+type Options struct {
+	// AllowPrivate 放行私网段（IPv4 RFC1918 / IPv6 唯一本地）。
+	AllowPrivate bool
+	// AllowLoopback 放行回环与未指定地址（0.0.0.0/::）。
+	AllowLoopback bool
+}
+
+// CheckWith 校验完整 URL 的 host（Options 语义见 Options；解析失败 fail-closed）。
+func CheckWith(rawURL string, o Options) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("egress: URL 解析失败: %w", err)
+	}
+	return CheckHostWith(u.Hostname(), o)
+}
+
+// CheckHostWith 校验 host（Options 放行开关仅作用于私网与回环/未指定两族；
+// 链路本地（含云元数据）、组播、CGNAT 与保留段一律拒绝——放行面只该覆盖
+// 「目标在内网是合法场景」的那部分）。
+func CheckHostWith(host string, o Options) error {
+	return checkHost(host, o)
+}
+
 // CheckHost 校验 host（URL hostname 或去端口/括号后的 host 字面量）。
 // 空值 fail-closed；非 IP 字面量（域名）放行——见包注释的 preflight 取舍。
 func CheckHost(host string) error {
+	return checkHost(host, Options{})
+}
+
+func checkHost(host string, o Options) error {
 	h := normalizeHost(host)
 	if h == "" {
 		return fmt.Errorf("egress: 空 host")
@@ -67,12 +97,12 @@ func CheckHost(host string) error {
 		}
 	}
 	if effective.Is4() || effective.Is4In6() {
-		if reason := ipv4Policy(effective.Unmap()); reason != "" {
+		if reason := ipv4Policy(effective.Unmap(), o); reason != "" {
 			return &BlockedError{Host: h, Addr: effective.Unmap().String(), Reason: reason}
 		}
 		return nil
 	}
-	if reason := ipv6Policy(effective); reason != "" {
+	if reason := ipv6Policy(effective, o); reason != "" {
 		return &BlockedError{Host: h, Addr: effective.String(), Reason: reason}
 	}
 	return nil
@@ -116,17 +146,26 @@ var ipv4ExplicitBlocks = []netip.Prefix{
 	netip.MustParsePrefix("240.0.0.0/4"),     // 保留（含 255.255.255.255 受限广播）
 }
 
-func ipv4Policy(a netip.Addr) string {
+func ipv4Policy(a netip.Addr, o Options) string {
 	switch {
 	case a.IsLoopback():
+		if o.AllowLoopback {
+			return ""
+		}
 		return "回环地址"
 	case a.IsPrivate():
+		if o.AllowPrivate {
+			return ""
+		}
 		return "私网地址"
 	case a.IsLinkLocalUnicast():
 		return "链路本地地址"
 	case a.IsMulticast():
 		return "组播地址"
 	case a.IsUnspecified():
+		if o.AllowLoopback {
+			return ""
+		}
 		return "未指定地址"
 	}
 	for _, p := range ipv4ExplicitBlocks {
@@ -150,17 +189,26 @@ var ipv6SpecialUse = []netip.Prefix{
 	netip.MustParsePrefix("2001:0::/32"),    // Teredo
 }
 
-func ipv6Policy(a netip.Addr) string {
+func ipv6Policy(a netip.Addr, o Options) string {
 	switch {
 	case a.IsLoopback():
+		if o.AllowLoopback {
+			return ""
+		}
 		return "回环地址"
 	case a.IsPrivate():
+		if o.AllowPrivate {
+			return ""
+		}
 		return "唯一本地地址"
 	case a.IsLinkLocalUnicast():
 		return "链路本地地址"
 	case a.IsMulticast():
 		return "组播地址"
 	case a.IsUnspecified():
+		if o.AllowLoopback {
+			return ""
+		}
 		return "未指定地址"
 	}
 	for _, p := range ipv6SpecialUse {

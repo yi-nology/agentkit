@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.11.1 (2026-10-02)
+
+扁鹊下沉轮：流式节拍/出口围栏参数化/文本分片三面收编 bianque 手写实现。
+
+### Added
+
+- **pacer（新包）**：流式增量节流器 `Stream`——「≥interval 或 ≥chars」窗口
+  合并发布 + 单流总量帽（超帽静默停发）+ seq 单调 + `Absorb` 权威快照收口
+  （迟到分片丢弃）+ `WithClock` 注入；LLM token 级分片防洪泛事件通道/前端
+  的通用原语（收编 bianque deltaPacer）。
+- **egress**：`Options{AllowPrivate, AllowLoopback}` + `CheckWith`/
+  `CheckHostWith`——运维平台「探测内网服务/本机自建服务是能力本身」场景的
+  参数化放行面；链路本地（云元数据）/组播/CGNAT/保留段不因放行开关解禁，
+  缺省零值与既有 `Check`/`CheckHost` 同语义（测试钉住两入口 parity）。
+- **textutil**：`EstTokensCJK`（Han/Hangul/Kana/全角计 2 单位，units/3+1——
+  纯 rune 口径对中文系统性低估的修正）；`ChunkLines`（行边界凑片 + 超长行
+  硬切 + join 严格还原——SSE 打字机分片通用原语）；`ClampRuneBoundary`
+  （字节切点回退 UTF-8 边界，头尾切分场景共用）。
+
 ## v0.11.0 (2026-10-02)
 
 版本线升版（代码面 = v0.10.41，无新增代码变更）。
