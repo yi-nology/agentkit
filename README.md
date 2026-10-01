@@ -1,7 +1,7 @@
 # agentkit
 
 AI Agent 开发工具箱 —— 从生产项目提炼的通用组件库：代码审查平台 **Argus** + 智能运维多智能体平台 **bianque** + LLM 评测/观测平台 **heimdallr**。
-当前版本 **v0.11.0** · Go ≥ 1.26 · 46 个包。
+当前版本 **v0.11.1** · Go ≥ 1.26 · 47 个包。
 
 > 📖 **完整框架文档**：[docs/FRAMEWORK.md](docs/FRAMEWORK.md) —— 设计原则、六层架构、
 > 各包逐一详解（API/示例/边界契约）、横向能力专题（可靠性/成本/多副本/安全）、
@@ -90,6 +90,7 @@ git.enjoye.top/enjoydream/agentkit
 | `lineage` | 装配血缘图（used_by 单源 + reload 影响面 diff + 焦点子图） | skill, pack |
 | `hotplug` | 插拔视图 Plugboard + 泛型原子快照 Holder | 无 |
 | `logredact` | 日志/审计凭据脱敏（URL/token/Bearer 打码 + Redact 高敏感抹除 + Masker/Restore 拓扑标识令牌化） | 无 |
+| `fence` | 数据区围栏与不可信文本消毒（EscapeUntrusted 中和 markdown 结构/HTML 注释边界 + fence.Data 圈定数据边界，v0.10.5 起、原名 safejson） | 无 |
 | ~~jsonrepair~~ | **已下沉 ekit/pkg/jsonrepair（v0.10.41）**——LLM 宽容 JSON 修复全链，消费 `ekit/pkg/jsonrepair` | 无 |
 | `procx` | 子进程托管纪律单源（进程组执行/超时整组终止/限容采集/环境白名单） | ekit(async) |
 | ~~httpx~~ | **已下沉 ekit/pkg/httpjson（v0.10.41）**——DoJSON/重试/Retry-After，消费 `ekit/pkg/httpjson` | 无 |
@@ -98,10 +99,13 @@ git.enjoye.top/enjoydream/agentkit
 | `diffx` | unified diff 结构解析：保序切块/path→块/目标路径/hunk 新行区间（纯函数） | 无 |
 | `codeintel` | 轻量代码符号索引：Go AST 定义/引用/调用边 + JS/TS/Python 词法符号表（get_symbol/get_references/get_callers 数据面） | 无 |
 | `llm/wrap` | eino BaseChatModel 装饰器集：窗口拟合（三级拟合+usage 校准）/截断续写/限速，WithTools 透传可组合 | 无 |
+| `llm/llmtest` | 脚本化 Model/Provider 测试桩（Script 按调用序消费、RepeatLast、Inputs/Flats 调用断言面） | 无 |
 | `audit` | 审计日志 | ekit |
-| `textutil` | rune 安全截断 + 等分块 + TruncEllipsis + 近重复检测（bigram 集合 + Jaccard） | 无 |
+| `textutil` | rune 安全截断三件（薄委托 ekit stringx 单源）+ 等分块 + ChunkLines 行边界增量分片 + EstTokensCJK 中文修正 + 近重复检测（bigram 集合 + Jaccard；分片/CJK 为 v0.11.1） | ekit(stringx) |
 | `workcopy` | Git 工作副本沙箱（singleflight + 引用计数 + TTL 回收） | ekit, x/sync |
-| `egress` | 出口围栏：LLM 可控 URL 字面量 SSRF 防护（NAT64/IPv4-mapped 还原，v0.10.23） | 无 |
+| `egress` | 出口围栏：LLM 可控 URL 字面量 SSRF 防护（NAT64/IPv4-mapped 还原，v0.10.23；Options{AllowPrivate,AllowLoopback} 参数化放行面——链路本地/组播/CGNAT/保留段不因开关解禁，v0.11.1） | 无 |
+| `pacer` | 流式增量节拍器：「≥interval 或 ≥chars」窗口合并发布 + 单流总量帽 + seq 单调递增 + Absorb 权威快照收口 + Flush 残尾（LLM token 级分片防洪泛，v0.11.1） | 无 |
+| `conversation` | 多轮会话历史原语：滚动窗口切分 + 历史渲染 + 摘要拼接（verbatim 只保最近 N 轮，摘要策略归调用方，v0.10.5） | 无 |
 | `compact` | 会话压缩策略：auto-compact 判定（output 预留/token 双轨/熔断）+ microcompact 旧工具结果占位（v0.10.24） | 无 |
 | `sysprompt` | system prompt 分段组装：stable/dynamic 缓存边界 + env/git/date 段 + DetectEnv（v0.10.24） | procx, ekit(async) |
 | `permgate` | 工具许可判定链：allow/ask/deny 优先级状态机 + 会话授权 + 规则内容匹配（v0.10.25） | 无 |
