@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"git.enjoye.top/enjoydream/agentkit/jsonrepair"
 	"git.enjoye.top/enjoydream/agentkit/procx"
 	"git.enjoye.top/enjoydream/agentkit/textutil"
+	"git.enjoye.top/enjoydream/ekit/pkg/jsonrepair"
 )
 
 // runCLI 适配器统一执行骨架：validate → 进程组执行（procx：环境白名单 +

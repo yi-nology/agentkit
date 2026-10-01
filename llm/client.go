@@ -22,9 +22,9 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"golang.org/x/time/rate"
 
-	"git.enjoye.top/enjoydream/agentkit/jsonrepair"
 	"git.enjoye.top/enjoydream/agentkit/obsx"
 	"git.enjoye.top/enjoydream/agentkit/textutil"
+	"git.enjoye.top/enjoydream/ekit/pkg/jsonrepair"
 )
 
 // TokenAccountant token 记账接口（调用方可接预算累计器或 Prometheus）。

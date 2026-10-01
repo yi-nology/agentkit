@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"git.enjoye.top/enjoydream/agentkit/httpx"
+	"git.enjoye.top/enjoydream/ekit/pkg/httpjson"
 )
 
 // Client Langfuse 只读客户端。
@@ -138,7 +138,7 @@ func listQuery(q Query, page, pageSize int) url.Values {
 }
 
 func (c *Client) get(ctx context.Context, u string, out any) error {
-	err := httpx.DoJSON(ctx, c.http, httpx.Request{
+	err := httpjson.DoJSON(ctx, c.http, httpjson.Request{
 		URL: u,
 		Header: func(h http.Header) {
 			h.Set("Authorization", "Basic "+basicAuth(c.pk, c.sk))

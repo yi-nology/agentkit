@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"git.enjoye.top/enjoydream/ekit/pkg/httpjson"
 	"net/http"
 	"time"
 
@@ -82,7 +83,7 @@ func (c *OpenAIProviderConfig) httpClient() *http.Client {
 	}
 	return &http.Client{
 		Timeout:   c.Timeout,
-		Transport: retryAfterTransport{base: http.DefaultTransport},
+		Transport: httpjson.RetryAfterTransport{Base: http.DefaultTransport},
 	}
 }
 

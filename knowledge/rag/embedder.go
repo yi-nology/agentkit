@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"git.enjoye.top/enjoydream/agentkit/httpx"
+	"git.enjoye.top/enjoydream/ekit/pkg/httpjson"
 )
 
 // Embedder 文本向量化接口。
@@ -92,7 +92,7 @@ func (e *OpenAIEmbedder) embedBatch(ctx context.Context, texts []string) ([][]fl
 	body, _ := json.Marshal(embedRequest{Input: texts, Model: e.Model})
 
 	var er embedResponse
-	err := httpx.DoJSON(ctx, e.client, httpx.Request{
+	err := httpjson.DoJSON(ctx, e.client, httpjson.Request{
 		Method: http.MethodPost,
 		URL:    e.BaseURL + "/embeddings",
 		Body:   body,

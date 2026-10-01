@@ -12,7 +12,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/components/tool/utils"
 
-	"git.enjoye.top/enjoydream/agentkit/httpx"
+	"git.enjoye.top/enjoydream/ekit/pkg/httpjson"
 )
 
 // Searxng SearXNG 自建实例客户端（GET /search?format=json——实例 settings.yml 须启用
@@ -65,7 +65,7 @@ func (s *Searxng) Search(ctx context.Context, query string, topK int) ([]Result,
 		q.Set("language", s.Language)
 	}
 	var parsed searxngResp
-	if err := httpx.DoJSON(ctx, hc, httpx.Request{
+	if err := httpjson.DoJSON(ctx, hc, httpjson.Request{
 		URL: s.BaseURL + "/search?" + q.Encode(),
 	}, &parsed); err != nil {
 		return nil, fmt.Errorf("searxng: %w", err)

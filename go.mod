@@ -3,7 +3,7 @@ module git.enjoye.top/enjoydream/agentkit
 go 1.26.0
 
 require (
-	git.enjoye.top/enjoydream/ekit v0.31.0
+	git.enjoye.top/enjoydream/ekit v0.33.0
 	github.com/Masterminds/semver/v3 v3.3.1
 	github.com/cloudwego/eino v0.9.21
 	github.com/mark3labs/mcp-go v1.1.1

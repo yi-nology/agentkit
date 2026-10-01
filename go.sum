@@ -1,6 +1,6 @@
 cloud.google.com/go v0.26.0/go.mod h1:aQUYkXzVsufM+DwF1aE+0xfcU+56JwCaLick0ClmMTw=
-git.enjoye.top/enjoydream/ekit v0.31.0 h1:HnCP+o8Yc0PNXtp4ybbulxEpaYOGVVuvW05HnRLrq6s=
-git.enjoye.top/enjoydream/ekit v0.31.0/go.mod h1:JNOmCoNp0wnFYa9UeSQqLJjQspSMFslkUiYl2CCKr2c=
+git.enjoye.top/enjoydream/ekit v0.33.0 h1:Eg2OfowIByiAboyHNWXcQYGSQ0gbIJISqGLCWkpKjZw=
+git.enjoye.top/enjoydream/ekit v0.33.0/go.mod h1:JNOmCoNp0wnFYa9UeSQqLJjQspSMFslkUiYl2CCKr2c=
 github.com/AndreasBriese/bbloom v0.0.0-20190306092124-e2d15f34fcf9/go.mod h1:bOvUY6CB00SOBii9/FifXqc0awNKxLFCL/+pkDPuyl8=
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
 github.com/CloudyKit/fastprinter v0.0.0-20200109182630-33d98a066a53/go.mod h1:+3IMCy2vIlbG1XG/0ggNQv0SvxCAIpPM5b1nCz56Xno=
