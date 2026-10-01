@@ -1461,6 +1461,18 @@ flowchart TD
   Start/Initialize 不再被调用方 ctx 拖死）+ agentrun 流式 OnUsage 回调
 - **v0.10.37**：diffx（unified diff 结构解析纯函数：SplitChunks/SplitUnifiedDiff/
   DiffPath/HunkLines）+ textutil.FirstNonEmpty——收编 argus diffprep/inject
+- **v0.10.39**：工具链三件下沉——workcopy 浅克隆补全 / 确定性 SAST / 配置卫生
+  助手（并发会话发布）
+- **v0.10.40（ekit v0.27.2 → v0.31.0 升级轮）**：依赖边界从 logx/async 扩到
+  encoding——async 接入 v0.29 补齐的 GoWithContext（worker/leader、worker/pool
+  心跳、progress/bus），裸 goroutine 全面收编 GoSafe（mcp Tools fanout 与闲置
+  回收协程、toolsched runOne 起飞、procx stdin 写入、sysprompt 并行采集、
+  worker 心跳探测——对齐 ekit「禁止裸 go func」治理纪律）；logx 迁 Delegating
+  纪律（rag/worker 包级 component logger，懒解析 Default()——消费方可
+  SetDefault 统一接管；audit 刻意保持独立 NewSlogLogger：审计留痕不随业务
+  日志级别丢失）；encoding.Sha256 收编 skill checksum 与 reportutil PatternKey
+  的手搓 sha256。singleflight/ratelimit 维持 x/sync、x/time（标准库生态，
+  ekit 同名包无增量）；httpx 维持 agentkit 自持（68 行 DoJSON vs 微服务基础设施）
 - **v0.10.38（重构收口轮）**：第六轮留观察清单落地。破坏式：agentrun 入口族
   收敛为 Run+RunOption（WithOnEvent/WithRetry）；mcp Tools 返回
   ToolsResult{Tools, Failed}（失败面程序化可见）；lineage Hub.Set 去返回值；

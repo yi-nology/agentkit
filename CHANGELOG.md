@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.10.40 (2026-10-01)
+
+ekit 升级轮：v0.27.2 → v0.31.0，并按 ekit 最新治理纪律收编 agentkit 的
+手搓实现与裸 goroutine。依赖边界从 logx/concurrency.async 扩展到 pkg/encoding。
+
+### Changed
+
+- **deps**：ekit v0.27.2 → v0.31.0（v0.28~31 增量对本库直接相关的是
+  v0.29 的 async 补齐与裸 go 治理、encoding 弱哈希治理后的 Sha256/Sha256Hex；
+  v0.30/31 的弹性栈/可观测指标属微服务基础设施面，不在本库边界内）。
+- **async**：接入 v0.29 补齐的 `GoWithContext`——worker/leader 主循环、
+  worker/pool 心跳协程、progress/bus 退订协程改为显式携带 ctx 的安全
+  goroutine；裸 `go func` 全面收编 `GoSafe`：mcp 的 Tools fanout（跑
+  dial/Initialize/SDK 解析，外部 SDK panic 不打死进程）与闲置回收协程
+  （静默 panic 死亡 = 回收失效无信号）、toolsched 的 runOne 起飞（runGuarded
+  之外的外层兜底）、procx 的 stdin 异步写入、sysprompt 的并行环境采集、
+  worker 的心跳探测对——对齐 ekit 全仓「禁止裸 go func」治理纪律。
+- **logx**：包级 logger 迁 `Delegating` 纪律（ekit 现行约定：包归属用
+  component 属性标识、懒解析到 `logx.Default()`，消费方可 `SetDefault`
+  统一接管级别/后端）——rag（此前每次告警现场 NewSlogLogger 构造独立后端）、
+  worker/pool、worker/leader。**audit 刻意保持 NewSlogLogger**：审计留痕
+  不应随业务日志级别配置丢失（Delegating 会跟随 Default 级别），独立后端
+  是其契约的一部分。
+- **encoding**：skill 的 contentChecksum 与 reportutil 的 PatternKey 收编
+  `encoding.Sha256`（v0.29 治理后该包不再提供弱哈希入口，sha256 包装是
+  其明示用途）；两处手搓 sha256+hex 删除。
+
+### 不迁移项（边界裁定）
+
+- singleflight/ratelimit 维持 `golang.org/x/sync`、`golang.org/x/time`——
+  标准库生态事实标准，ekit 同名包无语义增量，换用纯增依赖面。
+- `network/httpx` 维持 agentkit/httpx 自持（68 行 DoJSON vs 微服务基础设施，
+  既有边界裁定不变）。
+- audit 的独立日志后端（见上）。
+
 ## v0.10.39 (2026-10-01)
 
 工具链三件下沉（收编自 argus）：workcopy 浅克隆补全 + sast 确定性扫描新包 + mcp 配置卫生助手。

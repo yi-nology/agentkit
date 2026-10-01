@@ -1,7 +1,7 @@
 # agentkit
 
 AI Agent 开发工具箱 —— 从生产项目提炼的通用组件库：代码审查平台 **Argus** + 智能运维多智能体平台 **bianque** + LLM 评测/观测平台 **heimdallr**。
-当前版本 **v0.10.38** · Go ≥ 1.26 · 47 个包。
+当前版本 **v0.10.40** · Go ≥ 1.26 · 47 个包。
 
 > 📖 **完整框架文档**：[docs/FRAMEWORK.md](docs/FRAMEWORK.md) —— 设计原则、六层架构、
 > 各包逐一详解（API/示例/边界契约）、横向能力专题（可靠性/成本/多副本/安全）、
@@ -68,8 +68,8 @@ git.enjoye.top/enjoydream/agentkit
 | `acpx` | CLI 编码 agent 统一调用（11 家 + GenericAgent，执行纪律经 procx） | eino |
 | `llm` | LLM 客户端（重试/限速/预算/fitInput/JSON + Resilient 降级链 + StageRouter + CostTracker + UsageHandler + 流恢复原语/空终态检测/busy 退避 v0.10.25） | eino, eino-ext openai, x/time |
 | `toolprior` | 工具优先级决策层（提示词/排序/限流三层约束） | eino |
-| `toolsched` | 工具并发调度器（注解驱动并行判定 + 依赖拓扑分组执行，v0.10.23） | 无 |
-| `mcp` | MCP server 工具池（lazy 建连 + 白名单 + 工具目录缓存/注解归一 + OAuth + elicitation + 调用期自愈 + UnwrapMCPText） | eino, mcp-go |
+| `toolsched` | 工具并发调度器（注解驱动并行判定 + 依赖拓扑分组执行，v0.10.23） | ekit(async) |
+| `mcp` | MCP server 工具池（lazy 建连 + 白名单 + 工具目录缓存/注解归一 + OAuth + elicitation + 调用期自愈 + UnwrapMCPText） | eino, mcp-go, ekit(async) |
 | `agentrun` | ReAct 样板 + Plan-and-Execute 样板（ADK 封装 + 事件流 + 重试） | eino adk |
 | `reflection` | Reflection 架构原语（生成→批判→修订收敛循环） | eino |
 | `router` | Router 架构原语（LLM 意图分类→选路→分发） | eino |
@@ -85,15 +85,15 @@ git.enjoye.top/enjoydream/agentkit
 | `knowledge/rag` | 双后端 RAG（Local TF-IDF + Milvus 向量） | eino, milvus-sdk-go |
 | `websearch` | 公开资料检索抽象（Service + SearXNG + AsTool） | eino |
 | `progress` | 泛型事件总线 `Bus[T]`（有损广播 + 丢弃计数） | ekit |
-| `skill` | SKILL.md 解析 + 多根 Library（热替换）+ 决策使用（渐进披露）+ 版本化契约（maturity/弃用窗口/区间求解/结构化写回） | eino（decision）、yaml.v3（Library）、semver（区间） |
+| `skill` | SKILL.md 解析 + 多根 Library（热替换）+ 决策使用（渐进披露）+ 版本化契约（maturity/弃用窗口/区间求解/结构化写回） | eino（decision）、yaml.v3（Library）、semver（区间）、ekit(encoding) |
 | `pack` | 领域包 MCP 工具面契约清单（_shared 基线 / 包覆盖 / 字典序冲突） | yaml.v3 |
 | `lineage` | 装配血缘图（used_by 单源 + reload 影响面 diff + 焦点子图） | skill, pack |
 | `hotplug` | 插拔视图 Plugboard + 泛型原子快照 Holder | 无 |
 | `logredact` | 日志/审计凭据脱敏（URL/token/Bearer 打码 + Redact 高敏感抹除 + Masker/Restore 拓扑标识令牌化） | 无 |
 | `jsonrepair` | LLM 宽容 JSON 修复（栅栏/尾逗号/全角/散文包裹 + 标量归一 + ExtractJSON/Unmarshal 解析链） | 无 |
-| `procx` | 子进程托管纪律单源（进程组执行/超时整组终止/限容采集/环境白名单） | 无 |
+| `procx` | 子进程托管纪律单源（进程组执行/超时整组终止/限容采集/环境白名单） | ekit(async) |
 | `httpx` | HTTP+JSON 调用纪律单源（限容读体 + rune 安全错误摘要） | 无 |
-| `reportutil` | 评审/评测报告后处理（严重度归一 + 采样聚簇 + Wilson/McNemar 统计 + 模式键/Beta） | 无 |
+| `reportutil` | 评审/评测报告后处理（严重度归一 + 采样聚簇 + Wilson/McNemar 统计 + 模式键/Beta） | ekit(encoding) |
 | `sast` | 确定性 SAST 前置扫描：gitleaks/semgrep 执行+JSON 归一（范围/聚焦扫描、密钥红线、环境白名单） | 无 |
 | `diffx` | unified diff 结构解析：保序切块/path→块/目标路径/hunk 新行区间（纯函数） | 无 |
 | `codeintel` | 轻量代码符号索引：Go AST 定义/引用/调用边 + JS/TS/Python 词法符号表（get_symbol/get_references/get_callers 数据面） | 无 |
@@ -103,7 +103,7 @@ git.enjoye.top/enjoydream/agentkit
 | `workcopy` | Git 工作副本沙箱（singleflight + 引用计数 + TTL 回收） | ekit, x/sync |
 | `egress` | 出口围栏：LLM 可控 URL 字面量 SSRF 防护（NAT64/IPv4-mapped 还原，v0.10.23） | 无 |
 | `compact` | 会话压缩策略：auto-compact 判定（output 预留/token 双轨/熔断）+ microcompact 旧工具结果占位（v0.10.24） | 无 |
-| `sysprompt` | system prompt 分段组装：stable/dynamic 缓存边界 + env/git/date 段 + DetectEnv（v0.10.24） | procx |
+| `sysprompt` | system prompt 分段组装：stable/dynamic 缓存边界 + env/git/date 段 + DetectEnv（v0.10.24） | procx, ekit(async) |
 | `permgate` | 工具许可判定链：allow/ask/deny 优先级状态机 + 会话授权 + 规则内容匹配（v0.10.25） | 无 |
 | `bashguard` | bash 静态风险解析：AST → 表驱动只读判定，权限判定不执行命令（v0.10.25） | mvdan.cc/sh |
 | `hookx` | 外部 hook 拦截协议：7 拦截点 + 子进程 JSON 决策（v0.10.25） | procx |
