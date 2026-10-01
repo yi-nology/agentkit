@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 
 	"git.enjoye.top/enjoydream/agentkit/textutil"
 )
@@ -23,9 +22,6 @@ var pyFuncRe = regexp.MustCompile(`(?m)^(\s*)(?:async\s+)?def\s+([A-Za-z_][A-Za-
 // class 方法不做——方法名与调用形态歧义大，宁缺勿滥）。
 var jsFuncRe = regexp.MustCompile(`(?m)^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s+([A-Za-z_$][A-Za-z0-9_$]*)|(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)(?::[^=
 ]+)?\s*=\s*(?:async\s*)?(?:\(|[A-Za-z_$][A-Za-z0-9_$]*\s*=>))`)
-
-// goCallRe Go 调用形态（pkg.Name( / Name(），供 get_callers 惰性扫描。
-var goCallRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_.]*\.[A-Za-z_][A-Za-z0-9_]*\(|[A-Za-z_][A-Za-z0-9_]*\(`)
 
 // PolySymbol 非 Go 语言的词法符号。
 type PolySymbol struct {
@@ -149,12 +145,11 @@ func (x *Index) PolyDefinitions(name string) []PolySymbol {
 	return x.poly[strings.ToLower(name)]
 }
 
-// goCallersRes 单次查询的调用形态正则缓存（pattern 依赖查询名，按名复用编译
-// 结果——LLM 对同一符号可能连问多次）。
-var goCallersRes sync.Map // name → *regexp.Regexp
-
-// GoCallers 惰性扫描 Go 标识符的调用形态出现位置（pkg.F( 与 F( 两种形态，
-// 定义行不计；与 References 的差异：只收调用形态行，并注明词法级）。
+// GoCallers 按名查调用形态出现位置（pkg.F( 与 F( 两种形态，定义行不计；
+// 与 References 的差异：只收调用形态行，并注明词法级）。v0.12.0 起查建索引
+// 期与 refs 同遍采集的 calls 表（token 对 IDENT+'('）——正则扫描、正则缓存、
+// 子串预筛、逐行匹配四层全部删除：token 扫描无视空白（Serve (w) 命中）、
+// 字符串/注释不产 token（假命中根除）、查询 O(1)。
 func (x *Index) GoCallers(name string, limit int) []Ref {
 	if x == nil || name == "" {
 		return nil
@@ -167,31 +162,14 @@ func (x *Index) GoCallers(name string, limit int) []Ref {
 		defLines[s.File+":"+strconv.Itoa(s.Line)] = true
 	}
 	var out []Ref
-	seen := map[string]bool{}
-	// Load 命中才复用（第八轮审计：LoadOrStore 的参数急切求值让每次调用都
-	// 白付一次 MustCompile，缓存零收益还按名无界累积）
-	reAny, ok := goCallersRes.Load(name)
-	if !ok {
-		compiled := regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\s*\(`)
-		reAny, _ = goCallersRes.LoadOrStore(name, compiled)
-	}
-	re := reAny.(*regexp.Regexp)
-	for _, f := range x.files {
-		if !strings.Contains(string(f.src), name) {
-			continue // 子串预筛：正则要求名字面出现，不含者整文件跳过
+	for _, r := range x.calls[name] {
+		key := r.File + ":" + strconv.Itoa(r.Line)
+		if defLines[key] {
+			continue
 		}
-		for i, line := range strings.Split(string(f.src), "\n") {
-			key := f.rel + ":" + strconv.Itoa(i+1)
-			if defLines[key] || seen[key] {
-				continue
-			}
-			if re.MatchString(line) && goCallRe.MatchString(line) {
-				seen[key] = true
-				out = append(out, Ref{File: f.rel, Line: i + 1})
-				if len(out) >= limit {
-					return out
-				}
-			}
+		out = append(out, r)
+		if len(out) >= limit {
+			break
 		}
 	}
 	return out

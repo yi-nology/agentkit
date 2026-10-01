@@ -30,7 +30,7 @@ func TestOfferHoldsUntilWindow(t *testing.T) {
 
 func TestOfferFlushesAtCharWindow(t *testing.T) {
 	s, clk := newTestStream(400*time.Millisecond, 10, 1<<20)
-	// 字符窗按字节计（与母本一致）：10 字节恰好达窗
+	// 缓冲窗按字节计：10 字节恰好达窗
 	d, ok := s.Offer("aaaaaaaaaa")
 	if !ok || d.Seq != 1 || len(d.Text) != 10 {
 		t.Fatalf("达到字符窗应立即发布，得到 ok=%v delta=%+v", ok, d)
@@ -91,8 +91,8 @@ func TestCapBytesSilences(t *testing.T) {
 
 func TestDefaultsApplied(t *testing.T) {
 	s := NewStream(0, 0, 0)
-	if s.interval != DefaultInterval || s.chars != DefaultChars || s.capBytes != DefaultCapBytes {
-		t.Fatalf("缺省值未生效：%v %d %d", s.interval, s.chars, s.capBytes)
+	if s.interval != DefaultInterval || s.bytes != DefaultBytes || s.capBytes != DefaultCapBytes {
+		t.Fatalf("缺省值未生效：%v %d %d", s.interval, s.bytes, s.capBytes)
 	}
 }
 

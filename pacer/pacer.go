@@ -12,9 +12,10 @@ import "time"
 const (
 	// DefaultInterval 缺省时间窗。
 	DefaultInterval = 400 * time.Millisecond
-	// DefaultChars 缺省缓冲窗（**字节**口径：缓冲达到即提前发布；CJK 场景
-	// 200 字节 ≈ 66 汉字——命名沿用母本，语义如实为字节窗，第八轮审计钉住）。
-	DefaultChars = 200
+	// DefaultBytes 缺省缓冲窗（字节口径：缓冲达到即提前发布；CJK 场景
+	// 200 字节 ≈ 66 汉字）。v0.12.0 改名 DefaultChars→DefaultBytes——
+	// 实现一直是 len(s.text) 字节比较，命名与口径对齐（第八轮审计）。
+	DefaultBytes = 200
 	// DefaultCapBytes 单流发布总量帽（深度思考可极长，超帽静默停发）。
 	DefaultCapBytes = 64 << 10
 )
@@ -29,7 +30,7 @@ type Delta struct {
 // Stream 单条流的增量缓冲与节拍判定。
 type Stream struct {
 	interval  time.Duration
-	chars     int // 缓冲窗，字节口径（见 DefaultChars 注释）
+	bytes     int // 缓冲窗，字节口径（len(text) 比较）
 	capBytes  int
 	text      string
 	seq       int
@@ -47,20 +48,20 @@ func WithClock(now func() time.Time) Option {
 	return func(s *Stream) { s.now = now }
 }
 
-// NewStream 构造；interval<=0 / chars<=0 / capBytes<=0 取对应缺省值。
-func NewStream(interval time.Duration, chars, capBytes int, opts ...Option) *Stream {
+// NewStream 构造；interval<=0 / bytes<=0 / capBytes<=0 取对应缺省值。
+func NewStream(interval time.Duration, bytes, capBytes int, opts ...Option) *Stream {
 	if interval <= 0 {
 		interval = DefaultInterval
 	}
-	if chars <= 0 {
-		chars = DefaultChars
+	if bytes <= 0 {
+		bytes = DefaultBytes
 	}
 	if capBytes <= 0 {
 		capBytes = DefaultCapBytes
 	}
 	s := &Stream{
 		interval: interval,
-		chars:    chars,
+		bytes:    bytes,
 		capBytes: capBytes,
 		now:      time.Now,
 	}
@@ -84,7 +85,7 @@ func (s *Stream) Offer(chunk string) (Delta, bool) {
 	if s.flushedAt.IsZero() {
 		s.flushedAt = now
 	}
-	if now.Sub(s.flushedAt) < s.interval && len(s.text) < s.chars {
+	if now.Sub(s.flushedAt) < s.interval && len(s.text) < s.bytes {
 		return Delta{}, false
 	}
 	return s.Flush()

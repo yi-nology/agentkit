@@ -159,35 +159,28 @@ func TestFitMessagesLevel3ToolTruncation(t *testing.T) {
 	}
 }
 
-func TestTokensPerCharCalibration(t *testing.T) {
-	calibLock.Lock()
-	oldU, oldC := calibUsage, calibChars
-	calibUsage, calibChars = 0, 0
-	calibLock.Unlock()
-	defer func() {
-		calibLock.Lock()
-		calibUsage, calibChars = oldU, oldC
-		calibLock.Unlock()
-	}()
-
-	if tokensPerChar() != 0 {
-		t.Fatal("无样本应返回 0")
-	}
-	calibUpdateFromResponse(800, 1000)
-	if got := tokensPerChar(); got < 0.79 || got > 0.81 {
-		t.Fatalf("系数应为 0.8，got %f", got)
-	}
-	RecordUsage("any", 9000) // 系数 9 > 4：脏样本
-	if tokensPerChar() != 0 {
-		t.Fatal("脏样本应返回 0")
-	}
-}
-
-// ---- FitModel 装饰器 ----
-
+// fakeChatModel 直通桩（记录最后输入）。
 type fakeChatModel struct {
 	mu     sync.Mutex
 	lastIn []*schema.Message
+}
+
+func TestCalibrationInstanceScoped(t *testing.T) {
+	// v0.12.0：校准槽实例内化——响应直采配对，脏样本界内不采信，实例间不串槽
+	f := NewFitModel(&fakeChatModel{}, "s1", "m1", 10_000, 0, nil)
+	f.calibRecord(800, 1000)
+	if got := f.calibPerChar(); got < 0.79 || got > 0.81 {
+		t.Fatalf("系数应为 0.8，got %f", got)
+	}
+	f.calibRecord(9000, 1000) // 系数 9 > 4：脏样本
+	if got := f.calibPerChar(); got != 0 {
+		t.Fatalf("脏样本应返回 0，got %f", got)
+	}
+	f2 := NewFitModel(&fakeChatModel{}, "s2", "m2", 10_000, 0, nil)
+	f.calibRecord(500, 1000)
+	if got := f2.calibPerChar(); got != 0 {
+		t.Fatalf("实例隔离：f2 应无样本，got %f", got)
+	}
 }
 
 func (f *fakeChatModel) Generate(_ context.Context, input []*schema.Message, _ ...model.Option) (*schema.Message, error) {
@@ -362,9 +355,6 @@ func TestFitMessagesLevel3NoDeadloopOnSmallResults(t *testing.T) {
 // TestFitModelGenerateCalibratesFromResponse 回归（第八轮审计 I）：
 // Generate 响应直采——usage 与实发 rune 数（After 口径）同调用配对。
 func TestFitModelGenerateCalibratesFromResponse(t *testing.T) {
-	oldU, oldC := calibUsage, calibChars
-	defer func() { calibLock.Lock(); calibUsage, calibChars = oldU, oldC; calibLock.Unlock() }()
-
 	base := &usageEchoModel{}
 	f := NewFitModel(base, "cal", "m", 1000, 0, nil)
 	msgs := []*schema.Message{schema.UserMessage(strings.Repeat("字", 3000))}
@@ -372,9 +362,9 @@ func TestFitModelGenerateCalibratesFromResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	sent := runeTotal(base.lastInLocked())
-	calibLock.Lock()
-	u, c := calibUsage, calibChars
-	calibLock.Unlock()
+	f.calibMu.Lock()
+	u, c := f.calibUsage, f.calibChars
+	f.calibMu.Unlock()
 	if u != 421 || c != sent {
 		t.Fatalf("直采配对应为 (usage=421, sent=%d)，got (%d,%d)", sent, u, c)
 	}

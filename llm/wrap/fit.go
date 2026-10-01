@@ -8,9 +8,11 @@
 //	L3 病理态兜底：迭代截最大工具结果直至入窗。
 //
 // 触发线与估算口径对齐 llm fitInput：rune 计数，limit=(窗口-输出预留)×2×0.9。
-// 真实 usage 校准（对标 ZCode tokenSource=provider_usage）：llm.UsageHandler 侧
-// 经 RecordUsage 回灌每模型最近一次真实 prompt tokens，与发送时 rune 数配对出
-// tokens/char 系数——估算系统性偏低的模型（中文为主）自动收紧有效预算。
+// 真实 usage 校准（对标 ZCode tokenSource=provider_usage）——**实例内响应
+// 直采**（v0.12.0 起单源）：Generate/Stream 的响应 usage 与本次实发 rune 数
+// 在同一次调用内配对，写入 FitModel 实例校准槽；tokens/char 系数系统性偏低
+// 的模型（中文为主）自动收紧有效预算。无全局注册表、无外部回灌 API——
+// 响应就在手里，配对天然同源同调用同模型（第八轮审计定案）。
 // 观测：每次拟合结果经 OnFit 上报（passthrough 应占绝对多数），上下文构成
 // 分解经 OnBreakdown 按 role 分桶上报，接入方自行接 Prometheus/日志。
 package wrap
@@ -30,59 +32,6 @@ import (
 	"git.enjoye.top/enjoydream/agentkit/textutil"
 	"git.enjoye.top/enjoydream/ekit/concurrency/async"
 )
-
-// ---------- 真实 usage 校准注册表（进程级全局单槽） ----------
-//
-// 配对协议（第八轮审计修复）：usage 与发送 rune 数在**同一次调用内**原子配对
-//（Generate/Stream 响应直采，见 calibUpdateFromResponse）——此前发送侧与回灌侧
-// 分两次写全局单槽，并发共享时 g1 的 chars 会配到 g2 的 usage，脏样本界拦不住
-// 交错样本。为什么单槽而非按模型分桶：装配侧拿不到真实模型名（RunInfo.Type 是
-// 组件类型）；多模型分桶待有真实需求再开。
-
-var (
-	calibLock  sync.Mutex
-	calibUsage int // 最近一次真实 prompt tokens（与 calibChars 同槽原子配对）
-	calibChars int // 最近一次实发 rune 总量（拟合后 res.After 口径）
-)
-
-// calibUpdateFromResponse 响应直采：本次响应的真实 prompt tokens 与本次实发
-// rune 数在同一次调用内原子配对回灌——并发共享下不再错位。
-func calibUpdateFromResponse(promptTokens, sentChars int) {
-	if promptTokens <= 0 || sentChars <= 0 {
-		return
-	}
-	calibLock.Lock()
-	calibUsage, calibChars = promptTokens, sentChars
-	calibLock.Unlock()
-}
-
-// RecordUsage 手工回灌兜底（流式旁路无法直采时由接入方的 UsageHandler 回调侧
-// 调用；单源不双计——只更新校准寄存器，不动记账）。⚠ 与最近一次记录的发送
-// rune 数配对——仅建议单 goroutine 消费场景使用；Generate/Stream 主路径已由
-// 响应直采覆盖，勿与直采混用。model 参数预留分桶扩展，当前忽略。
-func RecordUsage(model string, promptTokens int) {
-	if promptTokens <= 0 {
-		return
-	}
-	calibLock.Lock()
-	calibUsage = promptTokens
-	calibLock.Unlock()
-}
-
-// tokensPerChar 最近一次可配对的真实估算系数（tokens/rune）；样本不足返回 0。
-// 系数异常（<0.02 或 >4）视为脏样本不采信——防止单次异常响应带偏预算。
-func tokensPerChar() float64 {
-	calibLock.Lock()
-	defer calibLock.Unlock()
-	if calibUsage <= 0 || calibChars <= 0 {
-		return 0
-	}
-	f := float64(calibUsage) / float64(calibChars)
-	if f < 0.02 || f > 4 {
-		return 0
-	}
-	return f
-}
 
 // ---------- 拟合内核（纯函数，不改调用方切片与消息） ----------
 
@@ -301,10 +250,16 @@ func copyMsgs(msgs []*schema.Message) []*schema.Message {
 // 无可变状态（校准在包级注册表），可跨任务共享。
 type FitModel struct {
 	einomodel.BaseChatModel
-	Stage         string // 观测标签（chat/R3/QA/...）
-	ModelName     string // 校准键（与 UsageHandler rec.Model 同源）
-	WindowTokens  int    // 模型上下文窗口（token）；≤0 = 直通
-	MaxOutputSize int    // 输出预留（token）；≤0 = 窗口/20
+	Stage     string
+	ModelName string
+	// calibMu/calibUsage/calibChars 实例内校准槽（响应直采，最近一次
+	// (promptTokens, 实发 rune) 原子配对——每实例一份：不同 Stage/模型的
+	// 装饰互不串槽；同实例并发下 last-writer-wins 恒为某个完整配对，无错位）
+	calibMu      sync.Mutex
+	calibUsage   int
+	calibChars   int
+	WindowTokens int // 模型上下文窗口（token）；≤0 = 直通
+	MaxOutput    int // 输出预留（token）；≤0 = 窗口/20
 	// OnFit 拟合事件回调（nil 安全；仅非 passthrough 触发）。
 	OnFit func(stage string, res FitResult)
 	// OnBreakdown 上下文构成分解回调（nil 安全）：每次发送按 role 分桶累计
@@ -321,7 +276,7 @@ func NewFitModel(inner einomodel.BaseChatModel, stage, modelName string, windowT
 		Stage:         stage,
 		ModelName:     modelName,
 		WindowTokens:  windowTokens,
-		MaxOutputSize: maxOutputTokens,
+		MaxOutput:     maxOutputTokens,
 		OnFit:         onFit,
 	}
 }
@@ -330,7 +285,7 @@ func (f *FitModel) Generate(ctx context.Context, input []*schema.Message, opts .
 	fitted, sent := f.fit(input)
 	msg, err := f.BaseChatModel.Generate(ctx, fitted, opts...)
 	if err == nil && msg != nil && msg.ResponseMeta != nil && msg.ResponseMeta.Usage != nil {
-		calibUpdateFromResponse(msg.ResponseMeta.Usage.PromptTokens, sent)
+		f.calibRecord(msg.ResponseMeta.Usage.PromptTokens, sent)
 	}
 	return msg, err
 }
@@ -341,13 +296,13 @@ func (f *FitModel) Stream(ctx context.Context, input []*schema.Message, opts ...
 	if err != nil {
 		return nil, err
 	}
-	return observeUsage(sr, sent), nil
+	return f.observeUsage(sr, sent), nil
 }
 
 // observeUsage 流包装：携带 usage 的分片与本次实发 rune 数原子配对回灌
 // （eino-ext 流式恒 IncludeUsage，usage 尾帧物化为带 ResponseMeta 的 chunk）。
 // 消费方提前收流时透传关闭（Send 报错即消费者已 Close），防内层泄漏。
-func observeUsage(sr *schema.StreamReader[*schema.Message], sent int) *schema.StreamReader[*schema.Message] {
+func (f *FitModel) observeUsage(sr *schema.StreamReader[*schema.Message], sent int) *schema.StreamReader[*schema.Message] {
 	out, w := schema.Pipe[*schema.Message](1)
 	async.GoSafe(func() {
 		for {
@@ -361,7 +316,7 @@ func observeUsage(sr *schema.StreamReader[*schema.Message], sent int) *schema.St
 				return
 			}
 			if chunk.ResponseMeta != nil && chunk.ResponseMeta.Usage != nil {
-				calibUpdateFromResponse(chunk.ResponseMeta.Usage.PromptTokens, sent)
+				f.calibRecord(chunk.ResponseMeta.Usage.PromptTokens, sent)
 			}
 			if !w.Send(chunk, nil) {
 				sr.Close()
@@ -382,9 +337,42 @@ func (f *FitModel) WithTools(tools []*schema.ToolInfo) (einomodel.ToolCallingCha
 	if err != nil {
 		return nil, err
 	}
-	c := *f
-	c.BaseChatModel = nb
-	return &c, nil
+	// 逐字段构造（sync.Mutex 不可拷贝——WithTools 的装饰再包装路径）
+	return &FitModel{
+		BaseChatModel: nb,
+		Stage:         f.Stage,
+		ModelName:     f.ModelName,
+		WindowTokens:  f.WindowTokens,
+		MaxOutput:     f.MaxOutput,
+		OnFit:         f.OnFit,
+		OnBreakdown:   f.OnBreakdown,
+		// calib 槽不继承：新绑定是独立装饰实例，校准从自身响应重新采样
+	}, nil
+}
+
+// calibRecord 实例校准槽记录（响应直采路径调用）。
+func (f *FitModel) calibRecord(promptTokens, sentChars int) {
+	if promptTokens <= 0 || sentChars <= 0 {
+		return
+	}
+	f.calibMu.Lock()
+	f.calibUsage, f.calibChars = promptTokens, sentChars
+	f.calibMu.Unlock()
+}
+
+// calibPerChar 本实例最近一次可配对的真实估算系数（tokens/rune）；样本不足
+// 或系数异常（<0.02 或 >4，脏样本）返回 0——防止单次异常响应带偏预算。
+func (f *FitModel) calibPerChar() float64 {
+	f.calibMu.Lock()
+	defer f.calibMu.Unlock()
+	if f.calibUsage <= 0 || f.calibChars <= 0 {
+		return 0
+	}
+	fc := float64(f.calibUsage) / float64(f.calibChars)
+	if fc < 0.02 || fc > 4 {
+		return 0
+	}
+	return fc
 }
 
 // fit 发送前拟合：有效预算 = (窗口-输出预留)×2×0.9（口径同 llm fitInput），
@@ -396,7 +384,7 @@ func (f *FitModel) fit(msgs []*schema.Message) ([]*schema.Message, int) {
 	if f.WindowTokens <= 0 || len(msgs) == 0 {
 		return msgs, runeTotal(msgs)
 	}
-	reserved := f.MaxOutputSize
+	reserved := f.MaxOutput
 	if reserved <= 0 {
 		reserved = f.WindowTokens / 20
 	}
@@ -404,7 +392,7 @@ func (f *FitModel) fit(msgs []*schema.Message) ([]*schema.Message, int) {
 	if limit <= 0 {
 		return msgs, runeTotal(msgs)
 	}
-	if fc := tokensPerChar(); fc > 0 {
+	if fc := f.calibPerChar(); fc > 0 {
 		if tight := int(float64(f.WindowTokens-reserved) * 0.9 / fc); tight < limit {
 			limit = tight
 		}

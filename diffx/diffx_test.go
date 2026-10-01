@@ -56,3 +56,33 @@ func TestHunkLines(t *testing.T) {
 		t.Fatal("纯删除块新文件侧无行，不应入表")
 	}
 }
+
+// TestHeaderPathForms 回归（v0.12.0）：quoted path（C 风格转义）与
+// --no-prefix 裸路径两形态；hunk 体内容行不污染 DiffPath。
+func TestHeaderPathForms(t *testing.T) {
+	// quoted path：含空格路径 git 转义形态
+	chunk := "diff --git a/x.go \"b/a b.go\"\n+++ b/\"a b.go\"\n@@ -1 +1 @@\n-x\n+y\n"
+	if got := DiffPath(chunk); got != "a b.go" {
+		t.Fatalf("quoted path: %q", got)
+	}
+	// quoted path 内 C 转义（\\t 与 \"）
+	chunk2 := "+++ b/\"a\\tb\\\"c.go\"\n"
+	if got := DiffPath(chunk2); got != "a\tb\"c.go" {
+		t.Fatalf("escaped quoted path: %q", got)
+	}
+	// --no-prefix：+++ 后无 b/ 前缀
+	chunk3 := "diff --git x.go x.go\n+++ x.go\n@@ -1 +1 @@\n-a\n+b\n"
+	if got := DiffPath(chunk3); got != "x.go" {
+		t.Fatalf("no-prefix path: %q", got)
+	}
+	// hunk 体内容行 `++ b/foo`（加行后即 +++ b/foo）不污染单块路径提取
+	chunk4 := "diff --git a/real.go b/real.go\n+++ b/real.go\n@@ -1,2 +1,2 @@\n context\n+++ b/fake.go\n"
+	if got := DiffPath(chunk4); got != "real.go" {
+		t.Fatalf("hunk 体内容行不得污染路径: %q", got)
+	}
+	// CRLF 形态
+	chunk5 := "+++ b/win.go\r\n@@ -1 +1 @@\r\n-a\r\n+b\r\n"
+	if got := DiffPath(chunk5); got != "win.go" {
+		t.Fatalf("CRLF path: %q", got)
+	}
+}

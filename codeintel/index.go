@@ -55,6 +55,7 @@ type fileEntry struct {
 type Index struct {
 	defs  map[string][]Symbol // 小写名 → 定义
 	refs  map[string][]Ref    // 精确标识符 → 出现位置（含定义行，References 查询时剔除）
+	calls map[string][]Ref    // 标识符 → 调用形态出现位置（IDENT 紧跟 '(' 的 token 对；v0.12.0 起建索引期与 refs 同遍采集，查询 O(1)）
 	poly  map[string][]PolySymbol
 	files []fileEntry
 	skip  int // 解析失败文件数（坏语法）
@@ -134,27 +135,40 @@ func NewIndex(dir string, maxFiles int) (*Index, error) {
 // 建索引期一次付清，查询侧 O(1) 查表 + 过滤定义行。含定义行，查询时剔除。
 func (x *Index) buildRefs() {
 	x.refs = make(map[string][]Ref, 64)
+	x.calls = make(map[string][]Ref, 64)
 	var sc scanner.Scanner
 	for _, f := range x.files {
 		// 同名同行去重用 name→line 单层 map（第八轮审计：此前 map-of-maps +
 		// 每 token 一次 "rel:line" 拼接，千文件级数百万 token 的构建期内存/
 		// 分配放大 2~3 倍）
 		lastLine := map[string]int{}
+		lastCall := map[string]int{}
 		sc.Init(f.tf, f.src, nil, 0)
+		// 调用形态判定用「前一个 token」：IDENT 后紧跟 '(' 即调用位——token
+		// 扫描天然无视空白/换行（Serve (w) 也命中，正则时代的漏报形态），
+		// 且字符串/注释不是 token（正则时代的假命中形态根除）
+		prevTok := token.ILLEGAL
+		prevLit := ""
+		prevLine := 0
 		for {
 			pos, tok, lit := sc.Scan()
 			if tok == token.EOF {
 				break
 			}
-			if tok != token.IDENT {
-				continue
+			if tok == token.LPAREN && prevTok == token.IDENT {
+				if lastCall[prevLit] != prevLine {
+					lastCall[prevLit] = prevLine
+					x.calls[prevLit] = append(x.calls[prevLit], Ref{File: f.rel, Line: prevLine})
+				}
 			}
-			line := f.tf.Line(pos)
-			if lastLine[lit] == line {
-				continue
+			if tok == token.IDENT {
+				line := f.tf.Line(pos)
+				if lastLine[lit] != line {
+					lastLine[lit] = line
+					x.refs[lit] = append(x.refs[lit], Ref{File: f.rel, Line: line})
+				}
 			}
-			lastLine[lit] = line
-			x.refs[lit] = append(x.refs[lit], Ref{File: f.rel, Line: line})
+			prevTok, prevLit, prevLine = tok, lit, f.tf.Line(pos)
 		}
 	}
 }
