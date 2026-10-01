@@ -1,5 +1,71 @@
 # Changelog
 
+## v0.12.1 (2026-10-02)
+
+第九轮审计修复轮：6 面 code-reviewer——v0.11.2~v0.12.0 的「修复的修复」
+复查 + 五组从未审计的老包（架构原语/基础件/集成件/会话治理）+ 遗留改进
+清单三态评估。4C + 19I，高置信项全部修复。
+
+### Fixed（第九轮审计）
+
+Critical：
+
+- **llm**：NewUsageHandler 流式分支**异步排空**副本流——此前同步排空叠加
+  eino 的同步分发，把默认开流的真流式阻塞成「全量生成完才返回」（首分片
+  延迟=全程生成时间，text_delta 全部积压；修「面板失明」修成了「面板有数
+  但流式没了」）。obsx.TracingHandler 同病同修。
+- **policy**：例外规则 verdict 零校验 fail-open——漏写/拼错的 yaml verdict
+  原样透传，且 toolgate 只判 deny 即一切非 deny 值放行；非法 verdict 现
+  fail-safe 升人审。
+- **logredact**：Authorization 头规则只吃 scheme 名（\S+），Basic/Bearer 后
+  的凭据本体原文泄漏且 Bearer 规则失去锚点兜不住——值吃到行尾；连带修
+  `password: xxx`（冒号空格/JSON 引号形态）、sk-proj- 新格式、mongodb+srv/
+  amqps、截断 PEM（BEGIN 无 END）兜底、Masker 长优先排序。
+- **obsx**：TracingHandler 补 OnEndWithStreamOutput（流式下 llm.call.end/slow
+  永不产出、duration/tokens 全盲）+ 组件过滤（Tool/Lambda 回调不再混入
+  llm.call.*）+ TokenUsageOf 补 CacheWriteTokens。
+
+Important（择要）：
+
+- **口径三处**：llm fitInput 窗口公式 ×2→×3/2（CJK 感知——此前 rune/2 假设
+  与已切 CJK 的 estimateTokens 漂移，CJK 会话截断前真实 token 可超窗 ~34%）；
+  compact msgTokens 切 CJK 计量（此前 rune/3 中文低估约半，压缩阈值到点即
+  近两倍超窗）；textutil 新增 EstTokensCJKRunes（已知 rune 数的 CJK 计量）。
+- **policy**：声明风险界的规则对未评级（Risk=0）操作不命中（此前可被「低风险
+  代批」放行）；plan 模式下 execute_step 升人审（此模式不可能有已批准方案，
+  「审计复读」前提不成立）。
+- **router**：槽位值 rune 对齐截断（裸字节切片腰斩 CJK）；构造器校验路由名
+  小写（Classify 强制 ToLower 后查表，大写名永远不可达且静默 fallback）。
+- **fence/conversation**：\r 行终止符归一——`好评\r# 伪造标题` 绕过行首
+  注入判定（CommonMark 视 \r 为行终止符，按 \n 切分则为一行）；fence 补
+  bullet+tab 与有序 `1)` 形态。
+- **reflection**：反向自洽防御——判不通过却列不出问题的评审注入占位自查
+  指令（否则修订提示词是空问题清单的自相矛盾形态，白烧一轮）。
+- **langfuse**：get 换 DoJSONWithRetry（GET 幂等，瞬时 5xx/429/超时不再炸
+  整批——FetchBatch 是 N+1 串行）+ Client.HTTP 注入面（此前全仓唯一不可注入
+  的 HTTP 消费方）。
+- **codeintel**：skipDirs 大小写不敏感 + .venv/site-packages/__pycache__
+  （Python 仓虚拟环境吃满 poly 名额挤掉真实源码）+ 单文件字节上限（Go 8MB/
+  poly 2MB，minified js 防整读整扫）。
+- **egress**：exotic IPv4 词法守卫——0x7f000001/127.1/0177.0.0.1 不被
+  netip 解析但 cgo resolver（inet_aton）解析为回环；net.ParseIP 对这些形态
+  同样返回 nil（兜底方案无效），按段词法判定 fail-closed；正常域名不受影响。
+- **sast**：两工具并行（墙钟 max 而非 sum）；gitleaks 报告超限改显式错误
+  （截断产物必是残缺 JSON，Unmarshal 必败且丢真实根因）。
+- **llm/wrap**：observeUsage 非 EOF 错误路径补 sr.Close()（eino 契约：Recv
+  出错不内部关流）。
+- **worker**：二次 Start 的静默 no-op 补 Warn 观测面。
+
+### 遗留清单三态结论（第九轮评估）
+
+- **延后**：codeintel Ref.File int 化（等内存投诉）、mcp 建池期配置卫生
+  （切口已备：dial 期 envref 展开）、worker.Pool Start 显式报错（Warn 变体
+  已做）。
+- **放弃**（理由见审计报告）：L3 成比例裁剪（策略保全性更好）、textutil
+  双口径合一（刻意设计）、NormalizePatternText 单遍化（pattern 键稳定性）、
+  diffx 弃 map（SplitChunks 已达序语义）、CostTracker 整数微美元（估算遥测
+  域不适用浮点钱纪律）。
+
 ## v0.12.0 (2026-10-02)
 
 第八轮审计「重构机会」清单落地（破坏式，0.12 线首版）。

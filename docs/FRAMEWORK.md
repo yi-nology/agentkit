@@ -1466,6 +1466,14 @@ flowchart TD
   DiffPath/HunkLines）+ textutil.FirstNonEmpty——收编 argus diffprep/inject
 - **v0.10.39**：工具链三件下沉——workcopy 浅克隆补全 / 确定性 SAST / 配置卫生
   助手（并发会话发布）
+- **v0.12.1（第九轮审计修复轮）**：6 面——修复的修复（v0.11.2~v0.12.0 复查）
+  + 五组首审老包 + 遗留清单三态。4C：usage/obsx 流式 handler 异步排空（同步
+  排空把真流式阻塞成批出）；policy verdict 零校验 fail-open；logredact
+  Authorization 只吃 scheme 名泄漏凭据；obsx 流式时机缺失+组件混入。19I 择要：
+  CJK 口径三处（fitInput/compact/EstTokensCJKRunes）、policy Risk=0+plan 模式
+  execute_step、router rune 截断+小写校验、fence/conversation \r 注入、
+  reflection 反向自洽、langfuse 重试+注入、codeintel skipDirs+字节上限、
+  egress exotic IPv4 词法守卫、sast 并行
 - **v0.12.0（八轮审计重构落地轮，0.12 线首版）**：wrap 校准注册表整体删除→
   FitModel 实例内响应直采（RecordUsage API 删除）；codeintel GoCallers 改建
   索引期 token 对采集（正则/缓存/预筛/扫行四层删除，O(1) 查询）；pacer
