@@ -89,12 +89,13 @@ func TestBudgetConfigMinimums(t *testing.T) {
 }
 
 func TestEstimateTokens(t *testing.T) {
-	if got := estimateTokens("hello world"); got != 2 {
-		t.Errorf("estimateTokens('hello world') = %d, want 2", got)
+	// rune/TokenCharDivisor=3 单源口径（textutil.EstTokensOf，收口轮统一；
+	// 此前 bytes/4 与包内 chars/3 两套估算并存）
+	if got := estimateTokens("hello world"); got != 4 { // 11 runes → ceil(11/3)
+		t.Errorf("estimateTokens('hello world') = %d, want 4", got)
 	}
-	// 中文按字节估算：4 runes × 3 bytes = 12 bytes / 4 = 3
-	if got := estimateTokens("你好世界"); got != 3 {
-		t.Errorf("estimateTokens('你好世界') = %d, want 3", got)
+	if got := estimateTokens("你好世界"); got != 2 { // 4 runes → ceil(4/3)
+		t.Errorf("estimateTokens('你好世界') = %d, want 2", got)
 	}
 }
 

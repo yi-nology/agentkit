@@ -135,7 +135,11 @@ func (s *MilvusStore) Index(ctx context.Context, file string, content string) er
 		}
 		return nil
 	}
-	texts, ids, headings, files := indexColumns(file, chunks)
+	rows := indexRows(file, chunks)
+	texts := make([]string, len(rows))
+	for i, r := range rows {
+		texts[i] = r.content
+	}
 
 	// 批量 embedding（在动旧数据之前完成——失败时旧索引原样保留）
 	vectors, err := s.embedder.Embed(ctx, texts)
@@ -145,26 +149,41 @@ func (s *MilvusStore) Index(ctx context.Context, file string, content string) er
 	if err := s.DeleteFile(ctx, file); err != nil {
 		return fmt.Errorf("milvus: 清理旧索引失败: %w", err)
 	}
-	return s.upsertChunks(ctx, texts, ids, headings, files, vectors)
+	return s.upsertChunks(ctx, rows, vectors)
 }
 
-// indexColumns 索引列取值准备：主键 file#chunk_N 确定性（同文件重刷可 Upsert 覆盖）。
-func indexColumns(file string, chunks []mdChunk) (texts, ids, headings, files []string) {
-	texts = make([]string, len(chunks))
-	ids = make([]string, len(chunks))
-	headings = make([]string, len(chunks))
-	files = make([]string, len(chunks))
+// milvusRow 单块索引行（id/content/heading/file 一体——此前四个同长切片靠
+// 约定对齐，存在下标错位面；收口轮结构化）。
+type milvusRow struct {
+	id      string // 主键 file#chunk_N（确定性，同文件重刷可 Upsert 覆盖）
+	content string
+	heading string
+	file    string
+}
+
+// indexRows 索引行准备。
+func indexRows(file string, chunks []mdChunk) []milvusRow {
+	rows := make([]milvusRow, len(chunks))
 	for i, c := range chunks {
-		texts[i] = c.content
-		ids[i] = fmt.Sprintf("%s#chunk_%d", file, i)
-		headings[i] = c.heading
-		files[i] = file
+		rows[i] = milvusRow{
+			id:      fmt.Sprintf("%s#chunk_%d", file, i),
+			content: c.content,
+			heading: c.heading,
+			file:    file,
+		}
 	}
-	return texts, ids, headings, files
+	return rows
 }
 
 // upsertChunks 列构建 + Upsert + Flush（写入收尾阶段，与 Embed/Delete 解耦）。
-func (s *MilvusStore) upsertChunks(ctx context.Context, texts, ids, headings, files []string, vectors [][]float32) error {
+func (s *MilvusStore) upsertChunks(ctx context.Context, rows []milvusRow, vectors [][]float32) error {
+	ids := make([]string, len(rows))
+	texts := make([]string, len(rows))
+	files := make([]string, len(rows))
+	headings := make([]string, len(rows))
+	for i, r := range rows {
+		ids[i], texts[i], files[i], headings[i] = r.id, r.content, r.file, r.heading
+	}
 	idCol := entity.NewColumnVarChar(milvusIDField, ids)
 	contentCol := entity.NewColumnVarChar(milvusContentField, texts)
 	fileCol := entity.NewColumnVarChar(milvusFileField, files)

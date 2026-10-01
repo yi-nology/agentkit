@@ -52,12 +52,12 @@ func TestCatalogListOnce(t *testing.T) {
 	injectClient(t, p, "srv", cli)
 
 	for i := 0; i < 3; i++ {
-		tools, err := p.Tools(context.Background(), []ToolSpec{{Server: "srv", Allow: []string{"reader"}}})
+		tr, err := p.Tools(context.Background(), []ToolSpec{{Server: "srv", Allow: []string{"reader"}}})
 		if err != nil {
 			t.Fatalf("Tools 失败: %v", err)
 		}
-		if len(tools) != 1 {
-			t.Fatalf("期望 1 个工具，得 %d", len(tools))
+		if len(tr.Tools) != 1 {
+			t.Fatalf("期望 1 个工具，得 %d", len(tr.Tools))
 		}
 	}
 	if cli.listCalls != 1 {
@@ -138,11 +138,11 @@ func TestConvToolIsErrorObservation(t *testing.T) {
 		})
 	p := NewPool(ServerConfig{Name: "srv"})
 	injectClient(t, p, "srv", mustInProcessClient(t, srv))
-	tools, err := p.Tools(context.Background(), []ToolSpec{{Server: "srv", Allow: []string{"boom"}}})
+	tr, err := p.Tools(context.Background(), []ToolSpec{{Server: "srv", Allow: []string{"boom"}}})
 	if err != nil {
 		t.Fatalf("Tools 失败: %v", err)
 	}
-	it, ok := tools[0].(tool.InvokableTool)
+	it, ok := tr.Tools[0].(tool.InvokableTool)
 	if !ok {
 		t.Fatal("工具应为 InvokableTool")
 	}

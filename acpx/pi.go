@@ -38,18 +38,11 @@ type Pi struct {
 	// 本机 CLI 配置。
 	DefaultModel string
 
-	name string
+	namedAgent
 }
 
 // NewPi 创建 Pi 适配器。
-func NewPi() *Pi { return &Pi{Bin: "pi", name: "pi"} }
-
-func (p *Pi) Name() string {
-	if p.name != "" {
-		return p.name
-	}
-	return "pi"
-}
+func NewPi() *Pi { return &Pi{Bin: "pi", namedAgent: namedAgent{name: "pi", fallback: "pi"}} }
 
 // Capabilities 支持 Model（--model）与 Session（--session-id 精确续聊，
 // 缺省则 --no-session 一次性）；沙箱/轮数/工具白名单无对应参数。
@@ -81,13 +74,13 @@ type piEvent struct {
 // Run 执行 pi（--mode json 事件流解析）。
 func (p *Pi) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	st := &piStream{req: req}
-	stdout, code, err := runCLI(ctx, req, p.buildArgv(req), st.handleLine)
-	return st.finalize(stdout, code, err)
+	stdout, stderr, code, err := runCLI(ctx, req, p.buildArgv(req), st.handleLine)
+	return st.finalize(stdout, stderr, code, err)
 }
 
 // buildArgv 构造 pi CLI 参数（协议面固定：--mode json -p 事件流；argv 语义不改）。
 func (p *Pi) buildArgv(req RunRequest) []string {
-	argv := []string{p.bin(), "--mode", "json", "-p"}
+	argv := []string{p.exec(p.Bin), "--mode", "json", "-p"}
 	if req.SessionID != "" {
 		// 精确续聊：--session-id 按项目会话 ID 续（不存在则创建）
 		argv = append(argv, "--session-id", req.SessionID)
@@ -132,7 +125,10 @@ func (s *piStream) handleLine(line string) {
 		if s.abortLine == "" {
 			s.abortLine = line
 		}
-		emitError(s.req, strings.TrimSpace(string(ev.Error)), line)
+		// "error":null 的事件不转发（字面 "null" 文案对 transcript 是噪音）
+		if msg := strings.TrimSpace(string(ev.Error)); msg != "" && msg != "null" {
+			emitError(s.req, msg, line)
+		}
 	}
 }
 
@@ -165,20 +161,13 @@ func (s *piStream) onAssistantEnd(ev *piEvent, line string) {
 // 可能 exit 仍为 0）；assistant message_end 到达即权威——文本可为空（纯
 // thinking 收尾/末轮以工具调用结束不是空壳，曾以 lastText=="" 误触兜底把
 // 整段 JSONL 事件流当正文返回）；无终态全文兜底。
-func (s *piStream) finalize(stdout string, code int, err error) (*RunResult, error) {
+func (s *piStream) finalize(stdout, stderr string, code int, err error) (*RunResult, error) {
 	var streamErr error
 	if s.abortLine != "" && !s.sawAssistant {
 		streamErr = streamError("pi", "中止", textutil.TruncEllipsis(s.abortLine, 400))
 	}
 	s.usage.CostUSD = s.cost
-	return finalizeStream(stdout, code, err,
+	return finalizeStream(stdout, stderr, code, err,
 		&RunResult{Text: s.lastText, SessionID: s.sessionID, Usage: s.usage},
 		s.sawAssistant, streamErr)
-}
-
-func (p *Pi) bin() string {
-	if p.Bin != "" {
-		return p.Bin
-	}
-	return "pi"
 }

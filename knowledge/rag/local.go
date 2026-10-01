@@ -41,6 +41,7 @@ type Local struct {
 	index     []indexedChunk
 	idf       map[string]float64 // token → smoothed IDF（rescan 预计算，检索时零 log）
 	scannedAt time.Time
+	scanning  bool // 重扫进行中（并发过期触发的重扫收敛为单份）
 }
 
 // NewLocal 构造并立即扫描。dir 不存在时返回错误。
@@ -59,7 +60,8 @@ func NewLocal(dir string) (*Local, error) {
 
 // Retrieve 检索 topK 片段。
 // 重扫在锁外进行（构建新索引后原子换入）——并发检索不被文件 I/O 阻塞；
-// 多 goroutine 同时判过期会重复重扫，幂等无害，容忍。
+// 多 goroutine 同时判过期时重扫收敛为单份（scanning 标志让位，换入后对
+// 所有人可见；此前并发各扫一遍，大目录下内存峰值按并发数放大）。
 func (l *Local) Retrieve(ctx context.Context, query string, topK int, filter Filter) ([]Chunk, error) {
 	_ = ctx // 当前实现无阻塞点，保留 ctx 以面向未来（接口契约）
 	if err := validateFilter(filter); err != nil {
@@ -163,12 +165,22 @@ func (l *Local) Rescan() {
 		logx.NewSlogLogger("agentkit-rag").Warn("agentkit.rag.rescan_root_missing", "dir", l.dir, "error", err.Error())
 		return
 	}
+	l.mu.Lock()
+	if l.scanning {
+		// 已有全量扫描在途：让位（扫描完成后的原子换入对所有人可见，
+		// scannedAt 已刷新——让位者读旧索引即可，收口轮）
+		l.mu.Unlock()
+		return
+	}
+	l.scanning = true
+	l.mu.Unlock()
 	index, df, walkErr := l.scanMarkdown()
 	idf := computeIDF(len(index), df)
 	// 原子换入：检索侧要么看到完整旧索引、要么完整新索引，不见中间态。
 	// 全量读失败（walkErr 非空且一无所获）时保留旧索引——区分"用户清空目录"
 	// （WalkDir 无 err，正常换入空索引）与"读失败"（保留旧索引）。
 	l.mu.Lock()
+	l.scanning = false
 	if walkErr != nil && len(index) == 0 {
 		l.mu.Unlock()
 		return

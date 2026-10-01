@@ -449,13 +449,14 @@ func (r *Resilient) tryOneProvider(ctx context.Context, p Provider, stage string
 	// 覆盖全部重试 + 退避睡眠，首次尝试耗满后重试全部形同虚设。
 	// （JSON 路径 tryOneProviderJSON 是刻意相反的接线——回喂重试共享一个
 	// deadline，语义为"单次完整生成调用"；改任一侧前先读另一侧注释。）
-	return c.generateRetry(ctx, stage, msgsCopy, retryPolicy{
+	out, _, err := c.generateRetry(ctx, stage, msgsCopy, retryPolicy{
 		maxAttempts:    r.cfg.RetriesPerModel + 1,
 		base:           r.cfg.BaseDelay,
 		ceil:           r.cfg.MaxDelay,
 		chainFallback:  true,
 		attemptTimeout: attemptTimeoutOf(p),
 	})
+	return out, err
 }
 
 // tryOneProviderJSON 单 Provider 的 JSON 生成（复用 Client.generateJSONFitted

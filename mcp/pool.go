@@ -12,7 +12,8 @@
 //	    mcp.ServerConfig{Name: "lint", Command: []string{"lint-mcp", "serve"}},
 //	)
 //	defer pool.Close()
-//	tools, err := pool.Tools(ctx, []mcp.ToolSpec{{Server: "docs", Allow: []string{"search_docs"}}})
+//	res, err := pool.Tools(ctx, []mcp.ToolSpec{{Server: "docs", Allow: []string{"search_docs"}}})
+//	// res.Tools = 装配成功的工具；res.Failed = 被容忍的失败面（server → 原因）
 //
 // 安全模型：stdio 子进程环境走白名单透传（绝不继承密钥，经 procx.ChildEnv
 // 单一纪律）；工具白名单按 spec 收敛（未声明的 server/工具不暴露给 agent）。
@@ -193,11 +194,24 @@ func (p *Pool) Servers() []string {
 	return names
 }
 
-// Tools 按 spec 白名单返回 eino 工具（跨 server 并行拉取，输出按 specs 序稳定）。
-// spec.Server 未配置 → 报错（配置错误应显式暴露）；server 建连失败 → OnError 钩子
-// 后跳过（部分失败容忍）；列举失败视为该连接失效——从缓存摘除并关闭（server 崩溃
-// 后下次调用自动重建），同样经 OnError 跳过。OAuth 授权必需错误 fail-fast 直通。
-func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) ([]tool.BaseTool, error) {
+// ToolsResult Tools 的结果面（v0.10.38 破坏式：此前返回 []BaseTool，部分失败只
+// 经 OnError 侧面观测——调用方在返回值层面无法区分「失败被容忍」与「真的没
+// 工具」，只能把失败当空表静默降级）。
+type ToolsResult struct {
+	// Tools 装配成功的工具（跨 server 并行拉取，按 specs 序稳定）。
+	Tools []tool.BaseTool
+	// Failed server → 被容忍的失败原因（建连/列举失败、白名单无一命中）。
+	// 失败连接已摘除，下次调用透明重建。空 = 全部成功。OnError 仍发射同源
+	// 通知（遥测钩子），失败面的程序化消费一律走这里。
+	Failed map[string]error
+}
+
+// Tools 按 spec 白名单返回 eino 工具与失败面（跨 server 并行拉取）。
+// spec.Server 未配置 → 报错（配置错误应显式暴露）；server 建连/列举失败 →
+// 容忍：记入 Failed（同时经 OnError 发射），可用工具照常返回——列举失败视为
+// 该连接失效，已从缓存摘除关闭（server 崩溃后下次调用自动重建）。
+// OAuth 授权必需错误 fail-fast 直通（错误返回，不进 Failed）。
+func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) (ToolsResult, error) {
 	// 先全量校验：配置错误是调用方 bug，不应半路并行半路报错。
 	// cfgs 读持 p.mu（与其余读路径同纪律——当前生产无写者，但任何未来的
 	// 配置更新 API 都不应把这里变成 data race）
@@ -214,7 +228,7 @@ func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) ([]tool.BaseTool, er
 	}
 	p.mu.Unlock()
 	if missing != "" {
-		return nil, fmt.Errorf("mcp: ToolSpec 引用未配置的 server %q（已配置: %v）",
+		return ToolsResult{}, fmt.Errorf("mcp: ToolSpec 引用未配置的 server %q（已配置: %v）",
 			missing, p.Servers())
 	}
 
@@ -222,6 +236,8 @@ func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) ([]tool.BaseTool, er
 	var (
 		mu       sync.Mutex
 		oauthErr error
+		ctxFatal error // 调用方取消：本地取消不得记成 server 失败
+		failed   = map[string]error{}
 	)
 	var wg sync.WaitGroup
 	for i := range specs {
@@ -236,31 +252,47 @@ func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) ([]tool.BaseTool, er
 						oauthErr = err
 					}
 					mu.Unlock()
+					return
 				}
-				return // 其余错误已在 toolsForSpec 内经 OnError 容忍
+				if cerr := ctx.Err(); cerr != nil {
+					mu.Lock()
+					if ctxFatal == nil {
+						ctxFatal = cerr
+					}
+					mu.Unlock()
+					return
+				}
+				mu.Lock()
+				failed[cfgs[i].Name] = err
+				mu.Unlock()
+				return // 失败已在 toolsForSpec 内经 OnError 发射、连接已摘除
 			}
 			results[i] = tools
 		}(i)
 	}
 	wg.Wait()
 	if oauthErr != nil {
-		return nil, oauthErr
+		return ToolsResult{}, oauthErr
 	}
 	var out []tool.BaseTool
 	for _, t := range results {
 		out = append(out, t...)
 	}
-	if len(out) == 0 && ctx.Err() != nil {
-		// 缓存冷 + ctx 取消：toolsForSpec 对非 OAuth 错误一律容忍为空——
-		// 调用方拿到 (空表, nil) 会把取消当"server 没有工具"静默降级；缓存热时
-		// 同样的已取消 ctx 走快路径正常返回，两种形态行为须一致（第六轮审计）
-		return nil, ctx.Err()
+	if len(out) == 0 && ctxFatal != nil {
+		// 缓存冷 + ctx 取消：调用方拿到 (空表, nil) 会把取消当"server 没有
+		// 工具"静默降级；缓存热时同样的已取消 ctx 走快路径正常返回，两种
+		// 形态行为须一致（第六轮审计）
+		return ToolsResult{}, ctxFatal
 	}
-	return out, nil
+	if len(failed) == 0 {
+		failed = nil
+	}
+	return ToolsResult{Tools: out, Failed: failed}, nil
 }
 
 // toolsForSpec 单 spec 的建连→列目录→装配（Tools 的并发单元）。
-// 返回 error 仅 OAuth 授权态（调用方 fail-fast）；其余故障经 OnError 容忍后返回 nil。
+// 返回 error：OAuth 授权态（调用方 fail-fast）或被容忍的失败（调用方记入
+// ToolsResult.Failed；OnError 已发射同源通知）。
 func (p *Pool) toolsForSpec(ctx context.Context, cfg ServerConfig, spec ToolSpec) ([]tool.BaseTool, error) {
 	cli, err := p.client(ctx, cfg)
 	if err != nil {
@@ -268,7 +300,7 @@ func (p *Pool) toolsForSpec(ctx context.Context, cfg ServerConfig, spec ToolSpec
 			return nil, err
 		}
 		p.notifyError(cfg.Name, err)
-		return nil, nil
+		return nil, err
 	}
 	entries, err := p.catalogFor(ctx, cfg, cli)
 	if err != nil {
@@ -276,13 +308,15 @@ func (p *Pool) toolsForSpec(ctx context.Context, cfg ServerConfig, spec ToolSpec
 			return nil, err
 		}
 		p.notifyError(cfg.Name, err)
-		return nil, nil
+		return nil, err
 	}
 	tools := p.assembleTools(cfg, spec.Allow, cli, entries)
-	// Allow 白名单全部未命中（拼写错误等）：转换层静默返回空表，
-	// 这里经 OnError 告警，避免 agent 拿到空工具表却无从排查
+	// Allow 白名单全部未命中（拼写错误等）：转换层静默返回空表——经 OnError
+	// 告警并记入 Failed，避免 agent 拿到空工具表却无从排查
 	if len(tools) == 0 && len(spec.Allow) > 0 {
-		p.notifyError(cfg.Name, fmt.Errorf("mcp: %s 白名单 %v 无一命中（返回 0 个工具）", cfg.Name, spec.Allow))
+		err := fmt.Errorf("mcp: %s 白名单 %v 无一命中（返回 0 个工具）", cfg.Name, spec.Allow)
+		p.notifyError(cfg.Name, err)
+		return nil, err
 	}
 	return p.wrapSelfHeal(ctx, cfg, spec, cli, tools), nil
 }

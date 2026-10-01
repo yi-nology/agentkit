@@ -147,7 +147,7 @@ func (m *mockOpenAI) writeStreamChunks(w http.ResponseWriter, resp mockResponse)
 		for _, part := range splitChunks(resp.content, 2) {
 			write(sseChunk(map[string]any{"content": part}, nil))
 		}
-			write(sseChunk(map[string]any{}, "stop"))
+		write(sseChunk(map[string]any{}, "stop"))
 	}
 	// usage 尾帧（stream_options.include_usage 形态：空 choices + 顶层 usage）
 	write(`data: {"id":"cmpl-test","object":"chat.completion.chunk","created":1,"model":"mock","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}` + "\n\n")
@@ -220,14 +220,14 @@ func TestRunReActLoopWithToolCall(t *testing.T) {
 
 	echoTool := newEchoTool(t)
 	var toolEvents []string
-	out, err := RunWithEvents(context.Background(), Config{
+	out, err := Run(context.Background(), Config{
 		Name: "test", Instruction: "使用 echo 工具后给出结论", Model: cm,
 		Tools: []tool.BaseTool{echoTool},
-	}, "调用工具", func(e Event) {
+	}, "调用工具", WithOnEvent(func(e Event) {
 		if e.Type == EventToolCall {
 			toolEvents = append(toolEvents, e.Tool)
 		}
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,11 +249,11 @@ func TestRunStreamingOnUsage(t *testing.T) {
 		mockResponse{content: "结论"},
 	)
 	var usages []Usage
-	out, err := RunWithEvents(context.Background(), Config{
+	out, err := Run(context.Background(), Config{
 		Name: "test", Instruction: "inst", Model: cm,
-		Tools:  []tool.BaseTool{newEchoTool(t)},
+		Tools:   []tool.BaseTool{newEchoTool(t)},
 		OnUsage: func(_ context.Context, u Usage) { usages = append(usages, u) },
-	}, "问", func(Event) {})
+	}, "问", WithOnEvent(func(Event) {}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,10 +277,10 @@ func TestRunStreamingDeltas(t *testing.T) {
 	)
 
 	var events []Event
-	out, err := RunWithEvents(context.Background(), Config{
+	out, err := Run(context.Background(), Config{
 		Name: "test", Instruction: "inst", Model: cm,
 		Tools: []tool.BaseTool{newEchoTool(t)},
-	}, "调用工具", func(e Event) { events = append(events, e) })
+	}, "调用工具", WithOnEvent(func(e Event) { events = append(events, e) }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,15 +349,15 @@ func TestRunEventsReasoningAndToolCallArgs(t *testing.T) {
 	)
 
 	var events []Event
-	out, err := RunWithEvents(context.Background(), Config{
+	out, err := Run(context.Background(), Config{
 		Name: "test", Instruction: "inst", Model: cm,
 		Tools: []tool.BaseTool{newEchoTool(t)},
-	}, "调用工具", func(e Event) {
+	}, "调用工具", WithOnEvent(func(e Event) {
 		if e.Type == EventReasoningDelta || e.Type == EventTextDelta {
 			return // 流式增量通道：本测试只对账权威事件（增量语义由 TestRunStreamingDeltas 专测）
 		}
 		events = append(events, e)
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,9 +397,9 @@ func TestRunWithRetry(t *testing.T) {
 		mockResponse{content: "重试成功"},
 	)
 
-	out, err := RunWithRetry(context.Background(), Config{
+	out, err := Run(context.Background(), Config{
 		Name: "test", Instruction: "inst", Model: cm,
-	}, "第一问", "第二问（带反馈）")
+	}, "第一问", WithRetry("第二问（带反馈）"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -460,7 +460,7 @@ func TestRunWithRetryToolsFactoryFreshPerAttempt(t *testing.T) {
 		},
 	}
 
-	out, err := RunWithRetry(context.Background(), cfg, "第一问", "第二问")
+	out, err := Run(context.Background(), cfg, "第一问", WithRetry("第二问"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,14 +502,14 @@ func TestRunEventsCarryNativeCallID(t *testing.T) {
 	)
 
 	var callIDs []string
-	_, err := RunWithEvents(context.Background(), Config{
+	_, err := Run(context.Background(), Config{
 		Name: "test", Instruction: "inst", Model: cm,
 		Tools: []tool.BaseTool{newEchoTool(t)},
-	}, "调用工具", func(e Event) {
+	}, "调用工具", WithOnEvent(func(e Event) {
 		if e.Type == EventToolCall || e.Type == EventToolResult {
 			callIDs = append(callIDs, e.Type+":"+e.CallID)
 		}
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,24 +15,17 @@ var _ Agent = (*ClaudeCode)(nil)
 // ClaudeCode Claude Code 适配器（headless：`claude -p --output-format stream-json`）。
 type ClaudeCode struct {
 	Bin string // 默认 "claude"
-
-	name string // 注册身份（构造器填充）；空 = 按 Bin 推导兜底
+	namedAgent
 }
 
 // NewClaudeCode 创建 Claude Code 适配器。
-func NewClaudeCode() *ClaudeCode { return &ClaudeCode{Bin: "claude", name: "claude"} }
+func NewClaudeCode() *ClaudeCode {
+	return &ClaudeCode{Bin: "claude", namedAgent: namedAgent{name: "claude", fallback: "claude"}}
+}
 
 // NewZCode 创建 ZCode 适配器（CLI 参数协议与 Claude Code 同族）。
-func NewZCode() *ClaudeCode { return &ClaudeCode{Bin: "zcode", name: "zcode"} }
-
-func (c *ClaudeCode) Name() string {
-	if c.name != "" {
-		return c.name
-	}
-	if c.Bin == "zcode" {
-		return "zcode"
-	}
-	return "claude"
+func NewZCode() *ClaudeCode {
+	return &ClaudeCode{Bin: "zcode", namedAgent: namedAgent{name: "zcode", fallback: "claude"}}
 }
 
 // Capabilities 全量支持：--model / --resume / --max-turns / --allowedTools / --permission-mode。
@@ -43,13 +36,13 @@ func (c *ClaudeCode) Capabilities() Capability {
 // Run 执行 headless 任务（stream-json NDJSON 事件流解析）。
 func (c *ClaudeCode) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	st := &claudeStream{req: req}
-	stdout, code, err := runCLI(ctx, req, c.buildArgv(req), st.handleLine)
-	return st.finalize(stdout, code, err)
+	stdout, stderr, code, err := runCLI(ctx, req, c.buildArgv(req), st.handleLine)
+	return st.finalize(stdout, stderr, code, err)
 }
 
 // buildArgv 构造 claude 族 CLI 参数（协议面固定：-p + stream-json 事件流）。
 func (c *ClaudeCode) buildArgv(req RunRequest) []string {
-	argv := []string{c.Bin, "-p", promptArg(req.Prompt), "--output-format", "stream-json", "--verbose"}
+	argv := []string{c.exec(c.Bin), "-p", promptArg(req.Prompt), "--output-format", "stream-json", "--verbose"}
 	if req.Model != "" {
 		argv = append(argv, "--model", req.Model)
 	}
@@ -138,8 +131,8 @@ func (s *claudeStream) onResult(ev *claudeEvent, line string) {
 // finalize 收尾装配（三段式骨架）：终态 = result 事件真的到达（init-only
 // 空壳不具备终态语义）；终态优先无条件于文本非空（空 result 文本是合法成功
 // ——is_error 的处置归消费方，经 EventError 转发）；无终态全文兜底。
-func (s *claudeStream) finalize(stdout string, code int, err error) (*RunResult, error) {
-	return finalizeStream(stdout, code, err, s.result, s.sawResult && s.result != nil, nil)
+func (s *claudeStream) finalize(stdout, stderr string, code int, err error) (*RunResult, error) {
+	return finalizeStream(stdout, stderr, code, err, s.result, s.sawResult && s.result != nil, nil)
 }
 
 // claudeEvent stream-json 事件（容错解析：只取需要的字段）。

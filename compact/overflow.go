@@ -103,7 +103,7 @@ func GroupRounds(msgs []Message) [][]Message {
 	var groups [][]Message
 	var current []Message
 	for _, m := range msgs {
-		if m.Role == "assistant" {
+		if m.Role == RoleAssistant {
 			if len(current) > 0 {
 				groups = append(groups, current)
 			}

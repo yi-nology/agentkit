@@ -17,24 +17,17 @@ var _ Agent = (*Gemini)(nil)
 //   - `-m/--model`；`--approval-mode default|auto_edit|yolo`（沙箱映射）
 type Gemini struct {
 	Bin string // 默认 "gemini"
-
-	name string // 注册身份（构造器填充）；空 = 按 Bin 推导兜底
+	namedAgent
 }
 
 // NewGemini 创建 Gemini CLI 适配器。
-func NewGemini() *Gemini { return &Gemini{Bin: "gemini", name: "gemini"} }
+func NewGemini() *Gemini {
+	return &Gemini{Bin: "gemini", namedAgent: namedAgent{name: "gemini", fallback: "gemini"}}
+}
 
 // NewQwen 创建 Qwen Code 适配器（gemini-cli fork，参数同族）。
-func NewQwen() *Gemini { return &Gemini{Bin: "qwen", name: "qwen"} }
-
-func (g *Gemini) Name() string {
-	if g.name != "" {
-		return g.name
-	}
-	if g.Bin == "qwen" {
-		return "qwen"
-	}
-	return "gemini"
+func NewQwen() *Gemini {
+	return &Gemini{Bin: "qwen", namedAgent: namedAgent{name: "qwen", fallback: "gemini"}}
 }
 
 // Capabilities 支持 Model/Sandbox（-m / --approval-mode）；非交互模式无续聊、轮数与工具白名单无对应参数。
@@ -60,7 +53,7 @@ type geminiOut struct {
 
 // Run 执行 Gemini CLI 非交互任务。
 func (g *Gemini) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
-	argv := []string{g.Bin, "-p", promptArg(req.Prompt), "--output-format", "json"}
+	argv := []string{g.exec(g.Bin), "-p", promptArg(req.Prompt), "--output-format", "json"}
 	if req.Model != "" {
 		argv = append(argv, "-m", req.Model)
 	}
@@ -68,7 +61,7 @@ func (g *Gemini) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		argv = append(argv, "--approval-mode", v)
 	}
 
-	stdout, code, err := runCLI(ctx, req, argv, nil)
+	stdout, stderr, code, err := runCLI(ctx, req, argv, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +69,7 @@ func (g *Gemini) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	var out geminiOut
 	if err := parseJSONOut(stdout, &out); err != nil || (out.Response == "" && out.Error == nil) {
 		// 非 JSON 输出：全文兜底
-		return fallbackResult(stdout, code), nil
+		return fallbackResult(stdout, stderr, code), nil
 	}
 	// 运行期错误如实上抛（部分错误形态 exit 仍为 0，只能从信封识别——与 mimo 同纪律）
 	if out.Error != nil && out.Error.Message != "" {
@@ -84,9 +77,9 @@ func (g *Gemini) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		return nil, streamError("gemini", "运行错误", out.Error.Message)
 	}
 	if out.Response == "" {
-		return fallbackResult(stdout, code), nil
+		return fallbackResult(stdout, stderr, code), nil
 	}
-	r := &RunResult{Text: out.Response, ExitCode: code, Raw: []byte(stdout)}
+	r := &RunResult{Text: out.Response, ExitCode: code, Raw: []byte(stdout), Stderr: stderrTail(stderr)}
 	if out.Stats != nil {
 		for _, m := range out.Stats.Models {
 			r.Usage.InputTokens += m.Tokens.Prompt

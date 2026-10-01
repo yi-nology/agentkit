@@ -127,11 +127,8 @@ func decision(b Behavior, ruleID, reason string) Decision {
 // checkUserInteraction 交互型工具：硬禁与项目 deny 压过交互段——被 deny 的
 // 交互型工具不该退化成「弹窗一点就能跑」（与 alwaysAsk 段同纪律）。
 func (s *Service) checkUserInteraction(tool string, input any) Decision {
-	if s.DisallowedTools[tool] {
-		return decision(Deny, "rule.disallowedTools", "工具被显式禁用: "+tool)
-	}
-	if s.matchRules(&s.ProjectRules.Deny, tool, input) {
-		return decision(Deny, "rule.project.deny", "项目规则拒绝: "+tool)
+	if d, hit := s.hardDeny(tool, input); hit {
+		return d
 	}
 	return decision(Ask, "tool.userInteraction", "交互型工具需要用户参与: "+tool)
 }
@@ -139,16 +136,27 @@ func (s *Service) checkUserInteraction(tool string, input any) Decision {
 // checkAlwaysAsk 逐次确认工具：先走硬阻断，再看会话授权，最后问——
 // 不可被模式/白名单放行。
 func (s *Service) checkAlwaysAsk(tool string, input any) Decision {
-	if s.DisallowedTools[tool] {
-		return decision(Deny, "rule.disallowedTools", "工具被显式禁用: "+tool)
-	}
-	if s.matchRules(&s.ProjectRules.Deny, tool, input) {
-		return decision(Deny, "rule.project.deny", "项目规则拒绝: "+tool)
+	if d, hit := s.hardDeny(tool, input); hit {
+		return d
 	}
 	if matchRules(s.sessionRuleSet().Allow, tool, input) {
 		return decision(Allow, "rule.session.allow", "本会话已授权: "+tool)
 	}
 	return decision(Ask, "tool.alwaysAsk", "工具要求逐次确认: "+tool)
+}
+
+// hardDeny 硬阻断单源（checkUserInteraction/checkAlwaysAsk/checkStandard 三段
+// 此前逐字重复）：显式禁用工具与项目 deny 规则压过一切——交互型/逐次确认
+// 类工具被 deny 时是 Deny 而非退化为「一点就能跑」的 ask（v0.10.30 审计语义，
+// 收口轮单源化）。
+func (s *Service) hardDeny(tool string, input any) (Decision, bool) {
+	if s.DisallowedTools[tool] {
+		return decision(Deny, "rule.disallowedTools", "工具被显式禁用: "+tool), true
+	}
+	if s.matchRules(&s.ProjectRules.Deny, tool, input) {
+		return decision(Deny, "rule.project.deny", "项目规则拒绝: "+tool), true
+	}
+	return Decision{}, false
 }
 
 // checkStandard 常规判定主干：与 ZCode 的历史差异——一切「禁」压过 yolo
@@ -257,19 +265,23 @@ var subjectKeys = []string{"command", "url", "file_path", "path", "pattern", "pa
 var pathSubjectKeys = map[string]bool{"file_path": true, "path": true}
 
 // subjects 从工具输入提取匹配对象（对标 ruleSubjects 的字段清单）。
+// 多面语义（v0.10.38）：同一输入的 command/url/file_path/… 全部参与匹配——
+// 此前命中首个字段即返回，含 command+file_path 的输入里路径规则永不生效。
 func subjects(input any, tool string) []string {
 	switch v := input.(type) {
 	case string:
 		return []string{v}
 	case map[string]any:
+		var subs []string
 		for _, key := range subjectKeys {
 			if s, ok := v[key].(string); ok && s != "" {
 				if pathSubjectKeys[key] {
 					s = filepath.Clean(s)
 				}
-				return []string{s}
+				subs = append(subs, s)
 			}
 		}
+		return subs
 	}
 	return nil
 }

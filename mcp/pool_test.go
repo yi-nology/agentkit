@@ -70,16 +70,16 @@ func TestToolsWhitelist(t *testing.T) {
 	defer p.Close()
 
 	// 白名单只暴露 calculate（other 不给 agent）
-	tools, err := p.Tools(context.Background(), []ToolSpec{
+	tr, err := p.Tools(context.Background(), []ToolSpec{
 		{Server: "calc", Allow: []string{"calculate"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools) != 1 {
-		t.Fatalf("白名单应只出 1 个工具，得到 %d", len(tools))
+	if len(tr.Tools) != 1 {
+		t.Fatalf("白名单应只出 1 个工具，得到 %d", len(tr.Tools))
 	}
-	info, err := tools[0].Info(context.Background())
+	info, err := tr.Tools[0].Info(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestToolsWhitelist(t *testing.T) {
 	}
 
 	// 调用链路：eino tool → MCP server
-	it, ok := tools[0].(tool.InvokableTool)
+	it, ok := tr.Tools[0].(tool.InvokableTool)
 	if !ok {
 		t.Fatal("返回的工具应实现 tool.InvokableTool")
 	}
@@ -109,12 +109,12 @@ func TestToolsEmptyAllowAll(t *testing.T) {
 	defer p.Close()
 
 	// 空 Allow = 全部工具
-	tools, err := p.Tools(context.Background(), []ToolSpec{{Server: "calc"}})
+	tr, err := p.Tools(context.Background(), []ToolSpec{{Server: "calc"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools) != 2 {
-		t.Fatalf("空白名单应出全部 2 个工具，得到 %d", len(tools))
+	if len(tr.Tools) != 2 {
+		t.Fatalf("空白名单应出全部 2 个工具，得到 %d", len(tr.Tools))
 	}
 }
 
@@ -144,7 +144,7 @@ func TestToolsPartialFailureTolerated(t *testing.T) {
 	}
 	defer p.Close()
 
-	tools, err := p.Tools(context.Background(), []ToolSpec{
+	tr, err := p.Tools(context.Background(), []ToolSpec{
 		{Server: "broken"},
 		{Server: "good", Allow: []string{"other"}},
 	})
@@ -154,8 +154,12 @@ func TestToolsPartialFailureTolerated(t *testing.T) {
 	if errCount.Load() != 1 {
 		t.Fatalf("broken server 应触发一次 OnError，实际 %d", errCount.Load())
 	}
-	if len(tools) != 1 {
-		t.Fatalf("部分失败容忍：应返回 good 的 1 个工具，得到 %d", len(tools))
+	if len(tr.Tools) != 1 {
+		t.Fatalf("部分失败容忍：应返回 good 的 1 个工具，得到 %d", len(tr.Tools))
+	}
+	// 失败面程序化可见（收口轮）：broken 的失败原因进 Failed，无须消费 OnError 副作用
+	if tr.Failed == nil || tr.Failed["broken"] == nil {
+		t.Fatalf("broken 应进 Failed 面: %+v", tr.Failed)
 	}
 }
 
@@ -310,9 +314,9 @@ func TestToolsCancelledCtxColdCacheReturnsError(t *testing.T) {
 	defer p.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	tools, err := p.Tools(ctx, []ToolSpec{{Server: "x"}})
+	tr, err := p.Tools(ctx, []ToolSpec{{Server: "x"}})
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("应返回 ctx.Err()，得到 tools=%d err=%v", len(tools), err)
+		t.Fatalf("应返回 ctx.Err()，得到 tr.Tools=%d err=%v", len(tr.Tools), err)
 	}
 }
 
@@ -334,7 +338,7 @@ func TestStdioServerHelper(t *testing.T) {
 
 // TestStdioChildSurvivesDialCancel 回归（v0.10.33）：stdio 子进程生命周期必须与
 // dial ctx 解绑——dial ctx 是连接级短预算，client() 返回即 cancel，绑上去会在建连
-// 成功瞬间杀掉 server（下次 tools/list 报 transport closed）。
+// 成功瞬间杀掉 server（下次 tr.Tools/list 报 transport closed）。
 func TestStdioChildSurvivesDialCancel(t *testing.T) {
 	testBin, err := os.Executable()
 	if err != nil {
@@ -356,11 +360,11 @@ func TestStdioChildSurvivesDialCancel(t *testing.T) {
 	time.Sleep(100 * time.Millisecond) // 给误杀路径（回归态）留触发窗口
 
 	// cancel 后的全新 ctx 上列举工具：子进程被误杀时这里必现 transport closed
-	tools, err := p.Tools(context.Background(), []ToolSpec{{Server: "srv", Allow: []string{"noop"}}})
+	tr, err := p.Tools(context.Background(), []ToolSpec{{Server: "srv", Allow: []string{"noop"}}})
 	if err != nil {
-		t.Fatalf("dial ctx 取消后 tools/list 应存活（子进程误杀回归）: %v", err)
+		t.Fatalf("dial ctx 取消后 tr.Tools/list 应存活（子进程误杀回归）: %v", err)
 	}
-	if len(tools) != 1 {
-		t.Fatalf("应返回 1 个工具，得到 %d", len(tools))
+	if len(tr.Tools) != 1 {
+		t.Fatalf("应返回 1 个工具，得到 %d", len(tr.Tools))
 	}
 }

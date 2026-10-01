@@ -78,20 +78,30 @@ type Scheduler struct {
 // Schedule 计算调度（纯函数，不执行）。ID 重复/依赖悬空/依赖环均报错——
 // 调用图来自模型输出与装配配置，越界即确定性错误而非静默容错。
 func (s *Scheduler) Schedule(calls []Call) (*Schedule, error) {
-	if err := validate(calls); err != nil {
+	items, sorted, err := s.plan(calls)
+	if err != nil {
 		return nil, err
 	}
-	items := make([]Item, len(calls))
+	return &Schedule{Items: items, Groups: groupByParallel(sorted, s.maxConcurrency())}, nil
+}
+
+// plan 校验 + 装配 + 拓扑排序（Schedule/Execute 的共用前半）。层级分组是
+// Schedule 的展示面；Execute 的 runner 用依赖计数放行、不消费 Groups——
+// 此前 Execute 内部整跑一遍 Schedule 白算分组（收口轮拆分）。
+func (s *Scheduler) plan(calls []Call) (items []Item, sorted []*Item, err error) {
+	if err := validate(calls); err != nil {
+		return nil, nil, err
+	}
+	items = make([]Item, len(calls))
 	byID := make(map[string]*Item, len(calls))
 	for i, c := range calls {
 		items[i] = Item{Call: c, CanRunParallel: s.canRunInParallel(c)}
 		byID[c.ID] = &items[i]
 	}
-	sorted, err := topoSort(items, byID)
-	if err != nil {
-		return nil, err
+	if sorted, err = topoSort(items, byID); err != nil {
+		return nil, nil, err
 	}
-	return &Schedule{Items: items, Groups: groupByParallel(sorted, s.maxConcurrency())}, nil
+	return items, sorted, nil
 }
 
 func (s *Scheduler) maxConcurrency() int {
@@ -268,7 +278,7 @@ func (s *Scheduler) Execute(ctx context.Context, tasks []Task) []Result {
 	for i, t := range tasks {
 		calls[i] = t.Call
 	}
-	sched, err := s.Schedule(calls)
+	items, _, err := s.plan(calls)
 	if err != nil {
 		res := make([]Result, len(tasks))
 		for i, t := range tasks {
@@ -280,7 +290,7 @@ func (s *Scheduler) Execute(ctx context.Context, tasks []Task) []Result {
 	if len(tasks) == 0 {
 		return results
 	}
-	r := newRunner(ctx, s.maxConcurrency(), tasks, sched.Items, results)
+	r := newRunner(ctx, s.maxConcurrency(), tasks, items, results)
 	r.run()
 	for i := range tasks {
 		if !r.filled[i] {

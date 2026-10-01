@@ -80,10 +80,10 @@ func TestRunWithRetrySkipsAfterMutation(t *testing.T) {
 		mockResponse{content: ""},
 	)
 
-	_, err := RunWithRetry(context.Background(), Config{
+	_, err := Run(context.Background(), Config{
 		Name: "test", Instruction: "inst", Model: cm,
 		Tools: []tool.BaseTool{newShellExecTool(t)},
-	}, "执行重启", "带反馈重跑")
+	}, "执行重启", WithRetry("带反馈重跑"))
 	if err == nil {
 		t.Fatal("应失败")
 	}
@@ -106,14 +106,14 @@ func TestRunWithEventsAndRetrySkipsAfterMutation(t *testing.T) {
 	)
 
 	var toolCalls []string
-	_, err := RunWithEventsAndRetry(context.Background(), Config{
+	_, err := Run(context.Background(), Config{
 		Name: "test", Instruction: "inst", Model: cm,
 		Tools: []tool.BaseTool{newShellExecTool(t)},
-	}, "执行", "重跑", func(ev Event) {
+	}, "执行", WithRetry("重跑"), WithOnEvent(func(ev Event) {
 		if ev.Type == EventToolCall {
 			toolCalls = append(toolCalls, ev.Tool)
 		}
-	})
+	}))
 	if err == nil || !strings.Contains(err.Error(), "跳过重试") {
 		t.Fatalf("应触发副作用守卫: %v", err)
 	}
@@ -133,11 +133,11 @@ func TestRunWithRetryAfterMutationAllowed(t *testing.T) {
 		mockResponse{content: "重试成功"},
 	)
 
-	out, err := RunWithRetry(context.Background(), Config{
+	out, err := Run(context.Background(), Config{
 		Name: "test", Instruction: "inst", Model: cm,
 		Tools:              []tool.BaseTool{newShellExecTool(t)},
 		RetryAfterMutation: true,
-	}, "执行", "带反馈重跑")
+	}, "执行", WithRetry("带反馈重跑"))
 	if err != nil || out != "重试成功" {
 		t.Fatalf("显式允许后应重试成功: %v %q", err, out)
 	}
@@ -153,9 +153,9 @@ func TestRunWithRetryReadOnlyRetries(t *testing.T) {
 		mockResponse{content: "重试成功"},
 	)
 
-	out, err := RunWithRetry(context.Background(), Config{
+	out, err := Run(context.Background(), Config{
 		Name: "test", Instruction: "inst", Model: cm,
-	}, "第一问", "第二问")
+	}, "第一问", WithRetry("第二问"))
 	if err != nil || out != "重试成功" {
 		t.Fatalf("无变更类工具应照常重试: %v %q", err, out)
 	}

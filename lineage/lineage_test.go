@@ -147,7 +147,8 @@ func TestHub(t *testing.T) {
 	}
 	lin, manifests := fixture()
 	h := NewHub()
-	if got := h.Set(lin, manifests); got != lin || h.Get() != lin {
+	h.Set(lin, manifests)
+	if h.Get() != lin {
 		t.Fatal("Set 应存图并返回")
 	}
 	// Resync 只换图，清单沿用。

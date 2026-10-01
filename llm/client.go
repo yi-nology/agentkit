@@ -77,7 +77,11 @@ func (c *Client) UsedTokens() int {
 // BoundBudget 返回绑定的预算累计器（可 nil）。BudgetHolder 接口实现。
 func (c *Client) BoundBudget() TokenAccountant { return c.Budget }
 
-func estimateTokens(s string) int { return len(s) / 4 }
+// estimateTokens 无 usage 回传时的 token 估算——textutil.EstTokensOf 单源
+// （rune/TokenCharDivisor=3，中英混合经验系数，与 fitInput/compact 同口径）。
+// 此前本函数是独立的 bytes/4 口径，包内两套估算并存、中文场景漂移 4~5 倍
+// （收口轮统一；精确计量始终归 provider usage 回传）。
+func estimateTokens(s string) int { return textutil.EstTokensOf(s) }
 
 func (c *Client) account(stage string, in []*schema.Message, out *schema.Message) {
 	var p, comp int
@@ -115,9 +119,9 @@ func (c *Client) Generate(ctx context.Context, stage string, msgs []*schema.Mess
 // 免 JSON/降级链上再 copy+fit 一遍）。
 func (c *Client) generateFitted(ctx context.Context, stage string, msgs []*schema.Message) (*schema.Message, error) {
 	pol := c.retryPolicy()
-	out, err := c.generateRetry(ctx, stage, msgs, pol)
+	out, attempts, err := c.generateRetry(ctx, stage, msgs, pol)
 	if err != nil {
-		return nil, fmt.Errorf("llm: %s 调用失败（已重试 %d 次）: %w", stage, pol.maxAttempts-1, err)
+		return nil, fmt.Errorf("llm: %s 调用失败（已重试 %d 次）: %w", stage, attempts-1, err)
 	}
 	return out, nil
 }
@@ -160,7 +164,9 @@ type retryPolicy struct {
 // generateRetry 单模型重试核心（全包唯一实现）：限速 → 截断后提升 MaxTokens
 // （一次）→ Generate → finish_reason=length 转错误并记账 → 按 ClassifyLLMError
 // 决定重试。ctx 取消原样上抛。
-func (c *Client) generateRetry(ctx context.Context, stage string, msgs []*schema.Message, pol retryPolicy) (*schema.Message, error) {
+// 返回值 attempts 为实际执行的物理尝试数（错误文案「已重试 N 次」的真实计数，
+// 不再按 policy 上限谎报）。
+func (c *Client) generateRetry(ctx context.Context, stage string, msgs []*schema.Message, pol retryPolicy) (*schema.Message, int, error) {
 	// Client 侧已配置 OnUsage 遥测出口时打标记：NewUsageHandler 检测到标记
 	// 跳过发射——同一次物理调用的 Generate 路径与 callbacks 路径只记一次遥测。
 	// Budget 不算遥测出口：只配 Budget（未配 OnUsage/Tracker）时不打标记，
@@ -173,13 +179,14 @@ func (c *Client) generateRetry(ctx context.Context, stage string, msgs []*schema
 	var lastErr error
 	var lastHint RetryHint
 	truncatedBoosted := false
+	attempts := 0
 	for attempt := 0; attempt < pol.maxAttempts; attempt++ {
 		if attempt > 0 {
 			if !sameModelRetryDecision(pol.chainFallback, lastHint, lastErr) {
 				break
 			}
 			if err := waitRetryGap(ctx, attempt, pol, lastHint); err != nil {
-				return nil, err
+				return nil, attempts, err
 			}
 		}
 		var opts []model.Option
@@ -192,14 +199,15 @@ func (c *Client) generateRetry(ctx context.Context, stage string, msgs []*schema
 			opts = append(opts, model.WithMaxTokens(c.MaxOutputTokens*3/2))
 			truncatedBoosted = true
 		}
+		attempts = attempt + 1
 		out, err := c.oneAttempt(ctx, stage, msgs, pol.attemptTimeout, opts)
 		if err == nil {
-			return out, nil
+			return out, attempts, nil
 		}
 		lastErr = err
 		lastHint = ClassifyLLMError(err) // 每轮只分类一次，复用于重试决策/退避/截断提升
 	}
-	return nil, lastErr
+	return nil, attempts, lastErr
 }
 
 // sameModelRetryDecision 重试决策：chainFallback（降级链有备选）时仅"值得在同模型
@@ -281,7 +289,9 @@ func backoffDelay(attempt int, base, ceil time.Duration, isRateLimit bool) time.
 	if delay < minDelay {
 		delay = minDelay
 	}
-	delay += time.Duration(fastRand(int64(base / 2)))
+	// jitter 按当次 delay 幅度（base/2 基准在高 attempt 档抖动占比趋近于零，
+	// 打散效果失效——收口轮修）
+	delay += time.Duration(fastRand(int64(delay / 2)))
 	if delay > ceil {
 		delay = ceil
 	}
@@ -326,9 +336,9 @@ func (c *Client) generateJSONFitted(ctx context.Context, stage string, msgs []*s
 			)
 		}
 		c.fitInput(callMsgs)
-		resp, err := c.generateRetry(ctx, stage, callMsgs, pol)
+		resp, attempts, err := c.generateRetry(ctx, stage, callMsgs, pol)
 		if err != nil {
-			return fmt.Errorf("llm: %s 调用失败（已重试 %d 次）: %w", stage, pol.maxAttempts-1, err)
+			return fmt.Errorf("llm: %s 调用失败（已重试 %d 次）: %w", stage, attempts-1, err)
 		}
 		raw := jsonrepair.ExtractJSON(resp.Content)
 		// 解进临时零值、成功后整体赋回：encoding/json 失败/合并不清零已解码

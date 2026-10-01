@@ -49,7 +49,7 @@ type Config struct {
 	// 与 ToolsFactory 二选一；两者都设置时 ToolsFactory 优先。
 	Tools []tool.BaseTool
 	// ToolsFactory 工具表工厂：每次 run 调用新建一份工具表。
-	// RunWithRetry 场景建议设置——工具表含 toolprior.LimitCalls 等
+	// WithRetry 场景建议设置——工具表含 toolprior.LimitCalls 等
 	// 有状态包装时，复用同一实例会让限流计数跨重试累计（重试继承 0 余额，
 	// 每次调用立即被拒）。工厂内每次重新包装即可让预算按尝试重置。
 	ToolsFactory func() []tool.BaseTool
@@ -123,38 +123,54 @@ func (c Config) maxIterations() int {
 	return DefaultMaxIterations
 }
 
-// Run 执行一次 ReAct 查询，返回最终 assistant 文本。
-func Run(ctx context.Context, cfg Config, query string) (string, error) {
-	return run(ctx, cfg, query, nil)
+// RunOption Run 入口的可选行为（v0.10.38 破坏式收敛：此前 Run/RunWithEvents/
+// RunWithRetry/RunWithEventsAndRetry 四个导出入口层层包裹——retryQuery 是
+// 独立参数而 RetryAfterMutation 却在 Config，签名不对称；入口唯一后行为
+// 正交组合，守卫逻辑只此一份）。
+type RunOption func(*runOpts)
+
+type runOpts struct {
+	onEvent    func(Event)
+	retryQuery string
 }
 
-// RunWithEvents 执行并回调过程事件（nil 回调等价 Run）。
-// onEvent 契约：回调在事件 drain 循环内同步执行——不得阻塞（阻塞会拖停整轮
-// agent）、不得 panic（会击穿调用方 goroutine，与 acpx OnEvent 同契约；事件
-// 已固化，回调内消费失败不影响事件面完整性，自行 recover）。
-func RunWithEvents(ctx context.Context, cfg Config, query string, onEvent func(Event)) (string, error) {
-	return run(ctx, cfg, query, onEvent)
+// WithOnEvent 过程事件回调（可多传，末个生效；nil 回调等价不传）。
+// 契约：回调在事件 drain 循环内同步执行——不得阻塞（阻塞会拖停整轮 agent）、
+// 不得 panic（会击穿调用方 goroutine，与 acpx OnEvent 同契约；事件已固化，
+// 回调内消费失败不影响事件面完整性，自行 recover）。
+func WithOnEvent(fn func(Event)) RunOption {
+	return func(o *runOpts) { o.onEvent = fn }
 }
 
-// RunWithRetry 失败回喂重试一次：首次失败（或产出空文本）时以 retryQuery 再跑。
-// retryQuery 由调用方构造（可携带首轮错误/输出摘要作为反馈上下文）。
-// 两次均失败返回末次错误。
-// 副作用守卫：首轮已调用变更类工具（见 IsMutatingTool）后不整体重跑，除非
-// Config.RetryAfterMutation=true——重跑会重复副作用（脚本执行/服务操作类工具
-// 在首轮已生效）。
-// 注意：两次尝试共用 cfg.Tools 实例——工具表含 toolprior.LimitCalls 等
-// 有状态包装时，限流计数会跨尝试累计；需要按尝试重置预算请设置 ToolsFactory。
-func RunWithRetry(ctx context.Context, cfg Config, query, retryQuery string) (string, error) {
-	return RunWithEventsAndRetry(ctx, cfg, query, retryQuery, nil)
+// WithRetry 失败回喂重试一次：首次失败（或产出空文本）时以 retryQuery 再跑，
+// 两次均失败返回末次错误。副作用守卫：首轮已调用变更类工具（见
+// IsMutatingTool）后不整体重跑，除非 Config.RetryAfterMutation=true——重跑会
+// 重复副作用（脚本执行/服务操作类工具在首轮已生效）。
+// ⚠ retryQuery 是**完整替换** query 而非追加（2026-09-19 bianque 实弹教训：
+// 消费者若传纯提示语，重试轮将丢失全部任务材料——工单/合议上下文全空，模型
+// 输出「未收到输入」类空心合规报告）。消费方应传 query+提示语的拼接串。
+// 注意：两次尝试共用 cfg.Tools 实例——工具表含 toolprior.LimitCalls 等有状态
+// 包装时，限流计数会跨尝试累计；需要按尝试重置预算请设置 ToolsFactory。
+func WithRetry(retryQuery string) RunOption {
+	return func(o *runOpts) { o.retryQuery = retryQuery }
 }
 
-// RunWithEventsAndRetry 带 过程事件回调 的失败回喂重试（重试过程可观测）。
-// 副作用守卫与 RunWithRetry 一致：首轮调过变更类工具后不整体重跑（观测事件照常全量回调）。
-// RunWithEventsAndRetry 首轮失败（LLM 调用错误/超时等）后以 retryQuery 整体重跑一轮。
-// ⚠ retryQuery 是**完整替换** query 而非追加（2026-09-19 bianque 实弹教训：消费者若传
-// 纯提示语，重试轮将丢失全部任务材料——工单/合议上下文全空，模型输出「未收到输入」类
-// 空心合规报告）。消费方应传 query+提示语的拼接串；改拼接语义属破坏性变更，见 CHANGELOG。
-func RunWithEventsAndRetry(ctx context.Context, cfg Config, query, retryQuery string, onEvent func(Event)) (string, error) {
+// Run 执行一次 ReAct 查询，返回最终 assistant 文本；过程事件与失败重试经
+// RunOption 正交组合（WithOnEvent / WithRetry）。
+func Run(ctx context.Context, cfg Config, query string, opts ...RunOption) (string, error) {
+	var o runOpts
+	for _, opt := range opts {
+		opt(&o)
+	}
+	if o.retryQuery == "" {
+		return run(ctx, cfg, query, o.onEvent)
+	}
+	return runWithRetry(ctx, cfg, query, o.retryQuery, o.onEvent)
+}
+
+// runWithRetry 失败回喂重试核心（Run + WithRetry 的执行体；重试过程可观测——
+// 观测事件照常全量回调，副作用守卫见 WithRetry）。
+func runWithRetry(ctx context.Context, cfg Config, query, retryQuery string, onEvent func(Event)) (string, error) {
 	// Retry-After sink（批次四十五）：传输层捕获 429 服务端建议（Retry-After 头），
 	// 供重跑前的等待决策。
 	ctx = llm.WithRetryAfterSink(ctx)

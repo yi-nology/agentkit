@@ -490,13 +490,13 @@ type hubState struct {
 // NewHub 构造。
 func NewHub() *Hub { return &Hub{} }
 
-// Set 更新血缘与契约清单（返回新图供 diff 前挂载）。
-func (h *Hub) Set(lin *Lineage, manifests map[string]*pack.ToolManifest) *Lineage {
+// Set 更新血缘与契约清单。（v0.10.38 起无返回值——此前返回的就是调用方传入
+// 的 lin，信息量为零还暗示不存在的语义；diff 场景调用方直接用自己手里的 lin。）
+func (h *Hub) Set(lin *Lineage, manifests map[string]*pack.ToolManifest) {
 	if h == nil {
-		return lin
+		return
 	}
 	h.st.Store(&hubState{lin: lin, manifests: manifests})
-	return lin
 }
 
 // Resync 仅替换血缘图（清单沿用上次 Set 的——挂摘/启停类变化不改契约面）。

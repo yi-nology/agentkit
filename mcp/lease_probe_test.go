@@ -12,7 +12,7 @@ import (
 
 // TestModernProbeEvictsDeadConnection 回归（v0.10.29 审计）：现代协议
 // （2026-07-28）连接上 Client.Ping 是 no-op——探活曾虚报存活且 touch 给死连接
-// 续命。修复后现代连接改发真实 tools/list：server 停掉后探活必须失败并摘除。
+// 续命。修复后现代连接改发真实 tr.Tools/list：server 停掉后探活必须失败并摘除。
 func TestModernProbeEvictsDeadConnection(t *testing.T) {
 	srv := server.NewMCPServer("probe-mcp", "1.0.0", server.WithToolCapabilities(false))
 	srv.AddTool(mcp.NewTool("noop", mcp.WithDescription("noop")),

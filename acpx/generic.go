@@ -2,6 +2,7 @@ package acpx
 
 import (
 	"context"
+	"fmt"
 	"strings"
 )
 
@@ -66,6 +67,9 @@ func (g *GenericAgent) Capabilities() Capability {
 
 // Run 执行通用 CLI agent。
 func (g *GenericAgent) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
+	if err := validateTemplate(g.Argv); err != nil {
+		return nil, err
+	}
 	var argv []string
 	for _, a := range g.Argv {
 		switch a {
@@ -87,14 +91,28 @@ func (g *GenericAgent) Run(ctx context.Context, req RunRequest) (*RunResult, err
 			argv = append(argv, a)
 		}
 	}
-	stdout, code, err := runCLI(ctx, req, argv, nil)
+	stdout, stderr, code, err := runCLI(ctx, req, argv, nil)
 	if err != nil {
 		return nil, err
 	}
 	if !g.IsJSON {
-		return fallbackResult(stdout, code), nil
+		return fallbackResult(stdout, stderr, code), nil
 	}
-	return envelopeResult(req, g.Name(), stdout, code)
+	return envelopeResult(req, g.Name(), stdout, stderr, code)
+}
+
+// validateTemplate 模板合法性（fail-fast，配置错误在首跑前暴露）：占位符必须
+// 独占一个参数位——"--model={model}" 这类内联形态不会被展开、Capabilities 也
+// 推导不到，会以字面量泄漏进 argv 静默错跑（收口轮修）。
+func validateTemplate(argv []string) error {
+	for _, a := range argv {
+		for _, ph := range []string{"{prompt}", "{model}", "{session}"} {
+			if a != ph && strings.Contains(a, ph) {
+				return fmt.Errorf("acpx: 模板参数 %q 内联占位符 %s（占位符须独占参数位，如 \"--model\", \"{model}\")", a, ph)
+			}
+		}
+	}
+	return nil
 }
 
 // dropFlagPair 占位符缺值时连带移除紧邻的 flag 参数：模板中 "--model {model}"

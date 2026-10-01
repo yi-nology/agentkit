@@ -54,7 +54,7 @@ func (k *Kimi) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		}
 	}
 
-	stdout, code, err := runCLI(ctx, req, argv, onLine)
+	stdout, stderr, code, err := runCLI(ctx, req, argv, onLine)
 	// 终态优先（与 claude/codex/pi/mimo 同契约）：已收到 assistant 消息
 	//（agent 正常完成）但进程退出码非零时以结果为准，不丢文本
 	if err != nil && lastAssistant == "" {
@@ -64,7 +64,7 @@ func (k *Kimi) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 		// stream-json 不可用（旧版本/文本模式）：全文兜底
 		lastAssistant = strings.TrimSpace(stdout)
 	}
-	return &RunResult{Text: lastAssistant, ExitCode: code, Raw: []byte(stdout)}, nil
+	return &RunResult{Text: lastAssistant, ExitCode: code, Raw: []byte(stdout), Stderr: stderrTail(stderr)}, nil
 }
 
 // kimiMessage stream-json 消息行。

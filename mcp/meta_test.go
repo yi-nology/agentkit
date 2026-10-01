@@ -43,11 +43,11 @@ func TestRequestMetaInjected(t *testing.T) {
 	// 白盒：镜像 client() 的装饰点（in-process client 无法走真实 dial 路径）
 	injectClient(t, p, "srv", &metaClient{MCPClient: mustInProcessClient(t, newEchoMetaServer(t)), metaFn: p.RequestMeta})
 
-	tools, err := p.Tools(context.Background(), []ToolSpec{{Server: "srv"}})
+	tr, err := p.Tools(context.Background(), []ToolSpec{{Server: "srv"}})
 	if err != nil {
 		t.Fatalf("Tools 失败: %v", err)
 	}
-	it, ok := tools[0].(tool.InvokableTool)
+	it, ok := tr.Tools[0].(tool.InvokableTool)
 	if !ok {
 		t.Fatal("应为 InvokableTool")
 	}

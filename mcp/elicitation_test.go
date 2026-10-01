@@ -68,14 +68,14 @@ func TestElicitationHandlerWired(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	tools, err := p.Tools(ctx, []ToolSpec{{Server: "srv"}})
+	tr, err := p.Tools(ctx, []ToolSpec{{Server: "srv"}})
 	if err != nil {
 		t.Fatalf("Tools 失败: %v", err)
 	}
-	if len(tools) != 1 {
-		t.Fatalf("应返回 1 个工具，得 %d", len(tools))
+	if len(tr.Tools) != 1 {
+		t.Fatalf("应返回 1 个工具，得 %d", len(tr.Tools))
 	}
-	it, ok := tools[0].(tool.InvokableTool)
+	it, ok := tr.Tools[0].(tool.InvokableTool)
 	if !ok {
 		t.Fatal("应为 InvokableTool")
 	}
@@ -102,11 +102,11 @@ func TestElicitationNoHandler(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	tools, err := p.Tools(ctx, []ToolSpec{{Server: "srv"}})
+	tr, err := p.Tools(ctx, []ToolSpec{{Server: "srv"}})
 	if err != nil {
 		t.Fatalf("Tools 失败: %v", err)
 	}
-	it := tools[0].(tool.InvokableTool)
+	it := tr.Tools[0].(tool.InvokableTool)
 	_, err = it.InvokableRun(ctx, "{}")
 	if err == nil || !strings.Contains(err.Error(), "no elicitation handler") {
 		t.Fatalf("缺 handler 应以协议错误可见: %v", err)

@@ -174,7 +174,10 @@ type RunResult struct {
 	Usage     Usage
 	Duration  time.Duration
 	ExitCode  int
-	Raw       []byte // 原始输出（调试用）
+	Raw       []byte // 原始 stdout（调试用）
+	// Stderr 子进程 stderr 尾巴（≤400 字节，rune 对齐；空 = 无输出）。成功
+	// 解析路径也有值——CLI 的告警/弃用提示走 stderr，transcript 排障需要。
+	Stderr string
 }
 
 // validate 校验请求并填充缺省值。

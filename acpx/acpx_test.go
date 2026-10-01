@@ -548,3 +548,27 @@ func TestOpenCodeErrorEnvelope(t *testing.T) {
 		}
 	}
 }
+
+func TestGenericAgentInlinePlaceholderRejected(t *testing.T) {
+	// 收口轮回归：内联占位符（--model={model}）不展开、能力推导不到，
+	// 会以字面量泄漏进 argv——首跑前 fail-fast。
+	g := NewGenericAgent("x", []string{"tool", "--model={model}", "{prompt}"}, false)
+	if _, err := g.Run(context.Background(), RunRequest{Prompt: "p", Model: "m"}); err == nil ||
+		!strings.Contains(err.Error(), "内联占位符") {
+		t.Fatalf("内联占位符应 fail-fast: %v", err)
+	}
+}
+
+func TestRunResultCarriesStderrTail(t *testing.T) {
+	// RunResult.Stderr 排障通道（收口轮）：CLI 的告警走 stderr，结果面须可见
+	bin := fakeCLI(t, `echo '{"text":"ok","sessionID":"s"}'; echo "deprecation: use --new-flag" >&2`)
+	a := NewOpenCode()
+	a.Bin = bin
+	res, err := a.Run(context.Background(), RunRequest{Prompt: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Stderr, "deprecation") {
+		t.Fatalf("Stderr 尾巴应透传: %q", res.Stderr)
+	}
+}

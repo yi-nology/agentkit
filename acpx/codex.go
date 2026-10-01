@@ -34,8 +34,8 @@ func (c *Codex) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	}
 	defer cleanup()
 	st := &codexStream{req: req, lastMsg: lastMsg}
-	stdout, code, err := runCLI(ctx, req, c.buildArgv(req, lastMsg), st.handleLine)
-	return st.finalize(stdout, code, err)
+	stdout, stderr, code, err := runCLI(ctx, req, c.buildArgv(req, lastMsg), st.handleLine)
+	return st.finalize(stdout, stderr, code, err)
 }
 
 // buildArgv 构造 codex CLI 参数（协议面固定：exec --json --output-last-message；argv 语义不改）。
@@ -91,12 +91,12 @@ func (s *codexStream) handleLine(line string) {
 }
 
 // finalize 收尾装配：output-last-message 优先、事件流 lastText 兜底；错误如实上抛。
-func (s *codexStream) finalize(stdout string, code int, err error) (*RunResult, error) {
+func (s *codexStream) finalize(stdout, stderr string, code int, err error) (*RunResult, error) {
 	if err != nil {
 		// 与 claude 族一致：output-last-message 已有最终消息（agent 正常完成但
 		// 退出码非零）时以结果为准
 		if text := readFileTrim(s.lastMsg); text != "" {
-			return &RunResult{Text: text, Usage: s.usage, ExitCode: code, Raw: []byte(stdout)}, nil
+			return &RunResult{Text: text, Usage: s.usage, ExitCode: code, Raw: []byte(stdout), Stderr: stderrTail(stderr)}, nil
 		}
 		return nil, err
 	}
@@ -110,7 +110,7 @@ func (s *codexStream) finalize(stdout string, code int, err error) (*RunResult, 
 	if text == "" {
 		text = s.lastText
 	}
-	return &RunResult{Text: text, Usage: s.usage, ExitCode: code, Raw: []byte(stdout)}, nil
+	return &RunResult{Text: text, Usage: s.usage, ExitCode: code, Raw: []byte(stdout), Stderr: stderrTail(stderr)}, nil
 }
 
 type codexEvent struct {

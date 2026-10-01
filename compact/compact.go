@@ -109,9 +109,17 @@ func (c Config) enabled() bool {
 	return c.Enabled == nil || *c.Enabled
 }
 
+// Role 消息角色词表（Message.Role 的合法值——此前魔法字符串散落两文件，
+// 拼错即静默改变分组行为；收口轮常量化，值不变零迁移）。
+const (
+	RoleUser      = "user"
+	RoleAssistant = "assistant"
+	RoleTool      = "tool"
+)
+
 // Message 转写消息（对话 + 工具调用形态的最小通用模型）。
 type Message struct {
-	Role string // "user" | "assistant" | "tool"
+	Role string // RoleUser | RoleAssistant | RoleTool（词表常量见下）
 	Text string
 	// ToolCalls assistant 发起的工具调用（token 估算必须计入——大型入参若只计
 	// 正文，auto-compact 与预算口径都会低估，ZCode 踩过的漏计面）。
@@ -155,7 +163,7 @@ func msgTokens(m Message) int {
 func HasEnoughToCompact(msgs []Message) bool {
 	assistant := 0
 	for _, m := range msgs {
-		if m.Role == "assistant" {
+		if m.Role == RoleAssistant {
 			assistant++
 		}
 	}
@@ -425,12 +433,12 @@ func collectClearableGroups(msgs []Message, cfg MicroConfig) [][]int {
 		current = nil
 	}
 	for i, m := range msgs {
-		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+		if m.Role == RoleAssistant && len(m.ToolCalls) > 0 {
 			flush()
 			current = []int{}
 			continue
 		}
-		if m.Role != "tool" || m.ToolCallID == "" || m.ToolName == "" {
+		if m.Role != RoleTool || m.ToolCallID == "" || m.ToolName == "" {
 			continue
 		}
 		if len(allow) > 0 && !allow[m.ToolName] {
