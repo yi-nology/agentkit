@@ -548,10 +548,14 @@ func dialStdio(ctx context.Context, cfg ServerConfig, clientOpts ...client.Clien
 	if cfg.Command[0] == "" || strings.HasPrefix(cfg.Command[0], "-") {
 		return nil, fmt.Errorf("mcp: server %s 非法 command %q", cfg.Name, cfg.Command[0])
 	}
-	// 经 CommandFunc 接管 exec.Cmd：环境白名单纪律单一事实源
+	// 经 CommandFunc 接管 exec.Cmd：环境白名单纪律单一事实源。
+	// 子进程生命周期必须与 dial ctx 解绑（WithoutCancel）：dial ctx 是连接级短预算
+	// （Timeout，默认 30s），client() 返回即 cancel——绑上去会让 stdio server 在
+	// 建连成功瞬间被杀，下次 tools/list 报 transport closed（v0.10.33 修复）。
+	// 子进程由连接关闭路径收口（evict/闲置回收/Pool.Close → cli.Close）。
 	t := transport.NewStdioWithOptions(cfg.Command[0], cfg.Env, cfg.Command[1:],
 		transport.WithCommandFunc(func(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
-			cmd := exec.CommandContext(ctx, command, args...)
+			cmd := exec.CommandContext(context.WithoutCancel(ctx), command, args...)
 			cmd.Env = procx.ChildEnv(env)
 			return cmd, nil
 		}))

@@ -147,8 +147,10 @@ func (m *mockOpenAI) writeStreamChunks(w http.ResponseWriter, resp mockResponse)
 		for _, part := range splitChunks(resp.content, 2) {
 			write(sseChunk(map[string]any{"content": part}, nil))
 		}
-		write(sseChunk(map[string]any{}, "stop"))
+			write(sseChunk(map[string]any{}, "stop"))
 	}
+	// usage 尾帧（stream_options.include_usage 形态：空 choices + 顶层 usage）
+	write(`data: {"id":"cmpl-test","object":"chat.completion.chunk","created":1,"model":"mock","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}` + "\n\n")
 	write("data: [DONE]\n\n")
 }
 
@@ -240,6 +242,34 @@ func TestRunReActLoopWithToolCall(t *testing.T) {
 // TestRunStreamingDeltas 流式增量通道语义（默认开流）：思考/正文逐分片先于权威快照
 // 到达；分片拼接 = 快照全文；调用轮（含 tool_calls 分片）不外发正文增量——其前导正文
 // 分片（无 tool_calls 的 chunk）仍外发；权威事件序列与关流时一致。
+// TestRunStreamingOnUsage 流式用量回调：每轮一次、数值来自 usage 尾帧；两轮恰好两次。
+func TestRunStreamingOnUsage(t *testing.T) {
+	_, cm := newMockOpenAI(t,
+		mockResponse{reasoning: "想一想", toolCall: &mockToolCall{id: "c1", name: "echo", arguments: `{"text":"hi"}`}},
+		mockResponse{content: "结论"},
+	)
+	var usages []Usage
+	out, err := RunWithEvents(context.Background(), Config{
+		Name: "test", Instruction: "inst", Model: cm,
+		Tools:  []tool.BaseTool{newEchoTool(t)},
+		OnUsage: func(_ context.Context, u Usage) { usages = append(usages, u) },
+	}, "问", func(Event) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "结论" {
+		t.Fatalf("out = %q", out)
+	}
+	if len(usages) != 2 {
+		t.Fatalf("两轮应恰两次 OnUsage: %+v", usages)
+	}
+	for _, u := range usages {
+		if u.PromptTokens != 11 || u.CompletionTokens != 7 || u.TotalTokens != 18 {
+			t.Fatalf("用量数值不符: %+v", u)
+		}
+	}
+}
+
 func TestRunStreamingDeltas(t *testing.T) {
 	_, cm := newMockOpenAI(t,
 		mockResponse{reasoning: "先想清楚再动手", toolCall: &mockToolCall{id: "c1", name: "echo", arguments: `{"text":"hi"}`}},

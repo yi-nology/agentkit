@@ -63,6 +63,21 @@ type Config struct {
 	// 外发（真流式观测面），每轮收流后仍按完整消息走既有派发与终稿判定——消费方
 	// 语义不变，只多出增量通道。模型/网关不兼容流式时的逃生开关。
 	DisableStreaming bool
+	// OnUsage 流式调用的每轮用量回调（可选）：开流后 eino callbacks OnEnd 拿到的是
+	// StreamReader（无法在回调侧消费取 Usage），由 reactHandler 收流 concat 后从
+	// ResponseMeta 提取并回调，每轮一次。非流式路径不触发（消费方沿用既有
+	// callbacks 用量面板，两路不会双计）。ctx 为 run 的调用 ctx（归因取值用）。
+	OnUsage func(ctx context.Context, u Usage)
+}
+
+// Usage 单轮 LLM 调用用量（流式 OnUsage 回调载荷；字段与 eino TokenUsage 同义）。
+type Usage struct {
+	PromptTokens     int
+	CachedTokens     int
+	CompletionTokens int
+	ReasoningTokens  int
+	TotalTokens      int
+	FinishReason     string
 }
 
 // Event agent 运行过程事件（OnEvent 回调载荷，观测/进度展示用）。
@@ -197,7 +212,7 @@ func run(ctx context.Context, cfg Config, query string, onEvent func(Event)) (st
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent, EnableStreaming: !cfg.DisableStreaming})
 	iter := runner.Query(ctx, query)
 
-	h := &reactHandler{onEvent: onEvent, toolCalled: map[string]string{}}
+	h := &reactHandler{ctx: ctx, onEvent: onEvent, onUsage: cfg.OnUsage, toolCalled: map[string]string{}}
 	err = drainEvents(iter, "agent", h.handle)
 	if err != nil {
 		return "", err
@@ -213,7 +228,9 @@ func run(ctx context.Context, cfg Config, query string, onEvent func(Event)) (st
 
 // reactHandler ReAct 事件流消费：工具声明/结果/思考/最终答复分路派发。
 type reactHandler struct {
+	ctx        context.Context
 	onEvent    func(Event)
+	onUsage    func(context.Context, Usage)
 	toolCalled map[string]string // tool_call id → 工具名（回填 tool_result）
 	finalText  string
 	sawFinal   bool
@@ -233,6 +250,19 @@ func (h *reactHandler) handle(mv *adk.MessageVariant) error {
 		mv.Message = full
 		mv.IsStreaming = false
 		mv.MessageStream = nil
+		// 流式用量（OnUsage）：callbacks OnEnd 在流式下拿不到 TokenUsage（StreamReader
+		// 无法在回调侧消费），concat 后 ResponseMeta 自带——每轮一次，非流式不触发。
+		if h.onUsage != nil && full.ResponseMeta != nil && full.ResponseMeta.Usage != nil {
+			u := full.ResponseMeta.Usage
+			h.onUsage(h.ctx, Usage{
+				PromptTokens:     u.PromptTokens,
+				CachedTokens:     u.PromptTokenDetails.CachedTokens,
+				CompletionTokens: u.CompletionTokens,
+				ReasoningTokens:  u.CompletionTokensDetails.ReasoningTokens,
+				TotalTokens:      u.TotalTokens,
+				FinishReason:     full.ResponseMeta.FinishReason,
+			})
+		}
 	}
 	if mv.Message == nil {
 		return nil

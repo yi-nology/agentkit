@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.10.36 (2026-10-01)
+
+mcp stdio 子进程与拨号预算层解绑 + agentrun 流式用量回调。
+
+### Fixed
+
+- **mcp**：stdio 子进程被拨号预算层误杀——spawn 的 exec.CommandContext 绑在
+  dial 的连接级预算 ctx（Timeout 默认 30s）上，预算到期即 SIGKILL：建连与首轮
+  列举在窗口内成功，30s 后任何 tools/list 必现 `transport closed`（消费方表现为
+  「server 未返回工具」，长诊断后半程 MCP 全灭）。v0.10.35 的 dialGroup 外层
+  WithoutCancel 挡不住内部重新包上的 WithTimeout 预算层。子进程改
+  `context.WithoutCancel(cctx)` 承载，生命周期归连接关闭路径（evict/闲置回收/
+  Pool.Close）。回归测试以测试二进制自举 stdio server，cancel 后列举工具钉住。
+
+### Added
+
+- **agentrun**：`Config.OnUsage` 流式用量回调（`Usage` 载荷）——开流后 eino
+  callbacks OnEnd 拿到 StreamReader 无法取 Usage，reactHandler 收流 concat 后
+  从 ResponseMeta 提取，每轮一次；非流式路径不触发（callbacks 面板两路不双计）。
+
 ## v0.10.35 (2026-10-01)
 
 第六轮全面审计（6 面 code-reviewer 并行独立复查全部 54 个改动文件）+ 破坏式

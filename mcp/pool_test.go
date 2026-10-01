@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -312,5 +313,54 @@ func TestToolsCancelledCtxColdCacheReturnsError(t *testing.T) {
 	tools, err := p.Tools(ctx, []ToolSpec{{Server: "x"}})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("应返回 ctx.Err()，得到 tools=%d err=%v", len(tools), err)
+	}
+}
+
+// TestStdioServerHelper 测试二进制自举的 stdio MCP server（父测试以自身可执行文件
+// 作 Command spawn；env 标记守护，正常 go test 运行时直接 Skip）。
+func TestStdioServerHelper(t *testing.T) {
+	if os.Getenv("BQ_MCP_STDIO_HELPER") != "1" {
+		t.Skip("helper：仅由 TestStdioChildSurvivesDialCancel 以 env 标记拉起")
+	}
+	srv := server.NewMCPServer("stdio-helper", "1.0.0", server.WithToolCapabilities(false))
+	srv.AddTool(mcp.NewTool("noop", mcp.WithDescription("noop")),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText("ok"), nil
+		})
+	if err := server.NewStdioServer(srv).Listen(context.Background(), os.Stdin, os.Stdout); err != nil {
+		t.Fatalf("stdio server 退出: %v", err)
+	}
+}
+
+// TestStdioChildSurvivesDialCancel 回归（v0.10.33）：stdio 子进程生命周期必须与
+// dial ctx 解绑——dial ctx 是连接级短预算，client() 返回即 cancel，绑上去会在建连
+// 成功瞬间杀掉 server（下次 tools/list 报 transport closed）。
+func TestStdioChildSurvivesDialCancel(t *testing.T) {
+	testBin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := NewPool(ServerConfig{Name: "srv", Timeout: 10 * time.Second,
+		Env:     []string{"BQ_MCP_STDIO_HELPER=1"}, // ChildEnv 白名单字面量透传（helper 守卫标记）
+		Command: []string{testBin, "-test.run=TestStdioServerHelper", "-test.v=false"}})
+	defer p.Close()
+
+	// 拨号 ctx：建连成功后立即取消（复刻 client() 返回即 cancel 的时序）
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	st, err := p.client(dialCtx, p.cfgs["srv"])
+	if err != nil {
+		t.Fatalf("client 失败: %v", err)
+	}
+	_ = st
+	dialCancel()
+	time.Sleep(100 * time.Millisecond) // 给误杀路径（回归态）留触发窗口
+
+	// cancel 后的全新 ctx 上列举工具：子进程被误杀时这里必现 transport closed
+	tools, err := p.Tools(context.Background(), []ToolSpec{{Server: "srv", Allow: []string{"noop"}}})
+	if err != nil {
+		t.Fatalf("dial ctx 取消后 tools/list 应存活（子进程误杀回归）: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("应返回 1 个工具，得到 %d", len(tools))
 	}
 }
