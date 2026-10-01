@@ -49,6 +49,13 @@ func EstTokensCJK(s string) int {
 }
 
 func runeUnitsCJK(r rune) int {
+	// 漏段显式补齐（第八轮审计）：部首补充/康熙部首、CJK 笔画、竖排/兼容/
+	// 小形式变体——Han/Hangul/Kana 的 unicode.Is 覆盖不到的 CJK 符号区段
+	if (r >= 0x2E80 && r <= 0x2FDF) || (r >= 0x31C0 && r <= 0x31EF) ||
+		(r >= 0xFE10 && r <= 0xFE19) || (r >= 0xFE30 && r <= 0xFE4F) ||
+		(r >= 0xFE50 && r <= 0xFE6F) {
+		return 2
+	}
 	if unicode.Is(unicode.Han, r) || unicode.Is(unicode.Hangul, r) ||
 		unicode.Is(unicode.Hiragana, r) || unicode.Is(unicode.Katakana, r) ||
 		(r >= 0x3000 && r <= 0x303F) || // CJK 标点

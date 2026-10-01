@@ -517,3 +517,32 @@ func TestRunEventsCarryNativeCallID(t *testing.T) {
 		t.Fatalf("原生 CallID 透传不符: %v", callIDs)
 	}
 }
+
+// TestRunDisableStreamingBypass DisableStreaming 逃生口回归（第八轮审计补
+// 覆盖）：关流后无 *_delta 增量、流式 OnUsage 不触发、终稿正常。
+func TestRunDisableStreamingBypass(t *testing.T) {
+	_, cm := newMockOpenAI(t, mockResponse{content: "非流式终稿"})
+
+	var deltas, usage int
+	out, err := Run(context.Background(), Config{
+		Name: "test", Instruction: "inst", Model: cm,
+		DisableStreaming: true,
+		OnUsage:          func(context.Context, Usage) { usage++ },
+	}, "问", WithOnEvent(func(e Event) {
+		if e.Type == EventTextDelta || e.Type == EventReasoningDelta {
+			deltas++
+		}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "非流式终稿" {
+		t.Fatalf("out = %q", out)
+	}
+	if deltas != 0 {
+		t.Fatalf("关流不应有增量事件: %d", deltas)
+	}
+	if usage != 0 {
+		t.Fatalf("关流不应触发流式 OnUsage: %d", usage)
+	}
+}

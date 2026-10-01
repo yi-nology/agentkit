@@ -60,3 +60,15 @@ func TestCheckHostWithDefaultsParity(t *testing.T) {
 		}
 	}
 }
+
+// TestAllowLoopbackCoversLocalhostDomain 回归（第八轮审计）：localhost 域即
+// 回环的域形态——AllowLoopback 的文档场景（探测本机自建服务）不得拒掉
+// http://localhost:port/health 这最典型形态。
+func TestAllowLoopbackCoversLocalhostDomain(t *testing.T) {
+	if err := CheckWith("http://localhost:8943/health", Options{AllowLoopback: true}); err != nil {
+		t.Fatalf("AllowLoopback 应放行 localhost 域: %v", err)
+	}
+	if err := CheckWith("http://localhost:8943/health", Options{}); err == nil {
+		t.Fatal("零值仍应拒绝 localhost 域")
+	}
+}

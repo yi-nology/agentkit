@@ -56,6 +56,11 @@ func (m *ContinueModel) Generate(ctx context.Context, input []*schema.Message, o
 			&schema.Message{Role: schema.User, Content: continueDirective})
 		next, err := m.BaseChatModel.Generate(ctx, cont, opts...)
 		if err != nil || next == nil {
+			// 调用方取消/超时预算耗尽不是「续写失败」，必须原样上抛——吞掉会让
+			// 上层把腰斩的半截输出当正常完成品（第八轮审计）；其余错误走部分返回
+			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return msg, ctx.Err()
+			}
 			return msg, nil // 续写失败：返回已得部分
 		}
 		merged := *msg

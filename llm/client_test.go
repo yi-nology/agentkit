@@ -89,13 +89,14 @@ func TestBudgetConfigMinimums(t *testing.T) {
 }
 
 func TestEstimateTokens(t *testing.T) {
-	// rune/TokenCharDivisor=3 单源口径（textutil.EstTokensOf，收口轮统一；
-	// 此前 bytes/4 与包内 chars/3 两套估算并存）
-	if got := estimateTokens("hello world"); got != 4 { // 11 runes → ceil(11/3)
+	// CJK 感知口径（textutil.EstTokensCJK，v0.11.2 起）：CJK 计 2 单位、
+	// tokens≈units/3+1——中文为主的输入不再系统性低估（v0.10.40 的纯 rune/3
+	// 口径对中文低估约 3 倍）
+	if got := estimateTokens("hello world"); got != 4 { // 11 units/3+1
 		t.Errorf("estimateTokens('hello world') = %d, want 4", got)
 	}
-	if got := estimateTokens("你好世界"); got != 2 { // 4 runes → ceil(4/3)
-		t.Errorf("estimateTokens('你好世界') = %d, want 2", got)
+	if got := estimateTokens("你好世界"); got != 3 { // 8 units/3+1=3
+		t.Errorf("estimateTokens('你好世界') = %d, want 3", got)
 	}
 }
 

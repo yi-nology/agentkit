@@ -1,5 +1,5 @@
 // Package pacer 流式增量节流器：LLM token 级分片若逐条发布会洪泛事件通道与
-// 前端（每秒数次×千字级文本），按「距上次发布 ≥interval 或缓冲 ≥chars」合并
+// 前端（每秒数次×千字级文本），按「距上次发布 ≥interval 或缓冲 ≥bytes」合并
 // 发布；总量帽内单流 seq 自 1 单调递增；权威快照到达即 Absorb 收口（此后迟到
 // 分片丢弃）；收尾残尾用 Flush 落地。
 //
@@ -12,7 +12,8 @@ import "time"
 const (
 	// DefaultInterval 缺省时间窗。
 	DefaultInterval = 400 * time.Millisecond
-	// DefaultChars 缺省字符窗（缓冲达到即提前发布）。
+	// DefaultChars 缺省缓冲窗（**字节**口径：缓冲达到即提前发布；CJK 场景
+	// 200 字节 ≈ 66 汉字——命名沿用母本，语义如实为字节窗，第八轮审计钉住）。
 	DefaultChars = 200
 	// DefaultCapBytes 单流发布总量帽（深度思考可极长，超帽静默停发）。
 	DefaultCapBytes = 64 << 10
@@ -28,7 +29,7 @@ type Delta struct {
 // Stream 单条流的增量缓冲与节拍判定。
 type Stream struct {
 	interval  time.Duration
-	chars     int
+	chars     int // 缓冲窗，字节口径（见 DefaultChars 注释）
 	capBytes  int
 	text      string
 	seq       int
@@ -72,7 +73,10 @@ func NewStream(interval time.Duration, chars, capBytes int, opts ...Option) *Str
 // Offer 接收一个增量分片：按节流窗口判定是否发布。done（权威已到）后的
 // 迟到分片丢弃。
 func (s *Stream) Offer(chunk string) (Delta, bool) {
-	if s.done {
+	// 超帽与收口同为静默态：检测前置于累加——此前超帽后每个迟到分片仍无限
+	// 滞留 s.text（深度思考尾部可达数百 KB 内存 + O(n²) 拷贝拖停 drain 循环；
+	// 第八轮审计 C 级面）。Absorb 的权威快照会补全被帽截断的内容。
+	if s.done || s.published >= s.capBytes {
 		return Delta{}, false
 	}
 	s.text += chunk
@@ -102,6 +106,10 @@ func (s *Stream) Absorb() {
 	s.done = true
 	s.text = ""
 }
+
+// Buffered 当前滞留缓冲的字节数（观测面：超帽/收口后应恒 0——超帽静默停发
+// 的感知锚点，消费方据此区分「流进行中」与「已被帽截断、等权威快照」）。
+func (s *Stream) Buffered() int { return len(s.text) }
 
 // Sealed 是否已收口（Absorb 之后）。
 func (s *Stream) Sealed() bool {

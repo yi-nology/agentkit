@@ -84,6 +84,11 @@ func checkHost(host string, o Options) error {
 		return fmt.Errorf("egress: 空 host")
 	}
 	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		if o.AllowLoopback {
+			return nil // localhost 域即回环的域形态——探测本机自建服务是
+			// AllowLoopback 的文档场景（第八轮审计：开关拒掉最典型的
+			// http://localhost:port/health 形态自相矛盾）
+		}
 		return &BlockedError{Host: h, Reason: "localhost 域"}
 	}
 	addr, err := netip.ParseAddr(h)

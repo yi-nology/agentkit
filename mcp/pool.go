@@ -116,6 +116,12 @@ type Pool struct {
 	errMu sync.Mutex
 	// reapStop 闲置回收协程停止信号（StartIdleReaper 置位；Close 关闭）。
 	reapStop chan struct{}
+	// baseCtx 连接生命周期 ctx（NewPool 建、Close 收口）：stdio transport 的
+	// 存活期 ctx 与 client 的双向 handler 注册共用——不得绑在拨号预算 cctx 上
+	//（dialAndRegister 返回即 cancel，绑上去会让带外 server→client 请求全部
+	// 撞已取消 ctx；第八轮审计）。
+	baseCtx    context.Context
+	baseCancel context.CancelFunc
 	// OnError 建连/列举失败回调（nil 安全）。返回错误不中断其余 server——
 	// 部分失败容忍：可用的工具照常返回，失败的 server 由调用方经钩子观测。
 	OnError func(server string, err error)
@@ -144,7 +150,9 @@ type connState struct {
 // Name 为空的配置忽略；重名保留先到者（后者忽略）——配置错误尽早收敛为确定性
 // 行为而非静默覆盖。
 func NewPool(cfgs ...ServerConfig) *Pool {
-	p := &Pool{cfgs: map[string]ServerConfig{}, conns: map[string]*connState{}}
+	baseCtx, cancel := context.WithCancel(context.Background())
+	p := &Pool{cfgs: map[string]ServerConfig{}, conns: map[string]*connState{},
+		baseCtx: baseCtx, baseCancel: cancel}
 	for _, c := range cfgs {
 		if c.Name == "" {
 			continue
@@ -434,9 +442,20 @@ func (p *Pool) dialAndRegister(ctx context.Context, cfg ServerConfig) (client.MC
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cli, err := p.dial(cctx, cfg)
+	// 连接生命周期（transport 存活期 ctx + 双向 handler 注册）用池级 baseCtx；
+	// cctx 只作 Initialize 的拨号预算（dialAndRegister 返回即 cancel）。
+	// cli.Start 注册 server→client 请求/通知 handler（elicitation 等带外通道；
+	// 不调 Start 则 handler 恒 nil，带外请求一律 METHOD_NOT_FOUND）——对已
+	// Start 的 transport 幂等，仅补挂 handler（第八轮审计）。
+	cli, err := p.dial(p.baseCtx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: %s 建连失败: %w", cfg.Name, err)
+	}
+	if starter, ok := cli.(interface{ Start(context.Context) error }); ok {
+		if serr := starter.Start(p.baseCtx); serr != nil {
+			_ = cli.Close()
+			return nil, fmt.Errorf("mcp: %s client 启动失败: %w", cfg.Name, serr)
+		}
 	}
 	cli, isModern, err := initializeClient(cctx, cli, p.ElicitationHandler)
 	if err != nil {
@@ -672,9 +691,13 @@ func (p *Pool) Close() {
 	}
 	stop := p.reapStop
 	p.reapStop = nil
+	cancel := p.baseCancel
 	p.mu.Unlock()
 	if stop != nil {
 		close(stop)
+	}
+	if cancel != nil {
+		cancel() // 连接生命周期 ctx 收口（带外请求通道随连接关闭一并终结）
 	}
 	for _, st := range states {
 		st.mu.Lock()

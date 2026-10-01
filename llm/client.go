@@ -77,11 +77,11 @@ func (c *Client) UsedTokens() int {
 // BoundBudget 返回绑定的预算累计器（可 nil）。BudgetHolder 接口实现。
 func (c *Client) BoundBudget() TokenAccountant { return c.Budget }
 
-// estimateTokens 无 usage 回传时的 token 估算——textutil.EstTokensOf 单源
-// （rune/TokenCharDivisor=3，中英混合经验系数，与 fitInput/compact 同口径）。
-// 此前本函数是独立的 bytes/4 口径，包内两套估算并存、中文场景漂移 4~5 倍
-// （收口轮统一；精确计量始终归 provider usage 回传）。
-func estimateTokens(s string) int { return textutil.EstTokensOf(s) }
+// estimateTokens 无 usage 回传时的 token 估算——textutil.EstTokensCJK 单源
+// （CJK 感知：Han/Kana/全角计 2 单位、tokens≈units/3+1，中文为主的提示词/
+// 会话历史不再系统性低估；v0.11.2 起 v0.10.40 的 EstTokensOf 切换为 CJK
+// 口径——英文估算略升为保守方向，精确计量始终归 provider usage 回传）。
+func estimateTokens(s string) int { return textutil.EstTokensCJK(s) }
 
 func (c *Client) account(stage string, in []*schema.Message, out *schema.Message) {
 	var p, comp int

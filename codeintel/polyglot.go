@@ -17,12 +17,12 @@ import (
 	"git.enjoye.top/enjoydream/agentkit/textutil"
 )
 
-// skipExts 索引的语言扩展（v1.5 起 JS/TS/Python 与 Go 并列）。
-var pyFuncRe = regexp.MustCompile(`(?m)^(\s*)def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)`)
+var pyFuncRe = regexp.MustCompile(`(?m)^(\s*)(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)`)
 
 // jsFuncRe JS/TS 函数声明/赋值/导出（词法形态：function、const/let = (…) =>、
 // class 方法不做——方法名与调用形态歧义大，宁缺勿滥）。
-var jsFuncRe = regexp.MustCompile(`(?m)^\s*(?:export\s+)?(?:async\s+)?(?:function\s+([A-Za-z_$][A-Za-z0-9_$]*)|(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\()`)
+var jsFuncRe = regexp.MustCompile(`(?m)^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s+([A-Za-z_$][A-Za-z0-9_$]*)|(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)(?::[^=
+]+)?\s*=\s*(?:async\s*)?(?:\(|[A-Za-z_$][A-Za-z0-9_$]*\s*=>))`)
 
 // goCallRe Go 调用形态（pkg.Name( / Name(），供 get_callers 惰性扫描。
 var goCallRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_.]*\.[A-Za-z_][A-Za-z0-9_]*\(|[A-Za-z_][A-Za-z0-9_]*\(`)
@@ -39,14 +39,18 @@ type PolySymbol struct {
 
 // scanPolyFiles 扫描 dir 下 .py/.js/.ts/.tsx 文件建词法符号表（上限与 Go 共享
 // maxFiles 语义由调用方控制；这里独立 cap 防大仓重复遍历）。
-func scanPolyFiles(dir string, maxFiles int) map[string][]PolySymbol {
+func scanPolyFiles(dir string, maxFiles int) (map[string][]PolySymbol, error) {
 	out := map[string][]PolySymbol{}
 	if maxFiles <= 0 {
 		maxFiles = 1000
 	}
 	count := 0
-	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+	var walkErr error
+	werr := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
+			if path == dir {
+				return err // 根不可达上抛（第八轮审计，与 Go 侧同纪律）
+			}
 			return nil
 		}
 		if d.IsDir() {
@@ -78,9 +82,11 @@ func scanPolyFiles(dir string, maxFiles int) map[string][]PolySymbol {
 		}
 		count++
 		text := string(src)
-		syms := scanPy(text, lang)
-		if lang == "js" {
-			syms = append(syms, scanJS(text, lang)...)
+		var syms []PolySymbol
+		if lang == "py" {
+			syms = scanPy(text, lang)
+		} else {
+			syms = scanJS(text, lang)
 		}
 		for i := range syms {
 			syms[i].File = filepath.ToSlash(rel)
@@ -91,7 +97,10 @@ func scanPolyFiles(dir string, maxFiles int) map[string][]PolySymbol {
 		}
 		return nil
 	})
-	return out
+	if werr != nil {
+		walkErr = werr
+	}
+	return out, walkErr
 }
 
 // scanPy Python def（含 docstring 首行启发：def 后首个非空行若为三引号/注释）。
@@ -102,9 +111,12 @@ func scanPy(text, lang string) []PolySymbol {
 		args := textutil.TruncEllipsis(strings.TrimSpace(text[m[6]:m[7]]), 120)
 		line := 1 + strings.Count(text[:m[0]], "\n")
 		doc := ""
-		if i := strings.Index(text[m[2]:], "\n"); i >= 0 {
-			rest := strings.TrimSpace(text[m[2]+i+1:])
-			doc = textutil.TruncEllipsis(strings.Split(rest, "\n")[0], 120)
+		if nl := strings.Index(text[m[1]:], "\n"); nl >= 0 {
+			// def 头匹配末（m[1]）的下一**物理**行——此前对整段剩余文本
+			// TrimSpace 会跨空行塌缩，且无条件取首行（"pass" 级正文也被当
+			// 文档；多行参数表取到参数名；第八轮审计）。仅三引号/注释形态提取。
+			first := strings.TrimSpace(strings.SplitN(text[m[1]+nl+1:], "\n", 2)[0])
+			doc = extractDocLine(first)
 		}
 		out = append(out, PolySymbol{Name: name, Lang: lang, Line: line, Args: args, Doc: doc})
 	}
@@ -156,8 +168,14 @@ func (x *Index) GoCallers(name string, limit int) []Ref {
 	}
 	var out []Ref
 	seen := map[string]bool{}
-	callRe, _ := goCallersRes.LoadOrStore(name, regexp.MustCompile(`\b`+regexp.QuoteMeta(name)+`\s*\(`))
-	re := callRe.(*regexp.Regexp)
+	// Load 命中才复用（第八轮审计：LoadOrStore 的参数急切求值让每次调用都
+	// 白付一次 MustCompile，缓存零收益还按名无界累积）
+	reAny, ok := goCallersRes.Load(name)
+	if !ok {
+		compiled := regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\s*\(`)
+		reAny, _ = goCallersRes.LoadOrStore(name, compiled)
+	}
+	re := reAny.(*regexp.Regexp)
 	for _, f := range x.files {
 		if !strings.Contains(string(f.src), name) {
 			continue // 子串预筛：正则要求名字面出现，不含者整文件跳过
@@ -177,4 +195,16 @@ func (x *Index) GoCallers(name string, limit int) []Ref {
 		}
 	}
 	return out
+}
+
+// extractDocLine 文档首行提取：仅三引号 docstring/注释形态生效，
+// 剥离定界符后截 120 rune（第八轮审计：此前无条件取首个非空行，
+// "pass" 级正文与多行参数表的参数名都会被当文档）。
+func extractDocLine(first string) string {
+	q3d := string([]byte{'"', '"', '"'})
+	q3s := string([]byte{'\'', '\'', '\''})
+	if strings.HasPrefix(first, q3d) || strings.HasPrefix(first, q3s) || strings.HasPrefix(first, "#") {
+		return textutil.TruncEllipsis(strings.Trim(first, "\"'# \t"), 120)
+	}
+	return ""
 }

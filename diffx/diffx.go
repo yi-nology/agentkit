@@ -78,9 +78,11 @@ func DiffPath(chunk string) string {
 
 func stripTab(p string) string {
 	if i := strings.IndexByte(p, '\t'); i >= 0 {
-		return p[:i]
+		p = p[:i]
 	}
-	return p
+	// CRLF diff（Windows 编辑器/Web 面板搬运常态）行尾 \r 残留会进路径，
+	// map 查询按真实仓库路径必落空=整块静默丢失（第八轮审计）
+	return strings.TrimSuffix(p, "\r")
 }
 
 // hunkRe unified diff hunk 头：@@ -oldStart,oldLines +newStart,newLines @@。

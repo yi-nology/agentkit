@@ -23,7 +23,14 @@ func NormalizePatternText(comment string) string {
 	s := strings.ToLower(comment)
 	s = backtickRe.ReplaceAllString(s, " ")
 	s = pathRe.ReplaceAllString(s, " ")
-	s = hexRe.ReplaceAllString(s, " ")
+	s = hexRe.ReplaceAllStringFunc(s, func(m string) string {
+		for i := 0; i < len(m); i++ {
+			if m[i] >= '0' && m[i] <= '9' {
+				return " " // 含数字位的 hex 串才剥
+			}
+		}
+		return m // 纯 a-f 英文词保留
+	})
 	s = digitsRe.ReplaceAllString(s, " ")
 
 	// 折叠空白；去掉标点中对模式无信息量的重复符号
@@ -42,10 +49,13 @@ func NormalizePatternText(comment string) string {
 var (
 	backtickRe = regexp.MustCompile("`[^`]*`")
 	pathRe     = regexp.MustCompile(`(?:[\w.-]+/)+[\w.-]+|\b\w+\.(?:go|ts|js|py|java|rs|c|cpp|h|hpp|md|yaml|yml|json|sql|sh|proto)\b`)
-	hexRe      = regexp.MustCompile(`\b[0-9a-f]{6,}\b`)
-	digitsRe   = regexp.MustCompile(`\b\d+\b`)
-	spaceRe    = regexp.MustCompile(`\s+`)
-	punctRe    = regexp.MustCompile(`[^\p{L}\p{N}]+`)
+	// ≥8 位才入候选（RE2 无 lookahead，数字位检查在替换回调里做）：纯 a-f
+	// 英文词（decade/facade/deface…）不再被整词剥掉——不同文案误聚同键与
+	// 模式键语义相反（第八轮审计）
+	hexRe    = regexp.MustCompile(`\b[0-9a-f]{8,}\b`)
+	digitsRe = regexp.MustCompile(`\b\d+\b`)
+	spaceRe  = regexp.MustCompile(`\s+`)
+	punctRe  = regexp.MustCompile(`[^\p{L}\p{N}]+`)
 )
 
 // PatternKey 派生仓库级模式键：sha256(plugin \x00 normalize(comment)) 前 16 hex。
@@ -87,9 +97,11 @@ func BetaConfidence(posted, regret, suppress, restore int) float64 {
 	alpha := 2.0 + float64(posted)
 	beta := 2.0 + 2*float64(regret) + 3*float64(suppress)
 	if restore > 0 {
-		// 撤销误杀：负证据回抬一档（不为负）
-		if b := beta - 2*float64(restore); b < 1 {
-			beta = 1
+		// 撤销误杀：负证据回抬一档。下限钳 **2（先验）**——此前钳 1 会让
+		// restore 超量的计数形态越过先验置信度（(0,0,1,50)→0.667>0.5），
+		// 「suppress+restore 不可洗白」对包外任意进参不闭合（第八轮审计）
+		if b := beta - 2*float64(restore); b < 2 {
+			beta = 2
 		} else {
 			beta = b
 		}

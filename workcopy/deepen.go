@@ -46,6 +46,18 @@ const (
 //   - 加深轮失败/预算耗尽仍不可达 → 报错降级。整条消息过 logredact（git 传输
 //     失败回显带凭证 clone URL——ocrshim 通道此错误经 MCP 原样回传 argus）。
 func EnsureMergeBase(ctx context.Context, dir, baseBranch string, timeout time.Duration) error {
+	return ensureMergeBase(ctx, dir, baseBranch, timeout, false)
+}
+
+// EnsureMergeBaseTLS EnsureMergeBase 的 TLS 形态：insecureTLS=true 时对 deepen
+// fetch 注入 GIT_SSL_NO_VERIFY（与 Pool.runGit 同款纪律——自签 https 平台的
+// clone/PR fetch 均走该环境，deepen fetch 漏注会让补全在此类平台确定性失败
+// 且静默降级丢失 range 审查；第八轮审计 C 级修复）。
+func EnsureMergeBaseTLS(ctx context.Context, dir, baseBranch string, timeout time.Duration, insecureTLS bool) error {
+	return ensureMergeBase(ctx, dir, baseBranch, timeout, insecureTLS)
+}
+
+func ensureMergeBase(ctx context.Context, dir, baseBranch string, timeout time.Duration, insecureTLS bool) error {
 	if baseBranch == "" {
 		return errors.New("gitdeepen: 缺少 base 分支")
 	}
@@ -66,14 +78,18 @@ func EnsureMergeBase(ctx context.Context, dir, baseBranch string, timeout time.D
 		if remaining <= 0 {
 			break
 		}
-		if _, stderr, _, err := procx.Run(ctx, procx.RunRequest{
+		fetchReq := procx.RunRequest{
 			Argv: []string{
 				"git", "-C", dir, "fetch",
 				"--deepen=" + strconv.Itoa(deepenStart<<i),
 				"origin", fullRefspec,
 			},
 			Timeout: remaining,
-		}); err != nil {
+		}
+		if insecureTLS {
+			fetchReq.Env = []string{"GIT_SSL_NO_VERIFY=true"}
+		}
+		if _, stderr, _, err := procx.Run(ctx, fetchReq); err != nil {
 			return errors.New(logredact.Redact(fmt.Sprintf(
 				"浅克隆加深失败（git fetch --deepen）: %v；stderr: %s", err, tail(stderr, 400))))
 		}

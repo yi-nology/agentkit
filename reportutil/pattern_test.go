@@ -93,3 +93,15 @@ func TestNormalizePatternStripsPathsAndHex(t *testing.T) {
 		t.Fatalf("路径/hex 应剥离: %q", got)
 	}
 }
+
+// TestBetaConfidenceRestoreNeverExceedsPrior 回归（第八轮审计）：restore 超量
+// 的进参形态不得越过先验置信度——此前下限钳 1（低于先验 β=2），
+// BetaConfidence(0,0,1,50) 得 0.667 > 0.5，「不可洗白」不闭合。
+func TestBetaConfidenceRestoreNeverExceedsPrior(t *testing.T) {
+	if c := BetaConfidence(0, 0, 1, 50); c > 0.5 {
+		t.Fatalf("restore 超量不得越过先验: %f", c)
+	}
+	if c := BetaConfidence(0, 0, 3, 1000); c > 0.5 {
+		t.Fatalf("极端 restore 同理: %f", c)
+	}
+}

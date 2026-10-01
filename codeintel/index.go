@@ -11,6 +11,7 @@
 package codeintel
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/scanner"
@@ -18,6 +19,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -75,6 +77,9 @@ func NewIndex(dir string, maxFiles int) (*Index, error) {
 	fset := token.NewFileSet()
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			if path == dir {
+				return err // 根不可达：静默返回空索引会误导调用方（第八轮审计）
+			}
 			return nil // 不可读子树跳过（沙箱竞态容错）
 		}
 		if d.IsDir() {
@@ -88,7 +93,7 @@ func NewIndex(dir string, maxFiles int) (*Index, error) {
 			return nil
 		}
 		if idx.idxed >= maxFiles {
-			return filepath.SkipDir
+			return filepath.SkipAll // 封顶即全停（SkipDir 会继续遍历兄弟目录白跑）
 		}
 		src, err := os.ReadFile(path)
 		if err != nil {
@@ -116,7 +121,11 @@ func NewIndex(dir string, maxFiles int) (*Index, error) {
 		return nil, err
 	}
 	idx.buildRefs()
-	idx.poly = scanPolyFiles(dir, maxFiles)
+	poly, perr := scanPolyFiles(dir, maxFiles)
+	if perr != nil {
+		return nil, fmt.Errorf("codeintel: 扫描 %s: %w", dir, perr)
+	}
+	idx.poly = poly
 	return idx, nil
 }
 
@@ -125,9 +134,12 @@ func NewIndex(dir string, maxFiles int) (*Index, error) {
 // 建索引期一次付清，查询侧 O(1) 查表 + 过滤定义行。含定义行，查询时剔除。
 func (x *Index) buildRefs() {
 	x.refs = make(map[string][]Ref, 64)
-	seen := map[string]map[string]bool{} // name → "file:line" 去重
 	var sc scanner.Scanner
 	for _, f := range x.files {
+		// 同名同行去重用 name→line 单层 map（第八轮审计：此前 map-of-maps +
+		// 每 token 一次 "rel:line" 拼接，千文件级数百万 token 的构建期内存/
+		// 分配放大 2~3 倍）
+		lastLine := map[string]int{}
 		sc.Init(f.tf, f.src, nil, 0)
 		for {
 			pos, tok, lit := sc.Scan()
@@ -138,16 +150,10 @@ func (x *Index) buildRefs() {
 				continue
 			}
 			line := f.tf.Line(pos)
-			key := f.rel + ":" + strconv.Itoa(line)
-			m := seen[lit]
-			if m == nil {
-				m = map[string]bool{}
-				seen[lit] = m
-			}
-			if m[key] {
+			if lastLine[lit] == line {
 				continue
 			}
-			m[key] = true
+			lastLine[lit] = line
 			x.refs[lit] = append(x.refs[lit], Ref{File: f.rel, Line: line})
 		}
 	}
@@ -256,6 +262,12 @@ func (x *Index) TouchedByLines(file string, from, to int) []Symbol {
 			}
 		}
 	}
+	sort.Slice(out, func(i, j int) bool { // map 遍历序随机，输出按 (File,Line) 确定化
+		if out[i].File != out[j].File {
+			return out[i].File < out[j].File
+		}
+		return out[i].Line < out[j].Line
+	})
 	return out
 }
 

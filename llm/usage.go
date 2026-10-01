@@ -8,6 +8,7 @@ package llm
 
 import (
 	"context"
+	"github.com/cloudwego/eino/schema"
 	"sync/atomic"
 	"time"
 
@@ -80,10 +81,15 @@ func clientAccounted(ctx context.Context) bool {
 	return v
 }
 
-// NewUsageHandler 构建 eino callbacks.Handler（非流式 OnStart/OnEnd）。
+// NewUsageHandler 构建 eino callbacks.Handler（非流式 OnEnd + 流式
+// OnEndWithStreamOutput——第八轮审计补齐：eino-ext 流式只触发后者，仅注册
+// OnEnd 的 handler 在开流（agentrun v0.10.32 起默认）下一条记录都不产生，
+// 静默失明。流式分支消费框架给的副本流取末个非 nil usage，末帧即汇总帧）。
 // 无 TokenUsage、无 RunInfo 的调用静默跳过；Labels 缺省不阻断采集。
 // 防重：Client 自身配置了 OnUsage/Budget 时（Client 记账标记已在 ctx），
 // 本 handler 对同一次物理调用自动跳过——两侧不会双倍记账，可同时启用。
+// ⚠ agentrun 场景：Config.OnUsage 与本 handler 记同一笔——**择一装配**
+// （两者没有共享防重标记，同时挂会双计）。
 func NewUsageHandler(onRecord Sink) callbacks.Handler {
 	return callbacks.NewHandlerBuilder().
 		OnStartFn(func(ctx context.Context, _ *callbacks.RunInfo, _ callbacks.CallbackInput) context.Context {
@@ -99,7 +105,75 @@ func NewUsageHandler(onRecord Sink) callbacks.Handler {
 			}
 			return ctx
 		}).
+		OnEndWithStreamOutputFn(func(ctx context.Context, info *callbacks.RunInfo, output *schema.StreamReader[callbacks.CallbackOutput]) context.Context {
+			defer output.Close() // MUST（eino 契约：handler 副本不关整条管道泄漏）
+			if onRecord == nil || clientAccounted(ctx) || info == nil || info.Type == "" {
+				return ctx
+			}
+			var last *model.TokenUsage
+			var finish string
+			for {
+				v, err := output.Recv()
+				if err != nil {
+					break
+				}
+				// 流元素两种形态都收：eino-ext 原生分片 *schema.Message；
+				// 经 callbacks 转换层的 *model.CallbackOutput
+				switch t := v.(type) {
+				case *model.CallbackOutput:
+					if t == nil {
+						continue
+					}
+					if u := obsx.TokenUsageOf(t); u != nil {
+						last = u
+					}
+					if t.Message != nil && t.Message.ResponseMeta != nil {
+						finish = t.Message.ResponseMeta.FinishReason
+					}
+				case *schema.Message:
+					if t.ResponseMeta != nil {
+						if u := t.ResponseMeta.Usage; u != nil {
+							last = &model.TokenUsage{
+								PromptTokens:            u.PromptTokens,
+								PromptTokenDetails:      model.PromptTokenDetails{CachedTokens: u.PromptTokenDetails.CachedTokens},
+								CompletionTokens:        u.CompletionTokens,
+								TotalTokens:             u.TotalTokens,
+								CompletionTokensDetails: model.CompletionTokensDetails{ReasoningTokens: u.CompletionTokensDetails.ReasoningTokens},
+							}
+						}
+						finish = t.ResponseMeta.FinishReason
+					}
+				}
+			}
+			if last == nil {
+				return ctx
+			}
+			rec := recordFromUsage(ctx, info, last, finish)
+			onRecord(rec)
+			return ctx
+		}).
 		Build()
+}
+
+// recordFromUsage 已知 usage 的记录构造（非流式/流式两路共用单源）。
+func recordFromUsage(ctx context.Context, info *callbacks.RunInfo, usage *model.TokenUsage, finish string) UsageRecord {
+	rec := UsageRecord{
+		Model:            info.Type,
+		PromptTokens:     usage.PromptTokens,
+		CachedTokens:     usage.PromptTokenDetails.CachedTokens,
+		CompletionTokens: usage.CompletionTokens,
+		ReasoningTokens:  usage.CompletionTokensDetails.ReasoningTokens,
+		TotalTokens:      usage.TotalTokens,
+		Labels:           labelsFrom(ctx),
+	}
+	if start, ok := ctx.Value(startKey{}).(time.Time); ok && !start.IsZero() {
+		rec.DurationMS = time.Since(start).Milliseconds()
+	}
+	if c, ok := ctx.Value(counterKey{}).(*UsageCallCounter); ok {
+		rec.Iteration = c.n.Add(1)
+	}
+	rec.FinishReason = finish
+	return rec
 }
 
 // usageRecordFrom 从 OnEnd 上下文与回调输出提取用量记录。
@@ -122,23 +196,9 @@ func usageRecordFrom(ctx context.Context, info *callbacks.RunInfo, output callba
 	if usage == nil {
 		return UsageRecord{}, false
 	}
-	rec := UsageRecord{
-		Model:            info.Type,
-		PromptTokens:     usage.PromptTokens,
-		CachedTokens:     usage.PromptTokenDetails.CachedTokens,
-		CompletionTokens: usage.CompletionTokens,
-		ReasoningTokens:  usage.CompletionTokensDetails.ReasoningTokens,
-		TotalTokens:      usage.TotalTokens,
-		Labels:           labelsFrom(ctx),
-	}
-	if start, ok := ctx.Value(startKey{}).(time.Time); ok && !start.IsZero() {
-		rec.DurationMS = time.Since(start).Milliseconds()
-	}
-	if c, ok := ctx.Value(counterKey{}).(*UsageCallCounter); ok {
-		rec.Iteration = c.n.Add(1)
-	}
+	finish := ""
 	if out.Message != nil && out.Message.ResponseMeta != nil {
-		rec.FinishReason = out.Message.ResponseMeta.FinishReason
+		finish = out.Message.ResponseMeta.FinishReason
 	}
-	return rec, true
+	return recordFromUsage(ctx, info, usage, finish), true
 }

@@ -12,10 +12,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
 
+	"git.enjoye.top/enjoydream/agentkit/logredact"
 	"git.enjoye.top/enjoydream/agentkit/procx"
 	"git.enjoye.top/enjoydream/agentkit/reportutil"
 	"git.enjoye.top/enjoydream/agentkit/textutil"
@@ -110,6 +112,10 @@ func runGitleaks(ctx context.Context, cfg Config, dir, baseRef string,
 
 	logOpts := ""
 	if baseRef != "" {
+		if badRefName(baseRef) {
+			res.Err = fmt.Errorf("baseRef %q 含空白/控制字符或以 - 开头，拒绝构造 git log 范围（引用名卫生）", baseRef)
+			return res
+		}
 		logOpts = "origin/" + baseRef + "..HEAD"
 	}
 	args := append(GitleaksArgs(dir, logOpts), "--report-path", reportPath)
@@ -127,7 +133,16 @@ func runGitleaks(ctx context.Context, cfg Config, dir, baseRef string,
 		res.Err = fmt.Errorf("gitleaks 退出码 %d: %s", code, truncLine(stdout+"\n"+stderr, 300))
 		return res
 	}
-	data, err := os.ReadFile(reportPath)
+	// 报告文件旁路了 procx 的 stdout 限容——回读设同口径硬上限（8MB）：
+	// 恶意 diff 铺百万行伪造命中可产出数十万条 finding，全量读入+Unmarshal
+	// 的内存放大一个量级（第八轮审计）。超限截断读取，解析按所得处理。
+	f, err := os.Open(reportPath)
+	if err != nil {
+		res.Err = fmt.Errorf("读取 gitleaks 报告失败: %w", err)
+		return res
+	}
+	data, err := io.ReadAll(io.LimitReader(f, reportCap))
+	_ = f.Close()
 	if err != nil {
 		res.Err = fmt.Errorf("读取 gitleaks 报告失败: %w", err)
 		return res
@@ -222,7 +237,10 @@ func runSemgrep(ctx context.Context, cfg Config, dir string, paths []string,
 		res.Findings = append(res.Findings, Finding{
 			Tool: "semgrep", File: r.Path, Line: r.Start.Line,
 			Severity: SemgrepSeverity(r.Extra.Severity), RuleID: r.CheckID,
-			Comment: fmt.Sprintf("静态分析（semgrep %s）：%s", r.CheckID, r.Extra.Message),
+			// extra.message 可内插 metavariable（匹配内容即仓库原文，secrets
+			// 类规则集尤甚）——Comment 进 PR 评论等分发面，统一过 logredact
+			//（第八轮审计：gitleaks 侧防得住的泄漏路径这条不能敞着）
+			Comment: logredact.Redact(fmt.Sprintf("静态分析（semgrep %s）：%s", r.CheckID, r.Extra.Message)),
 		})
 	}
 	log.Info("sast.semgrep_done", "findings", len(res.Findings), "errors", len(parsed.Errors))
@@ -240,7 +258,8 @@ func FocusPaths(paths []string) []string {
 	seen := map[string]bool{}
 	for _, p := range paths {
 		p = strings.TrimSpace(p)
-		if p == "" || seen[p] || strings.Contains(p, "..") {
+		// 按路径段判 ..（v1..v2.go 这类合法文件名不误伤；整串 Contains 会剔除）
+		if p == "" || seen[p] || hasDotDotSegment(p) {
 			continue
 		}
 		seen[p] = true
@@ -267,4 +286,32 @@ func SemgrepSeverity(s string) string {
 // truncLine 错误输出截断（进 Err 链，最终上报告警）。
 func truncLine(s string, n int) string {
 	return textutil.TruncEllipsis(strings.TrimSpace(s), n)
+}
+
+// reportCap gitleaks 报告文件回读上限（与 procx stdout 限容同口径）。
+const reportCap = 8 << 20
+
+// badRefName 引用名卫生（与 workcopy 对 DefaultBranch 的守卫同款纪律）：
+// 合法 ref 名不含空白/控制字符，且经 "origin/" 前缀后不得引入 "-" 开头的
+// 独立参数（gitleaks --log-opts 按空格切分后直传 git log——纵深防御）。
+func badRefName(ref string) bool {
+	if strings.HasPrefix(ref, "-") {
+		return true
+	}
+	for _, r := range ref {
+		if r <= ' ' || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+// hasDotDotSegment 路径任一段为 ".." 即穿越形态。
+func hasDotDotSegment(p string) bool {
+	for _, seg := range strings.Split(p, "/") {
+		if seg == ".." {
+			return true
+		}
+	}
+	return false
 }

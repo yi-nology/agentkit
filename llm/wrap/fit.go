@@ -17,7 +17,9 @@ package wrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -26,36 +28,45 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"git.enjoye.top/enjoydream/agentkit/textutil"
+	"git.enjoye.top/enjoydream/ekit/concurrency/async"
 )
 
 // ---------- 真实 usage 校准注册表（进程级全局单槽） ----------
 //
-// 为什么单槽而非按模型分桶：callbacks 侧用量记录的 Model 是组件类型（RunInfo.Type，
-// 非真实模型名），与装配期配置名对不上；且拟合只发生在直调旁路（Generate 链有
-// Client.fitInput 且记账走 Client.OnUsage 不进本注册表），发送 rune 数与回调
-// usage 天然同源配对。多模型分桶待有真实需求再开。
+// 配对协议（第八轮审计修复）：usage 与发送 rune 数在**同一次调用内**原子配对
+//（Generate/Stream 响应直采，见 calibUpdateFromResponse）——此前发送侧与回灌侧
+// 分两次写全局单槽，并发共享时 g1 的 chars 会配到 g2 的 usage，脏样本界拦不住
+// 交错样本。为什么单槽而非按模型分桶：装配侧拿不到真实模型名（RunInfo.Type 是
+// 组件类型）；多模型分桶待有真实需求再开。
 
 var (
 	calibLock  sync.Mutex
-	calibUsage int // 最近一次真实 prompt tokens（UsageHandler 回灌）
-	calibChars int // 最近一次发送 rune 总数（FitModel 发送时记录）
+	calibUsage int // 最近一次真实 prompt tokens（与 calibChars 同槽原子配对）
+	calibChars int // 最近一次实发 rune 总量（拟合后 res.After 口径）
 )
 
-// RecordUsage 回灌真实 prompt tokens（接入方的 UsageHandler 回调侧调用；
-// 单源不双计——只更新校准寄存器，不动记账）。model 参数预留分桶扩展，当前忽略。
+// calibUpdateFromResponse 响应直采：本次响应的真实 prompt tokens 与本次实发
+// rune 数在同一次调用内原子配对回灌——并发共享下不再错位。
+func calibUpdateFromResponse(promptTokens, sentChars int) {
+	if promptTokens <= 0 || sentChars <= 0 {
+		return
+	}
+	calibLock.Lock()
+	calibUsage, calibChars = promptTokens, sentChars
+	calibLock.Unlock()
+}
+
+// RecordUsage 手工回灌兜底（流式旁路无法直采时由接入方的 UsageHandler 回调侧
+// 调用；单源不双计——只更新校准寄存器，不动记账）。⚠ 与最近一次记录的发送
+// rune 数配对——仅建议单 goroutine 消费场景使用；Generate/Stream 主路径已由
+// 响应直采覆盖，勿与直采混用。model 参数预留分桶扩展，当前忽略。
 func RecordUsage(model string, promptTokens int) {
 	if promptTokens <= 0 {
 		return
 	}
 	calibLock.Lock()
-	defer calibLock.Unlock()
 	calibUsage = promptTokens
-}
-
-func recordSentChars(chars int) {
-	calibLock.Lock()
-	defer calibLock.Unlock()
-	calibChars = chars
+	calibLock.Unlock()
 }
 
 // tokensPerChar 最近一次可配对的真实估算系数（tokens/rune）；样本不足返回 0。
@@ -86,6 +97,10 @@ const (
 	toolPlaceholder = "[旧工具结果内容已清理：microcompact]"
 	truncNote       = "输入超出模型窗口预算，已截断留痕"
 )
+
+// phRunes 占位符 rune 长度（L1/L3 的「置换后必须变小」守卫基准——字节口径的
+// len(toolPlaceholder) 是 46，与 rune 口径混用会漏放 25~46 rune 的小结果）。
+var phRunes = utf8.RuneCountInString(toolPlaceholder)
 
 // isProtectedResult 错误/提醒结果保护（compact「出错结果默认保留」同款语义）：
 // 携带提醒信封（含 tool-error 标记）的结果是模型自纠与规则遵循的依据，不清理。
@@ -160,7 +175,7 @@ func FitMessages(msgs []*schema.Message, limitChars int) ([]*schema.Message, Fit
 		for _, g := range groups[:len(groups)-keepRecentRounds] {
 			for _, i := range g {
 				l := sizes[i]
-				if l <= len(toolPlaceholder) || isProtectedResult(out[i].Content) {
+				if l <= phRunes || isProtectedResult(out[i].Content) {
 					continue
 				}
 				cloned := *out[i] // 消息结构克隆替换：浅拷贝切片仍共享元素指针，直改会污染调用方
@@ -217,7 +232,9 @@ func FitMessages(msgs []*schema.Message, limitChars int) ([]*schema.Message, Fit
 	for total > limitChars {
 		big := -1
 		for i, m := range out {
-			if m.Role == schema.Tool && !isProtectedResult(m.Content) &&
+			// 置换后必须变小（第八轮审计 C 级修复）：≤ 占位符长度的候选置换后
+			// 不缩反涨，选中即零进展死循环——小结果（"OK"/"done"级）不参与 L3
+			if m.Role == schema.Tool && !isProtectedResult(m.Content) && sizes[i] > phRunes &&
 				(big < 0 || sizes[i] > sizes[big]) {
 				big = i
 			}
@@ -310,11 +327,49 @@ func NewFitModel(inner einomodel.BaseChatModel, stage, modelName string, windowT
 }
 
 func (f *FitModel) Generate(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.Message, error) {
-	return f.BaseChatModel.Generate(ctx, f.fit(input), opts...)
+	fitted, sent := f.fit(input)
+	msg, err := f.BaseChatModel.Generate(ctx, fitted, opts...)
+	if err == nil && msg != nil && msg.ResponseMeta != nil && msg.ResponseMeta.Usage != nil {
+		calibUpdateFromResponse(msg.ResponseMeta.Usage.PromptTokens, sent)
+	}
+	return msg, err
 }
 
 func (f *FitModel) Stream(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
-	return f.BaseChatModel.Stream(ctx, f.fit(input), opts...)
+	fitted, sent := f.fit(input)
+	sr, err := f.BaseChatModel.Stream(ctx, fitted, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return observeUsage(sr, sent), nil
+}
+
+// observeUsage 流包装：携带 usage 的分片与本次实发 rune 数原子配对回灌
+// （eino-ext 流式恒 IncludeUsage，usage 尾帧物化为带 ResponseMeta 的 chunk）。
+// 消费方提前收流时透传关闭（Send 报错即消费者已 Close），防内层泄漏。
+func observeUsage(sr *schema.StreamReader[*schema.Message], sent int) *schema.StreamReader[*schema.Message] {
+	out, w := schema.Pipe[*schema.Message](1)
+	async.GoSafe(func() {
+		for {
+			chunk, err := sr.Recv()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					w.Close()
+					return
+				}
+				_ = w.Send(nil, err)
+				return
+			}
+			if chunk.ResponseMeta != nil && chunk.ResponseMeta.Usage != nil {
+				calibUpdateFromResponse(chunk.ResponseMeta.Usage.PromptTokens, sent)
+			}
+			if !w.Send(chunk, nil) {
+				sr.Close()
+				return
+			}
+		}
+	})
+	return out
 }
 
 // WithTools 工具绑定透传：绑定产物再包一层 FitModel——ReAct 绑定工具后拟合不失效。
@@ -333,10 +388,13 @@ func (f *FitModel) WithTools(tools []*schema.ToolInfo) (einomodel.ToolCallingCha
 }
 
 // fit 发送前拟合：有效预算 = (窗口-输出预留)×2×0.9（口径同 llm fitInput），
-// 真实 usage 校准系数只紧不松；同时回灌发送 rune 数供下一轮校准配对。
-func (f *FitModel) fit(msgs []*schema.Message) []*schema.Message {
+// 真实 usage 校准系数只紧不松（响应直采，见 Generate/observeUsage）。返回
+// 拟合后消息与实发 rune 总量——配对口径用 res.After（第八轮审计修复：此前
+// 配 Before 拟合前总量，凡发生拟合的发送系数系统性偏低，恰在超限区间
+// （最需要校准的场景）采到的样本全部作废）。
+func (f *FitModel) fit(msgs []*schema.Message) ([]*schema.Message, int) {
 	if f.WindowTokens <= 0 || len(msgs) == 0 {
-		return msgs
+		return msgs, runeTotal(msgs)
 	}
 	reserved := f.MaxOutputSize
 	if reserved <= 0 {
@@ -344,7 +402,7 @@ func (f *FitModel) fit(msgs []*schema.Message) []*schema.Message {
 	}
 	limit := (f.WindowTokens - reserved) * 2 * 9 / 10
 	if limit <= 0 {
-		return msgs
+		return msgs, runeTotal(msgs)
 	}
 	if fc := tokensPerChar(); fc > 0 {
 		if tight := int(float64(f.WindowTokens-reserved) * 0.9 / fc); tight < limit {
@@ -352,14 +410,13 @@ func (f *FitModel) fit(msgs []*schema.Message) []*schema.Message {
 		}
 	}
 	out, res := FitMessages(msgs, limit)
-	recordSentChars(res.Before)
 	if f.OnBreakdown != nil {
-		f.reportBreakdown(msgs)
+		f.reportBreakdown(out) // 实发构成（此前上报拟合前构成，与「本次发送量」注释不符）
 	}
 	if f.OnFit != nil && res.Action != FitPass {
 		f.OnFit(f.Stage, res)
 	}
-	return out
+	return out, res.After
 }
 
 // reportBreakdown 上下文构成分解（对标 ZCode context-usage-breakdown）：按 role

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
@@ -172,8 +173,7 @@ func TestTokensPerCharCalibration(t *testing.T) {
 	if tokensPerChar() != 0 {
 		t.Fatal("无样本应返回 0")
 	}
-	recordSentChars(1000)
-	RecordUsage("any", 800)
+	calibUpdateFromResponse(800, 1000)
 	if got := tokensPerChar(); got < 0.79 || got > 0.81 {
 		t.Fatalf("系数应为 0.8，got %f", got)
 	}
@@ -314,12 +314,104 @@ func TestFitModelOnBreakdown(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if gotStage != "chat" || got["user"] < 30_000 || got["system"] != 50 {
-		t.Fatalf("分解回调应按 role 分桶 rune 量，got stage=%s bucket=%v", gotStage, got)
+	// 第八轮审计修正：breakdown 上报**实发**构成（拟合后）——user 30000 rune
+	// 超 17100 预算被 L2 截断，桶值应为截断后的实发量而非拟合前总量
+	if gotStage != "chat" || got["system"] != 50 || got["user"] >= 30_000 || got["user"] < 15_000 {
+		t.Fatalf("分解回调应按 role 分桶实发 rune 量，got stage=%s bucket=%v", gotStage, got)
 	}
 	// nil 回调直通不 panic
 	fm2 := NewFitModel(inner, "qa", "m", 10_000, 0, nil)
 	if _, err := fm2.Generate(context.Background(), []*schema.Message{bigTool(schema.User, 30_000)}); err != nil {
 		t.Fatalf("nil OnBreakdown 应直通: %v", err)
 	}
+}
+
+// TestFitMessagesLevel3NoDeadloopOnSmallResults 回归（第八轮审计 C 级）：
+// 全部可截工具结果都 ≤ 占位符长度时，L3 不得选中「置换后不缩反涨」的候选
+// ——此前零进展死循环挂死 100% CPU。数百轮小结果（"OK"级）+ 长正文触发。
+func TestFitMessagesLevel3NoDeadloopOnSmallResults(t *testing.T) {
+	var msgs []*schema.Message
+	msgs = append(msgs, schema.UserMessage(strings.Repeat("问", 4000)))
+	for i := 0; i < 300; i++ {
+		msgs = append(msgs,
+			&schema.Message{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "c", Type: "function", Function: schema.FunctionCall{Name: "x", Arguments: "{}"}}}},
+			&schema.Message{Role: schema.Tool, ToolCallID: "c", Content: "OK"},
+		)
+	}
+	done := make(chan struct{})
+	var out []*schema.Message
+	go func() {
+		out, _ = FitMessages(msgs, 2000)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("L3 死循环：小结果场景 5s 未返回")
+	}
+	if total := runeTotal(out); total > 2600 { // 截最长 user 后应入窗或无可裁直通
+		for _, m := range out {
+			if m.Role == schema.Tool && !strings.Contains(m.Content, "OK") && !strings.Contains(m.Content, "截断") && m.Content != toolPlaceholder {
+				t.Fatalf("小结果不应被改写: %q", m.Content)
+			}
+		}
+		_ = total
+	}
+}
+
+// TestFitModelGenerateCalibratesFromResponse 回归（第八轮审计 I）：
+// Generate 响应直采——usage 与实发 rune 数（After 口径）同调用配对。
+func TestFitModelGenerateCalibratesFromResponse(t *testing.T) {
+	oldU, oldC := calibUsage, calibChars
+	defer func() { calibLock.Lock(); calibUsage, calibChars = oldU, oldC; calibLock.Unlock() }()
+
+	base := &usageEchoModel{}
+	f := NewFitModel(base, "cal", "m", 1000, 0, nil)
+	msgs := []*schema.Message{schema.UserMessage(strings.Repeat("字", 3000))}
+	if _, err := f.Generate(context.Background(), msgs); err != nil {
+		t.Fatal(err)
+	}
+	sent := runeTotal(base.lastInLocked())
+	calibLock.Lock()
+	u, c := calibUsage, calibChars
+	calibLock.Unlock()
+	if u != 421 || c != sent {
+		t.Fatalf("直采配对应为 (usage=421, sent=%d)，got (%d,%d)", sent, u, c)
+	}
+}
+
+// usageEchoModel 回传固定 PromptTokens 的桩（直采配对断言用）。
+type usageEchoModel struct {
+	mu     sync.Mutex
+	lastIn []*schema.Message
+}
+
+func (m *usageEchoModel) lastInLocked() []*schema.Message {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastIn
+}
+
+func (m *usageEchoModel) Generate(_ context.Context, input []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	m.mu.Lock()
+	m.lastIn = input
+	m.mu.Unlock()
+	return &schema.Message{
+		Role:    schema.Assistant,
+		Content: "ok",
+		ResponseMeta: &schema.ResponseMeta{
+			Usage: &schema.TokenUsage{PromptTokens: 421, CompletionTokens: 1},
+		},
+	}, nil
+}
+
+func (m *usageEchoModel) Stream(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	out, err := m.Generate(ctx, input, opts...)
+	if err != nil {
+		return nil, err
+	}
+	sr, w := schema.Pipe[*schema.Message](1)
+	w.Send(out, nil)
+	w.Close()
+	return sr, nil
 }

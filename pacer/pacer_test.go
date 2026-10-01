@@ -109,3 +109,17 @@ func TestFlushDrainsResidue(t *testing.T) {
 		t.Fatal("空缓冲 Flush 不应产出")
 	}
 }
+
+// TestCapBytesNoBufferRetention 回归（第八轮审计）：超帽后迟到分片不得滞留
+// 缓冲——此前每个分片仍 s.text += chunk（深度思考尾部可达数百 KB 内存 +
+// O(n²) 拷贝），Flush 因超帽恒不发布也不清理。
+func TestCapBytesNoBufferRetention(t *testing.T) {
+	s := NewStream(time.Hour, 1, 16) // 极小帽：首个发布即触顶
+	s.Offer("0123456789abcdefgh")    // 18 字节 > 16 帽
+	if _, ok := s.Offer("尾部滞留检查"); ok {
+		t.Fatal("超帽后不应再发布")
+	}
+	if s.Buffered() != 0 {
+		t.Fatalf("超帽后缓冲应零滞留, got %d", s.Buffered())
+	}
+}

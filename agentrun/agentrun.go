@@ -95,7 +95,11 @@ type Event struct {
 //
 // 流式语义（默认开流）：reasoning_delta/text_delta 在生成过程中逐分片到达
 // （真流式），同轮收束后仍发完整 reasoning/text 快照（权威口径，回放/对账以它为
-// 准；增量只服务实况渲染）。消费方以「同轮快照到达即吸收增量缓冲」去重。
+// 准；增量只服务实况渲染）。消费方以「同轮快照到达即吸收增量缓冲」去重——
+// 中间**调用轮**无 text 快照（终稿窗口才有），其 text_delta 缓冲以该轮的
+// tool_call 事件为吸收锚（调用轮前导正文不构成终稿；reasoning 逐轮有快照），
+// 拼接口径=各轮窗口正文按序拼接、终稿窗口与 EventText 快照严格一致（第八轮
+// 审计钉住的词表契约）。
 const (
 	EventReasoning      = "reasoning"
 	EventText           = "text"
