@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.11.0 (2026-10-02)
+
+版本线升版（代码面 = v0.10.41，无新增代码变更）。
+
+0.10.35~0.10.41 连续七轮积累了成体系的破坏式变更，按 pre-1.0 语义化版本
+约定（0.x.y 中 x 位升版 = 破坏性变更界线）升 minor 划线：**0.10.x 冻结为
+旧 API 面，0.11.0 起为新 API 面**，消费方跨线迁移按下列清单一次完成。
+
+### 0.11 线的破坏式变更全景（相对 v0.10.34）
+
+- **acpx**：`RunResult` 增 `Stderr` 字段；pi 空文本终态语义（终态到达即权威）；
+  mimo/kimi 终态优先契约统一；信封 error 上抛；GenericAgent 内联占位符
+  fail-fast；finalizeStream 三段式收尾骨架（内部）。
+- **llm**：`Attempt.Err` string → error + `AttemptError.Unwrap() []error` +
+  `BreakerSkipped` 字段；`RetryableLLMError(nil)` 返回 false；JSON 路径同
+  模型重试对称化；retryafter 原语下沉 ekit（llm 门面保留）。
+- **mcp**：`Pool.Tools` 返回 `ToolsResult{Tools; Failed}`；`ToolResultError`
+  导出 + `IsToolResultError`；探活/列举本地取消不摘连接；Tools 取消语义。
+- **agentrun**：入口族收敛为 `Run(ctx, cfg, query, ...RunOption)` +
+  `WithOnEvent`/`WithRetry`（四入口删除）。
+- **httpx / jsonrepair 包删除**：整体下沉 ekit v0.33.0（pkg/httpjson、
+  pkg/jsonrepair），消费方改 import ekit 路径。
+- **lineage**：`Hub.Set` 去返回值。
+- **rag**：`MilvusConfig.IndexType` 删除；过滤白名单双后端统一（未知 key
+  报错）；`Local.Retrieve` 对非法 filter key fail-fast。
+- **skill**：Library 装载 FS 故障上抛（不再吞成空库）；清单输出字典序稳定。
+
+### 迁移指引
+
+- `RunWithEvents/RunWithRetry/RunWithEventsAndRetry` → `Run` + `WithOnEvent`/
+  `WithRetry`；
+- `pool.Tools(...)` 两返回值形态 → `res, err := pool.Tools(...)`，失败面
+  读 `res.Failed`；
+- `AttemptError.Attempts[i].Err` 按error 处理（文案消费方改 `errors.As`）；
+- `agentkit/httpx` → `ekit/pkg/httpjson`（`httpx.` 前缀改 `httpjson.`）；
+  `agentkit/jsonrepair` → `ekit/pkg/jsonrepair`（包名不变仅路径）；
+- textutil/reportutil 公开 API 未变（截断与统计已薄委托 ekit 单源）。
+
 ## v0.10.41 (2026-10-02)
 
 通用件下沉轮：agentkit 中与 agent 语义无关的通用实现下沉 ekit v0.33.0

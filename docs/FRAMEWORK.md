@@ -1301,6 +1301,9 @@ flowchart TD
 ### 发布纪律
 
 - **Go module proxy 永久缓存 tag——严禁 force-push 已发布 tag，必须递增版本号**；
+- **pre-1.0 版本线约定（v0.11.0 起）**：0.x.y 的 x 位升版 = 破坏性变更界线
+  （0.10→0.11 即 0.10.35~41 破坏序列的定界）；x 位内的 y 升级保持兼容——
+  破坏式重构攒够一批再升 x，不逐 y 递破；
 - checksum 不匹配时删除 go.sum 对应行重新 `go mod tidy`；
 - 私有模块：`GONOSUMCHECK='git.enjoye.top/*'`（或 GOPRIVATE）。
 
@@ -1463,6 +1466,11 @@ flowchart TD
   DiffPath/HunkLines）+ textutil.FirstNonEmpty——收编 argus diffprep/inject
 - **v0.10.39**：工具链三件下沉——workcopy 浅克隆补全 / 确定性 SAST / 配置卫生
   助手（并发会话发布）
+- **v0.11.0（版本线升版，代码面=v0.10.41）**：0.10.35~41 七轮破坏式变更序列
+  按 pre-1.0 semver 约定升 minor 划线——0.10.x 冻结为旧 API 面，0.11.0 起为
+  新 API 面（破坏面全景与迁移指引见 CHANGELOG v0.11.0 条目：agentrun RunOption
+  收敛 / mcp ToolsResult / llm Attempt.Err error 化 / httpx+jsonrepair 下沉
+  ekit / lineage.Set 签名 / rag 过滤白名单等）
 - **v0.10.41（通用件下沉轮）**：httpx/jsonrepair 两包整体下沉 ekit v0.33.0
   （pkg/httpjson：DoJSON/重试/Retry-After 家族；pkg/jsonrepair：宽容 JSON 修复
   全链）后删除，消费方改 import ekit；llm retryafter 传输原语下沉、保留薄委托
