@@ -1,5 +1,104 @@
 # Changelog
 
+## v0.10.35 (2026-10-01)
+
+第六轮全面审计（6 面 code-reviewer 并行独立复查全部 54 个改动文件）+ 破坏式
+重构收敛。5C + 14I + 次级修复与单源化。
+
+### Fixed（第六轮审计）
+
+Critical：
+
+- **bashguard（3 个只读判定绕过）**：读侧重定向只看操作符放行——目标词与
+  heredoc 体的命令替换/进程替换在真实 shell 会执行，`cat < $(rm -rf build)`、
+  `cat < <(cmd)`、`cat <<< $(cmd)`、未引号定界 heredoc 体内的 `$(...)` 曾全程
+  判只读（引号定界 `<<'EOF'` 体是纯字面不受影响，回归锁死）；`command` 无
+  Wrapper 无子命令表，`command git push` 裸操作数被当不透明数据放行——Wrapper
+  化（剥 flag 后按内核命令判定，`command -v ls` 不受影响）；`date -s/--set`
+  （设系统时钟）列在安全值型 flag、macOS 裸操作数设时钟无守卫——移入
+  UnsafeFlags + NoBareOperands（`+FORMAT` 格式串豁免前缀），`-r` 修正为值型。
+- **rag/local**：代码块内单条超长行绕过 maxChunkRunes 硬上限——单行守卫只在
+  正文路径，flush 出的单块越过 Milvus VarChar 65535 字节，整个文件（含正常
+  段落）索引失败。守卫前置到 handleLine 顶部正文/代码块共用（handleOverlongLine
+  单一入口），超长行按 maxChunkRunes 硬切成多块（不丢内容）。
+- **mcp**：ReapIdle 绕过 errMu 直调用户 OnError——与 Tools 跨 server 并行的
+  notifyError 并发调用同一回调是数据竞争（改走 notifyError）。
+- **acpx/pi**：assistant 终态只含 thinking 块（纯思考收尾/末轮工具调用结束）
+  时 `lastText==""` 误触全文兜底，整段 JSONL 事件流原文当正文以成功返回
+  ——终态到达即权威，空文本是合法成功。
+
+Important：
+
+- **acpx**：mimo/kimi 终态优先迁移（step_finish/assistant 消息已到但进程退出
+  码非零时以结果为准，与 claude/codex/pi 同契约，此前直接上抛丢全部结果）；
+  envelopeOut 补 error 面（exit=0 的 `{"error":...}` 信封曾以空 text 触发全文
+  兜底当成功返回，string 与 {message} 两形态都收）。
+- **llm**：Resilient 的 JSON 路径同模型传输重试整体失效（固定经
+  Client.GenerateJSON 按 Client 字段推导 policy，buildClient 设 MaxRetries=1
+  ——一个瞬态 500 就切模型；抽 generateJSONFitted policy 参数版与 Generate
+  路径对称）；Retry-After sink 陈旧值污染后续非限流退避（429 后的 500 曾白等
+  整段限流窗口——仅 IsRateLimit 时采信）；截断 boost 一次后仍截断时同参数
+  重复烧注定失败的请求（boosted 或无 MaxOutputTokens 可提升即停）；
+  IsTransientStreamError 把 ctx 取消判瞬态（恢复循环会空转 10 轮）；
+  RetryableLLMError(nil) 返回 true 的脚枪。
+- **mcp**：自愈 redial 装配的工具不带 lease（inFlight==0，重试超 maxIdle 时
+  连接可被闲置回收——assembleTools 装配单源化）；探活/目录列举把调用方 ctx
+  取消当连接死亡摘除健康连接（外部短周期巡检会把好连接反复摘掉、stdio 子
+  进程反复重启——本地取消甄别，与 dial 的 WithoutCancel 对齐）；Tools 缓存
+  冷 + ctx 取消返回 (空表, nil) 静默降级（改返回 ctx.Err()）。
+- **agentrun**：Retry-After 建议超钳制时跳过等待但仍立即原样重跑——恰是注释
+  论证过要避免的动作；超钳制返回首轮错误交调用方/failover。
+- **procx**：exec.ErrWaitDelay（leader 成功退出但守护化孙进程仍握管道，
+  WaitDelay 强关）曾把成功执行整体判失败——特判为成功（npm 类包装器形态）；
+  cmd.Cancel 对恰在 deadline 瞬间自然退出的 ESRCH 返回 os.ErrProcessDone。
+- **permgate**：wildcard 路径规则可被 `..` 穿越绕过——file_path/path 类
+  subject 匹配前 filepath.Clean（`/repo/data/../../etc/passwd` 不再命中
+  `/repo/data/*`，fail-closed；Rule.Content 文档声明路径规则用 wildcard 形态）。
+- **toolsched**：Task.Run 执行体 panic 无隔离——runGuarded 转为该任务 Err
+  （与 worker.Pool 外部代码隔离同纪律），契约写入字段文档；runner.wg 从未
+  Wait 的死代码移除。
+- **skill**：Library 装载把权限/IO 故障吞成空库（仅 ErrNotExist 走跳过路径，
+  其余上抛）；ListSkills/Names/DeprecatedExpiredInUse 按 map 迭代序随机输出
+  （字典序稳定——字节级稳定提示词前缀的前提）；RenderList 降级截断碎多字节
+  字符且头尾不计预算（TruncBytes rune 对齐 + 头尾入预算）。
+- **jsonrepair**：尾逗号/非法转义两条全文正则不辨字符串边界——字符串字面量
+  里合法的 `", ]"`/`\x` 序列被当损坏静默改写（修复器的错误成功比失败更贵）。
+  重构为单遍字符串感知扫描器：全角标点/非法转义/尾逗号三类修复合一（与
+  scanOpenBrackets/ExtractObject 同一 inStr/esc 纪律）。
+- **pack**：parseDir 把权限/IO 故障吞成"无清单"（区分 ErrNotExist，与
+  LayoutDirs 同纪律）；merge 的 `"_shared"` 字面量改 LayoutBaseline 常量。
+- **rag/milvus**：主键 maxLength 128 与 file 字段 512 不一致（深路径文件
+  Upsert 必因主键超长失败）——对齐 528；Local 对未知 filter key 静默返回空
+  结果违反包契约（filterKeys/validateFilter 白名单单源，两后端同契约）；
+  MilvusConfig.IndexType 删除（README 声明"保留但未生效"，从未接入）。
+- **hookx**：Events 的 `/…/` 正则形态在事件派发热路径上每次重新编译
+  （sync.Map 编译缓存，坏模式不缓存不匹配）。
+- **bashguard**：`time` 是 bash 保留字，mvdan 解析为 TimeClause 走不到表条目
+  ——`time ls` 曾报"不支持的控制流"误拒（递归判定被计时语句）。
+- **clarify**：逃生选项判定是双向子串包含——「全面」「不」这类词把有效回答
+  误消解为放弃细分（收紧为完整短语包含或 ≥2 字前缀）。
+
+### Changed（破坏式重构）
+
+- **llm**：`Attempt.Err` string → error，`AttemptError` 增 `Unwrap() []error`
+  与 `BreakerSkipped` 字段——聚合错误可 errors.As 穿透到 RequestError/
+  context.Canceled（此前只能对拼接文案做文本分类）；`RetryableLLMError(nil)`
+  改返回 false。
+- **mcp**：`ToolResultError` 导出（含 `Payload()`）+ `IsToolResultError`——
+  包外消费方类型化识别工具业务失败，无须文案匹配。
+- **acpx**：`finalizeStream` 三段式收尾骨架单源（执行错终态优先/exit=0 流内
+  失败如实报错/无终态全文兜底；会话 ID 与终态正交，兜底保留）——claude/pi/
+  mimo 接入，各家手写漂移（漏迁移终态优先、空文本终态当空壳）结构性消除；
+  emit/emitText/emitError 统一 nil 安全发送；信封结果错误上抛。
+- **textutil**：`TruncBytes`（字节预算 + rune 对齐）成为字节截断唯一原语，
+  skill 的 capContent/RenderList 改用。
+- **skill**：Library.byTitle 与 FileProvider.scanAliases 的同 Title 归一统一
+  为字典序最小者（此前两 Provider 规则不同构）。
+- **bashguard**：valueFlagEats 值型 flag 吃参判定三处（consumeFlags/
+  splitSubcommand/stripWrapper）单源；date/命令派发策略面见 Fixed。
+- **mcp**：connState.detachLocked/firstPositive/assembleTools 内部单源化
+  （evict/ReapIdle/Close 失效逻辑、超时回退、装配+lease 注入各一份）。
+
 ## v0.10.34 (2026-10-01)
 
 codeintel 轻量代码符号索引（Go AST + 多语言词法）——收编自 argus internal/codegraph。

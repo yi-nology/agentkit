@@ -1446,3 +1446,23 @@ flowchart TD
 - **v0.10.31**：pi 会话续聊（--session-id，真机往返验证）；第五轮审计：
   bashguard 前置赋值动态展开绕过（X=$(rm -rf build) ls 曾判只读——前四轮
   漏网）/skill CRLF 起始围栏对齐
+- **v0.10.32**：agentrun 真流式——ReAct 默认开流，reasoning/text 增量事件
+  外发（消费方零改动兼容，增量是纯增量通道）
+- **v0.10.33**：llm/wrap 模型装饰器集（FitModel 三级窗口拟合/ContinueModel
+  截断续写/RateModel 限速）+ reportutil 模式键/Beta 置信（收编 argus 生产验证）
+- **v0.10.34**：codeintel 轻量代码符号索引——Go AST 符号图 + 多语言词法符号
+  表（收编 argus internal/codegraph）
+- **v0.10.35（第六轮全面审计 + 破坏式重构）**：6 面 code-reviewer 并行复查
+  全部改动文件。5C：bashguard 读侧重定向目标/heredoc 体动态展开
+  （cat < $(rm -rf build) 曾判只读）/command 裸操作数派发/date -s 设时钟；
+  rag 代码块内单行超限越过 VarChar 致整文件索引失败；mcp ReapIdle 并发直调
+  OnError；pi 空文本终态误触兜底把事件流当正文。14I：llm JSON 路径同模型
+  重试失效/Retry-After 陈旧值污染非限流退避/截断 boost 后重烧、mcp 自愈
+  redial 丢 lease/探活误杀健康连接/Tools 取消静默降级、acpx mimo/kimi 终态
+  优先、agentrun 超钳制立即重跑、procx ErrWaitDelay 误判失败、permgate `..`
+  穿越、toolsched panic 无隔离、skill 坏库装成空库/清单序随机、jsonrepair
+  正则改字符串内容、pack 吞 IO 故障、rag 主键上限/过滤白名单双后端分裂、
+  hookx 正则热路径重编译等。破坏式收敛：Attempt.Err error 化+AttemptError.
+  Unwrap、ToolResultError 导出、acpx finalizeStream / mcp assembleTools /
+  llm generateJSONFitted / bashguard valueFlagEats / textutil TruncBytes
+  单源化；全部修复带回归测试
