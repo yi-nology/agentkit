@@ -1,5 +1,54 @@
 # Changelog
 
+## v0.12.2 (2026-10-02)
+
+第十轮审计修复轮：4 面——v0.12.1 修复复查 + llm 残余文件首审 +
+pglease/meta/unwrap 角落首审 + 挂账三项落地设计核实。8I 修复 + 3 项挂账落地。
+
+### Fixed（第十轮审计）
+
+- **logredact**（修复的修复）：v0.12.1 的引号值形态只打码首词（`passphrase:
+  "correct horse battery staple"` 泄漏尾三词）——值分支拆引号感知（引号值
+  吃到闭引号）；snake_case/camelCase 复合键（`admin_password:`/
+  `openai_api_key:`）此前被 \b 词边界整体挡住——键改为最大匹配前缀+关键词
+  （捕获完整键名，`private-key=` 展示形态不变）。
+- **obsx**（修复的修复）：流式排空改 last-non-nil（无 usage 尾帧会把已捕获
+  的 usage 覆写成 nil，观测面与记账面矛盾）；usage 缺失的流式调用仍落
+  llm.call.end（start/end 配对不破，与非流式一致）。
+- **llm/wrap**（口径分裂补齐）：fitInput 的 CJK ×3/2 只改了 Client 漏了
+  wrap——FitModel 同步（冷启动 CJK 超限原样存续）；**compact** 计量改
+  per-rune 分类（v0.12.1 的全 CJK 上界把英文估 ~2.7× 真实、阈值面整体漂移
+  ——textutil 新增 RuneUnitsCJK/UnitsToTokensCJK，中文≈0.67/英文≈0.33
+  各归其位）。
+- **llm/failover**：Stream 路径缺 nil 模型防御——裸调 panic（ReAct 流式
+  主路径正是走这里），与 Generate 的「跳过并继续」契约分裂；补 isNilModel
+  守卫（typed-nil 一并防御）。
+- **llm**：StageRouter.Use 拒 nil Generator（与 New 同纪律）；PriceOf 新增
+  PriceOfMatched 可观测形态（前缀回落对「同主干异价 SKU」静默误定价——
+  宿主可对回落命中做装配期校验）；UsedTokens 对「声明 BudgetHolder 却未绑
+  预算」的链回退逐链求和；RawModel 文档显式警示预算失联面；usage.go 流式
+  分支补 typed-nil 防御 + onRecord 并发契约声明。
+- **mcp/unwrap**：无 text 块的信封（image/audio-only）整体回吐——base64
+  图像数百 KB~MB 当「内层文本」返回，与配额目标正相反——改紧凑占位 +
+  `Type=="text"` 过滤；**mcp/meta**：合并时保留既有 ProgressToken（结构化
+  字段不随 AdditionalFields 走，丢 token 即丢进度通知关联）。
+- **codeintel**：d.Info() 失败时字节上限被跳过（TOCTOU 无界读）——
+  fail-closed 跳过并计数。
+
+### Changed（挂账三项落地）
+
+- **obsx**：真实模型名——回调 Config.Model（eino-ext 四时机可取）优先，
+  info.Type（实现标识 "OpenAI"）降级为回退；多模型混跑的 llm.call.* 日志
+  可区分（start/end/error/slow/流式全落点）。
+- **agentrun/P&E**：完成判定从 unwrapRespond 内容嗅探改为**框架信号**
+  （BreakLoopAction——eino ADK replanner respond 的程序化终止信号，图内
+  唯一发射源）；信封解包降级为 drain 后对流末 assistant 的格式还原。
+  executor 步骤输出恰为 {"response":...} JSON 形态 + MaxSteps 耗尽时不再
+  被当最终答复静默返回（带回归）。
+- **mcp/envref**：${VAR} 展开接线到 dialHTTP（Headers 全量 + OAuth 凭据类
+  字符串；展开只进 dial 副本不回写配置——redial 从原始声明重展开，环境
+  轮转生效且幂等；缺失变量保留字面量并经 OnError 聚合上报）。
+
 ## v0.12.1 (2026-10-02)
 
 第九轮审计修复轮：6 面 code-reviewer——v0.11.2~v0.12.0 的「修复的修复」

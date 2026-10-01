@@ -1466,6 +1466,12 @@ flowchart TD
   DiffPath/HunkLines）+ textutil.FirstNonEmpty——收编 argus diffprep/inject
 - **v0.10.39**：工具链三件下沉——workcopy 浅克隆补全 / 确定性 SAST / 配置卫生
   助手（并发会话发布）
+- **v0.12.2（第十轮审计修复轮）**：4 面——v0.12.1 修复复查（logredact 引号
+  值半泄漏/复合键漏网、obsx 覆写语义、wrap/compact 口径分裂补齐与 per-rune
+  分类计量）+ llm 残余首审（Failover.Stream nil panic、PriceOfMatched、
+  Use nil、RawModel 预算警示）+ mcp 角落（unwrap 紧凑占位、meta
+  ProgressToken）+ 挂账三项落地（obsx 真实模型名 Config.Model>info.Type、
+  P&E 完成判定改 BreakLoop 框架信号、envref dial 期展开接线）
 - **v0.12.1（第九轮审计修复轮）**：6 面——修复的修复（v0.11.2~v0.12.0 复查）
   + 五组首审老包 + 遗留清单三态。4C：usage/obsx 流式 handler 异步排空（同步
   排空把真流式阻塞成批出）；policy verdict 零校验 fail-open；logredact
