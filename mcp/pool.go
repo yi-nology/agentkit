@@ -593,7 +593,7 @@ func (p *Pool) dial(ctx context.Context, cfg ServerConfig) (client.MCPClient, er
 	case len(cfg.Command) > 0:
 		return dialStdio(ctx, cfg, clientOpts()...)
 	case cfg.URL != "":
-		return dialHTTP(ctx, cfg, clientOpts()...)
+		return p.dialHTTP(ctx, cfg, clientOpts()...)
 	default:
 		return nil, fmt.Errorf("mcp: server %s stdio（command）与 http（url）均未配置", cfg.Name)
 	}
@@ -623,7 +623,8 @@ func dialStdio(ctx context.Context, cfg ServerConfig, clientOpts ...client.Clien
 }
 
 // dialHTTP streamable http 传输建连（可挂 OAuth）。
-func dialHTTP(ctx context.Context, cfg ServerConfig, clientOpts ...client.ClientOption) (client.MCPClient, error) {
+func (p *Pool) dialHTTP(ctx context.Context, cfg ServerConfig, clientOpts ...client.ClientOption) (client.MCPClient, error) {
+	cfg = p.expandServerEnv(cfg) // ${VAR} dial 期展开（见 expandServerEnv）
 	httpOpts := []transport.StreamableHTTPCOption{
 		transport.WithHTTPHeaders(cfg.Headers),
 		// 每请求兜底（含 tools/call）：与建连预算 Timeout 分离——误用连接级
@@ -707,4 +708,28 @@ func (p *Pool) Close() {
 			_ = cli.Close()
 		}
 	}
+}
+
+// expandServerEnv dial 期展开 ${VAR}（第十轮落地）：Headers 全量 + OAuth
+// 凭据类字符串。「token 不落配置文件」纪律此前纯靠调用方自觉先展开（零接线），
+// 现在焊在池边界。展开结果只进本次 dial 副本、绝不回写 p.cfgs——redial 从
+// 原始声明重新展开（环境轮转后新值生效；展开产物不含 ${ 标记，幂等）。
+// 缺失变量保留字面量（ExpandEnvRef 既有语义）并经 OnError 聚合上报。
+func (p *Pool) expandServerEnv(cfg ServerConfig) ServerConfig {
+	missing := map[string]struct{}{}
+	collect := func(name string) { missing[name] = struct{}{} }
+	cfg.Headers = ExpandEnvRefs(cfg.Headers, collect)
+	if cfg.OAuth != nil {
+		o := *cfg.OAuth
+		o.ClientID = ExpandEnvRef(o.ClientID, collect)
+		o.ClientSecret = ExpandEnvRef(o.ClientSecret, collect)
+		o.MetadataURL = ExpandEnvRef(o.MetadataURL, collect)
+		o.RedirectURI = ExpandEnvRef(o.RedirectURI, collect)
+		cfg.OAuth = &o
+	}
+	if len(missing) > 0 {
+		p.notifyError(cfg.Name, fmt.Errorf("mcp: server %s 环境引用未定义（字面量保留上线）: %v",
+			cfg.Name, sortedEnvNames(missing)))
+	}
+	return cfg
 }

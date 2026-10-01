@@ -1,6 +1,9 @@
 package mcp
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // UnwrapMCPText 解 MCP 工具返回的信封取内层文本；非信封形态原样返回——快照/
 // 结果进证据条目时，snippet 配额应留给有效数据而非包装层。
@@ -17,12 +20,18 @@ func UnwrapMCPText(raw string) string {
 	}
 	if err := json.Unmarshal([]byte(raw), &env); err == nil {
 		for _, c := range env.Content {
-			if c.Text != "" {
+			if c.Type == "text" && c.Text != "" {
 				return c.Text
 			}
 		}
 		if len(env.StructuredContent) > 0 && string(env.StructuredContent) != "null" {
 			return string(env.StructuredContent)
+		}
+		// 信封解析成功但无可提取 payload（image/audio-only 等）：返回紧凑占位
+		// ——回吐完整信封会把 base64 图像（数百 KB~MB）当「内层文本」返回，
+		// 与「snippet 配额留给有效数据」的目标正相反（第十轮审计）
+		if len(env.Content) > 0 {
+			return fmt.Sprintf("[mcp tool result: %d content block(s), no text payload]", len(env.Content))
 		}
 	}
 	return raw

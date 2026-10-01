@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -50,4 +51,14 @@ func ExpandEnvRef(v string, onMissing func(name string)) string {
 		}
 		v = v[end+1:]
 	}
+}
+
+// sortedEnvNames map 键排序（通知确定性）。
+func sortedEnvNames(m map[string]struct{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

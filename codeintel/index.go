@@ -99,9 +99,10 @@ func NewIndex(dir string, maxFiles int) (*Index, error) {
 		if idx.idxed >= maxFiles {
 			return filepath.SkipAll // 封顶即全停（SkipDir 会继续遍历兄弟目录白跑）
 		}
-		if fi, ierr := d.Info(); ierr == nil && fi.Size() > maxFileBytes {
-			idx.skip++
-			return nil // 单文件字节上限（minified js/生成产物防整读整扫）
+		fi, ierr := d.Info()
+		if ierr != nil || fi.Size() > maxFileBytes {
+			idx.skip++ // stat 失败 fail-closed：跳过并计数（防 TOCTOU 无界读）
+			return nil
 		}
 		src, err := os.ReadFile(path)
 		if err != nil {

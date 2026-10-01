@@ -208,3 +208,27 @@ func TestRedactTruncatedPEM(t *testing.T) {
 		t.Errorf("截断 PEM 泄漏: %q", out)
 	}
 }
+
+// TestRedactCompoundKeysAndQuotedValues 回归（第十轮审计）：
+// ① snake_case/camelCase 复合键（admin_password:/openai_api_key:/authToken:）
+//
+//	——\b 词边界把下划线/驼峰前缀挡住，此前整体漏网；
+//
+// ② 引号多词值（passphrase: "correct horse battery staple"）——值字符集
+//
+//	排除空白，此前只打码首词、尾段泄漏。
+func TestRedactCompoundKeysAndQuotedValues(t *testing.T) {
+	cases := []struct{ in, cred string }{
+		{"admin_password: hunter2", "hunter2"},
+		{"openai_api_key: mysecret123", "mysecret123"},
+		{"authToken: abc.def.ghi", "abc.def.ghi"},
+		{`passphrase: "correct horse battery staple"`, "correct horse battery staple"},
+		{`{"db_password": "p@ss w0rd"}`, "p@ss w0rd"},
+	}
+	for _, c := range cases {
+		out := Redact(c.in)
+		if strings.Contains(out, c.cred) {
+			t.Errorf("%q 凭据泄漏: %q", c.in, out)
+		}
+	}
+}

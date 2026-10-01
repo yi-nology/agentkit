@@ -248,6 +248,9 @@ func (r *Resilient) PrimaryModel() model.BaseChatModel {
 
 // RawModel Generator 接口实现：等价 RawModelWithFailover()——裸模型路径同样获得
 // 链式降级（v0.10.9 起不再返回未装饰的主模型；要主模型裸实例用 PrimaryModel）。
+// ⚠ 此路径不受 Budget/Tracker/熔断约束（failover 薄切换刻意不做记账——ReAct
+// 主路径依赖此形态时预算可被烧穿、Tracker 对该路径消耗记零；需要硬上限时勿把
+// RawModel 交给不受限消费方，或消费方自行在回调侧记账）。
 func (r *Resilient) RawModel() model.BaseChatModel { return r.RawModelWithFailover() }
 
 // RawModelWithFailover 把整条 Provider 链包装成一个带 failover 的 BaseChatModel：

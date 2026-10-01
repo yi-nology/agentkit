@@ -307,9 +307,9 @@ func TestFitModelOnBreakdown(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	// 第八轮审计修正：breakdown 上报**实发**构成（拟合后）——user 30000 rune
-	// 超 17100 预算被 L2 截断，桶值应为截断后的实发量而非拟合前总量
-	if gotStage != "chat" || got["system"] != 50 || got["user"] >= 30_000 || got["user"] < 15_000 {
+	// 实发构成（拟合后）——×3/2 CJK 口径（v0.12.2）下 limit≈12825，
+	// user 30000 截到 ~12763；桶值为截断后实发量而非拟合前总量
+	if gotStage != "chat" || got["system"] != 50 || got["user"] >= 30_000 || got["user"] < 12_000 {
 		t.Fatalf("分解回调应按 role 分桶实发 rune 量，got stage=%s bucket=%v", gotStage, got)
 	}
 	// nil 回调直通不 panic

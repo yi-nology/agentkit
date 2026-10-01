@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"git.enjoye.top/enjoydream/agentkit/textutil"
 
 	"github.com/cloudwego/eino/adk"
 	planexecute "github.com/cloudwego/eino/adk/prebuilt/planexecute"
@@ -63,25 +64,37 @@ func PlanAndExecute(ctx context.Context, cfg PlanExecuteConfig, goal string) (*P
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: pe, EnableStreaming: false})
 	iter := runner.Query(ctx, goal)
 
-	// 最终答复只认 Replanner 的 respond 出口（其 Content 恒为
-	// {"response":"..."} tool-call arguments 信封）——executor 的步骤输出
-	// 也是无 tool_calls 的 assistant 文本，事件流无 agent 来源标识，
-	// 信封命中即完成信号；否则 MaxSteps 耗尽时中间步骤会被当最终答复。
-	var answer string
-	err = drainEvents(iter, "plan-execute", func(mv *adk.MessageVariant) error {
+	// 完成判定走框架信号（第十轮落地）：replanner respond 命中时 eino ADK
+	// 发 BreakLoopAction（runLoop 转发上抛、图内唯一发射源）——此前用
+	// unwrapRespond 内容嗅探，executor 步骤输出恰为 {"response":...} JSON
+	// 形态时会被误认（MaxSteps 耗尽时中间步骤输出被当最终答复静默返回）。
+	// 信封解包降级为格式还原：drain 结束后对流末 assistant 做一次。
+	var lastAssistant string
+	sawRespond := false
+	err = drainEventsFull(iter, "plan-execute", func(event *adk.AgentEvent) error {
+		if event.Action != nil && event.Action.BreakLoop != nil {
+			sawRespond = true
+			return nil
+		}
+		if event.Output == nil || event.Output.MessageOutput == nil {
+			return nil
+		}
+		mv := event.Output.MessageOutput
 		if mv.Role == schema.Assistant && mv.Message != nil &&
 			len(mv.Message.ToolCalls) == 0 && mv.Message.Content != "" {
-			if unwrapped := unwrapRespond(mv.Message.Content); unwrapped != mv.Message.Content {
-				answer = unwrapped
-			}
+			lastAssistant = mv.Message.Content // 只缓存：drain 结束后才定稿
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	if answer == "" {
+	if !sawRespond {
 		return nil, fmt.Errorf("agentrun: plan-execute 未产出最终答复（max_steps=%d，replanner 未判定完成）", maxSteps)
+	}
+	answer := unwrapRespond(lastAssistant)
+	if answer == "" || answer == lastAssistant {
+		return nil, fmt.Errorf("agentrun: plan-execute respond 信封异常（%q）", textutil.TruncEllipsis(lastAssistant, 120))
 	}
 	return &PlanExecuteResult{Text: answer}, nil
 }

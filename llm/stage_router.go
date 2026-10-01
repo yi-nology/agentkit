@@ -48,6 +48,9 @@ func NewStageRouter(def Generator) *StageRouter {
 // Use 注册阶段路由。stage 为精确名（"qa"）或前缀（"R1" 命中 "R1a"）；
 // 重名注册覆盖旧路由。
 func (r *StageRouter) Use(stage string, gen Generator) {
+	if gen == nil {
+		panic("stage_router: Use 拒绝 nil Generator（与 New 的 nil def 同纪律——运行期才炸的 nil 难排查）")
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for i := range r.routes {

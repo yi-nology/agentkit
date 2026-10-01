@@ -83,6 +83,8 @@ func clientAccounted(ctx context.Context) bool {
 }
 
 // NewUsageHandler 构建 eino callbacks.Handler（非流式 OnEnd + 流式
+// OnEndWithStreamOutput——流式分支在后台 goroutine 排空副本流后回调，
+// ⚠ onRecord 可能被多 goroutine 并发调用，须并发安全（第十轮审计钉约）。
 // OnEndWithStreamOutput——第八轮审计补齐：eino-ext 流式只触发后者，仅注册
 // OnEnd 的 handler 在开流（agentrun v0.10.32 起默认）下一条记录都不产生，
 // 静默失明。流式分支消费框架给的副本流取末个非 nil usage，末帧即汇总帧）。
@@ -153,6 +155,9 @@ func drainStreamUsage(ctx context.Context, info *callbacks.RunInfo, sr *schema.S
 				finish = t.Message.ResponseMeta.FinishReason
 			}
 		case *schema.Message:
+			if t == nil {
+				continue // typed-nil 防御（第十轮审计：ResponseMeta 解引用 panic）
+			}
 			if u := obsx.TokenUsageOf(&model.CallbackOutput{Message: t}); u != nil {
 				last = u
 			}

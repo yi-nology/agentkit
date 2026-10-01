@@ -22,7 +22,7 @@ var rules = []rule{
 	// 凭证词键值对（容忍 ": " 空格形态——YAML/缩进 JSON 日志最高频的
 	// `password: xxx` 形态；第九轮审计：password/token 此前漏在紧邻词表，
 	// 冒号后带空格即整体漏网）
-	{regexp.MustCompile(`(?i)\b(token|secret|password|passwd|api_?key|access_?key|private[-_]?key|secret[-_]?key|passphrase|client[-_]?key|kubeconfig)["']?\s*[=:]\s*["']?([^\s&'"]+)`), "$1=****"},
+	{regexp.MustCompile(`(?i)([A-Za-z0-9]*(?:[-_][A-Za-z0-9]*)*(?:token|secret|password|passwd|passphrase|api_?key|access_?key|private[-_]?key|secret[-_]?key|client[-_]?key|kubeconfig))["']?\s*[=:]\s*(?:"[^"\n&]*"|'[^'\n&]*'|[^\s&'"]+)`), "$1=****"},
 	// PEM 私钥整段打码（载荷/日志防泄漏的最后兜底）；第二条为截断兜底——
 	// 日志超长截断落在 PEM 中段时无 END，私钥体无前缀特征会原文泄漏
 	{regexp.MustCompile(`(?i)-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`), "----PRIVATE KEY ****"},

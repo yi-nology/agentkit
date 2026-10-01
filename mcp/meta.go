@@ -25,11 +25,18 @@ func (c *metaClient) CallTool(ctx context.Context, req mcp.CallToolRequest) (*mc
 	if c.metaFn != nil {
 		if kv := c.metaFn(ctx); len(kv) > 0 {
 			merged := make(map[string]any, len(kv)+2)
+			var progressToken any
 			if req.Params.Meta != nil {
 				maps.Copy(merged, req.Params.Meta.AdditionalFields)
+				progressToken = req.Params.Meta.ProgressToken // 结构化字段
+				// 不随 AdditionalFields 走——重建时显式回填（第十轮审计：
+				// 丢 token 即丢进度通知关联）
 			}
 			maps.Copy(merged, kv)
 			req.Params.Meta = mcp.NewMetaFromMap(merged)
+			if progressToken != nil {
+				req.Params.Meta.ProgressToken = progressToken
+			}
 		}
 	}
 	return c.MCPClient.CallTool(ctx, req)

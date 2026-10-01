@@ -28,7 +28,6 @@ package compact
 import (
 	"math"
 	"time"
-	"unicode/utf8"
 
 	"git.enjoye.top/enjoydream/agentkit/textutil"
 )
@@ -150,14 +149,14 @@ func EstimateTokens(msgs []Message) int {
 
 // msgTokens 单条消息的 token 估算（与 EstimateTokens 同口径）——增量改写时
 // 只算被触碰条目，免整表二次扫描。
-// CJK 口径（第九轮审计：rune/3 对中文系统性低估约半——压缩阈值到点时
-// 真实 token 已近两倍超窗，provider 硬失败先于压缩发生）
+// per-rune 分类计量（第十轮审计修正第九轮的全 CJK 上界：英文被估 ~2.7×
+// 真实、阈值面整体漂移；分类后中文≈0.67、英文≈0.33 token/rune 各归其位）
 func msgTokens(m Message) int {
-	n := utf8.RuneCountInString(m.Text)
+	units := textutil.RuneUnitsCJK(m.Text)
 	for _, tc := range m.ToolCalls {
-		n += utf8.RuneCountInString(tc.Name) + utf8.RuneCountInString(tc.ArgsJSON)
+		units += textutil.RuneUnitsCJK(tc.Name) + textutil.RuneUnitsCJK(tc.ArgsJSON)
 	}
-	return textutil.EstTokensCJKRunes(n)
+	return textutil.UnitsToTokensCJK(units)
 }
 
 // HasEnoughToCompact 消息量是否值得压缩（<2 个 assistant 轮次压缩无意义——

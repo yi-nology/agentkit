@@ -68,8 +68,9 @@ func scanPolyFiles(dir string, maxFiles int) (map[string][]PolySymbol, error) {
 		default:
 			return nil
 		}
-		if fi, ierr := d.Info(); ierr == nil && fi.Size() > maxPolyFileBytes {
-			return nil // 单文件字节上限（minified js 防整读整扫；不计 count）
+		fi, ierr := d.Info()
+		if ierr != nil || fi.Size() > maxPolyFileBytes {
+			return nil // stat 失败 fail-closed（防 TOCTOU 无界读；不计 count）
 		}
 		src, err := os.ReadFile(path)
 		if err != nil {

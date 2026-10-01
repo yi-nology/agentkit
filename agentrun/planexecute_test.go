@@ -198,3 +198,28 @@ func TestPlanAndExecutePlannerPromptPreserved(t *testing.T) {
 		t.Fatalf("默认规划提示词被指令覆盖丢弃: %.120s", flat2)
 	}
 }
+
+// TestPlanAndExecuteStepOutputNotRespondEnvelope 回归（第十轮审计）：
+// executor 步骤输出恰为 {"response":...} JSON 形态 + replanner 恒不 respond
+// → MaxSteps 耗尽必须报「未产出最终答复」——此前内容嗅探会把中间步骤输出
+// 当最终答复静默返回。
+func TestPlanAndExecuteStepOutputNotRespondEnvelope(t *testing.T) {
+	// 计划 1 步；执行器输出 respond 形态 JSON；replanner 恒产出新计划（不 respond）
+	executor := &llmtest.ToolModel{Model: &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{
+		{Content: `{"response":"中间步骤草稿"}`}, // 步骤输出=respond 信封形态
+	}}}
+	replanner := &llmtest.ToolModel{Model: &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{
+		planCall("下一计划"), // 恒产出新计划，永不 respond
+	}}}
+	_, err := PlanAndExecute(context.Background(), PlanExecuteConfig{
+		Planner: &llmtest.ToolModel{Model: &llmtest.Model{RepeatLast: true, Script: []llmtest.Resp{
+			planCall("计划步骤"),
+		}}},
+		Executor:  executor,
+		Replanner: replanner,
+		MaxSteps:  2,
+	}, "任务")
+	if err == nil || !strings.Contains(err.Error(), "未产出最终答复") {
+		t.Fatalf("步骤输出不得被当最终答复: %v", err)
+	}
+}

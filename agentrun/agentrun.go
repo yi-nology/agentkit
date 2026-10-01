@@ -367,6 +367,16 @@ func (h *reactHandler) streamDeltas(mv *adk.MessageVariant) (*schema.Message, er
 // 事件错误包装中止 → 非消息输出跳过 → 业务处理交给 handle（返回错误同样中止上抛）。
 // 底层事件通道是 UnboundedChan（生产者不阻塞），提前返回不会泄漏。
 func drainEvents(iter *adk.AsyncIterator[*adk.AgentEvent], errKind string, handle func(mv *adk.MessageVariant) error) error {
+	return drainEventsFull(iter, errKind, func(event *adk.AgentEvent) error {
+		if event.Output == nil || event.Output.MessageOutput == nil {
+			return nil
+		}
+		return handle(event.Output.MessageOutput)
+	})
+}
+
+// drainEventsFull drainEvents 的整事件形态（P&E 消费 BreakLoop 等非消息事件）。
+func drainEventsFull(iter *adk.AsyncIterator[*adk.AgentEvent], errKind string, handle func(event *adk.AgentEvent) error) error {
 	for {
 		event, ok := iter.Next()
 		if !ok {
@@ -378,10 +388,7 @@ func drainEvents(iter *adk.AsyncIterator[*adk.AgentEvent], errKind string, handl
 		if event.Err != nil {
 			return fmt.Errorf("agentrun: %s 事件错误: %w", errKind, event.Err)
 		}
-		if event.Output == nil || event.Output.MessageOutput == nil {
-			continue
-		}
-		if err := handle(event.Output.MessageOutput); err != nil {
+		if err := handle(event); err != nil {
 			return err
 		}
 	}

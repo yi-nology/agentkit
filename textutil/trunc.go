@@ -58,6 +58,23 @@ func EstTokensCJKRunes(n int) int {
 	return 2*n/3 + 1
 }
 
+// RuneUnitsCJK 文本的 CJK 单位总量（CJK/全角计 2、其余计 1）。
+func RuneUnitsCJK(s string) int {
+	n := 0
+	for _, r := range s {
+		n += runeUnitsCJK(r)
+	}
+	return n
+}
+
+// UnitsToTokensCJK 单位量 → token（units/3 向上取整，非空下限 1）。
+func UnitsToTokensCJK(units int) int {
+	if units <= 0 {
+		return 0
+	}
+	return (units + 2) / 3
+}
+
 func runeUnitsCJK(r rune) int {
 	// 漏段显式补齐（第八轮审计）：部首补充/康熙部首、CJK 笔画、竖排/兼容/
 	// 小形式变体——Han/Hangul/Kana 的 unicode.Is 覆盖不到的 CJK 符号区段

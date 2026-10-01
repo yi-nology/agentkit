@@ -7,7 +7,7 @@
 //	L2 截最长 user 消息（与 llm.Client.fitInput 同策略，TruncNote 留痕）；
 //	L3 病理态兜底：迭代截最大工具结果直至入窗。
 //
-// 触发线与估算口径对齐 llm fitInput：rune 计数，limit=(窗口-输出预留)×2×0.9。
+// 触发线与估算口径对齐 llm fitInput：rune 计数，limit=(窗口-输出预留)×3/2×0.9（CJK 感知）。
 // 真实 usage 校准（对标 ZCode tokenSource=provider_usage）——**实例内响应
 // 直采**（v0.12.0 起单源）：Generate/Stream 的响应 usage 与本次实发 rune 数
 // 在同一次调用内配对，写入 FitModel 实例校准槽；tokens/char 系数系统性偏低
@@ -389,7 +389,7 @@ func (f *FitModel) fit(msgs []*schema.Message) ([]*schema.Message, int) {
 	if reserved <= 0 {
 		reserved = f.WindowTokens / 20
 	}
-	limit := (f.WindowTokens - reserved) * 2 * 9 / 10
+	limit := (f.WindowTokens - reserved) * 3 / 2 * 9 / 10 // CJK 感知（×3/2，与 llm fitInput v0.12.1 同口径——第十轮补齐：只改 Client 漏了 wrap，冷启动 CJK 超限原样存续）
 	if limit <= 0 {
 		return msgs, runeTotal(msgs)
 	}

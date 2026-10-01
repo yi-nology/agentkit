@@ -126,6 +126,25 @@ type Price struct {
 // PriceOf 按模型名匹配定价表估算单次调用成本（USD；未配价返回 0，不阻塞记账）。
 // 精确匹配优先，未命中回落最长前缀（模型名带版本/日期后缀时定价键可只写主干）。
 // 宿主只需提供 map[模型名]Price；来自 bianque scheduler/usage.go 生产路径（v0.9.5 沉淀）。
+// PriceOfMatched PriceOf 的可观测形态：返回命中的定价键与是否经前缀回落。
+// 前缀回落对「同主干异价 SKU」（gpt-4o 前缀命中 gpt-4o-mini）会静默误定价
+// ——宿主可在装配期对回落命中做校验/上报（第十轮审计）。
+func PriceOfMatched(pricing map[string]Price, model string) (Price, string, bool) {
+	if p, ok := pricing[model]; ok {
+		return p, model, false
+	}
+	best, bestLen := Price{}, -1
+	for prefix, cand := range pricing {
+		if len(prefix) > bestLen && strings.HasPrefix(model, prefix) {
+			best, bestLen = cand, len(prefix)
+		}
+	}
+	if bestLen < 0 {
+		return Price{}, "", false
+	}
+	return best, model[:bestLen], true // 命中键=定价表中的前缀
+}
+
 func PriceOf(pricing map[string]Price, model string, prompt, completion int) float64 {
 	p, ok := pricing[model]
 	if !ok {

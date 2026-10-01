@@ -91,6 +91,12 @@ func (m *FailoverModel) Generate(ctx context.Context, input []*schema.Message, o
 // Stream 与 Generate 同一降级语义（首块前失败才可切换；已在流中失败无法换模型重放）。
 func (m *FailoverModel) Stream(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
 	for i, mm := range m.models {
+		if isNilModel(mm) {
+			// 与 Generate 路径同契约（第十轮审计：Stream 裸调 nil panic，
+			// ReAct 流式主路径正是走这里）；typed-nil 一并防御（isNilModel
+			// 与 Resilient 共用）
+			continue
+		}
 		sr, err := mm.Stream(ctx, input, opts...)
 		if err == nil {
 			return sr, nil

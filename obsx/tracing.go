@@ -112,11 +112,16 @@ func (h *TracingHandler) onStart(ctx context.Context, info *callbacks.RunInfo,
 	if !isModelCall(info) {
 		return ctx
 	}
-	state := startState{start: time.Now(), stage: StageFromContext(ctx)}
+	state := startState{start: time.Now(), stage: StageFromContext(ctx), model: modelOf(info)}
+	// 真实模型名优先（第十轮审计落地：eino-ext 回调 Config.Model 携带构造
+	// 配置的真实模型名；info.Type 只是实现标识（"OpenAI"），多模型混跑不可区分）
+	if in := model.ConvCallbackInput(input); in != nil && in.Config != nil && in.Config.Model != "" {
+		state.model = in.Config.Model
+	}
 	h.log.Info("llm.call.start",
 		"stage", state.stage,
 		"component", compOf(info),
-		"model", modelOf(info),
+		"model", state.model,
 		"n_messages", nMessages(input))
 	return context.WithValue(ctx, startStateKey{}, state)
 }
@@ -129,10 +134,13 @@ func (h *TracingHandler) onEnd(ctx context.Context, info *callbacks.RunInfo,
 	}
 	state, _ := ctx.Value(startStateKey{}).(startState)
 	dur := h.durationSince(state)
+	if out := model.ConvCallbackOutput(output); out != nil && out.Config != nil && out.Config.Model != "" {
+		state.model = out.Config.Model
+	}
 	fields := []any{
 		"stage", state.stage,
 		"component", compOf(info),
-		"model", modelOf(info),
+		"model", state.model,
 		"duration_ms", dur.Milliseconds(),
 	}
 	if out := model.ConvCallbackOutput(output); out != nil {
@@ -162,10 +170,13 @@ func (h *TracingHandler) onError(ctx context.Context, info *callbacks.RunInfo,
 		return ctx
 	}
 	state, _ := ctx.Value(startStateKey{}).(startState)
+	if state.model == "" {
+		state.model = modelOf(info) // OnStart 缺失的解耦注入形态兜底
+	}
 	h.log.Warn("llm.call.error",
 		"stage", state.stage,
 		"component", compOf(info),
-		"model", modelOf(info),
+		"model", state.model,
 		"duration_ms", h.durationSince(state).Milliseconds(),
 		"error", err.Error())
 	return ctx
@@ -185,7 +196,9 @@ func (h *TracingHandler) onStreamEnd(ctx context.Context, info *callbacks.RunInf
 	// 排空会把真流式阻塞成批出（第九轮审计 C 级，与 llm.NewUsageHandler 同修）
 	async.GoSafe(func() {
 		defer output.Close()
-		var usage *model.TokenUsage
+		var usage *model.TokenUsage // last-non-nil（第十轮审计：无 usage 的尾帧
+		// 会把已捕获的 usage 覆写成 nil——观测面与记账面矛盾）
+		var modelName string
 		for {
 			v, err := output.Recv()
 			if err != nil {
@@ -194,33 +207,52 @@ func (h *TracingHandler) onStreamEnd(ctx context.Context, info *callbacks.RunInf
 			switch t := v.(type) {
 			case *model.CallbackOutput:
 				if t != nil {
-					usage = TokenUsageOf(t)
+					if u := TokenUsageOf(t); u != nil {
+						usage = u
+					}
+					if t.Config != nil && t.Config.Model != "" {
+						modelName = t.Config.Model
+					}
 				}
 			case *schema.Message:
-				usage = TokenUsageOf(&model.CallbackOutput{Message: t})
+				if t == nil {
+					continue
+				}
+				if u := TokenUsageOf(&model.CallbackOutput{Message: t}); u != nil {
+					usage = u
+				}
 			}
 		}
-		if usage == nil {
-			return
-		}
-		h.logUsageEnd(ctx, info, usage, "")
+		// usage 缺失（未开 IncludeUsage 的 provider）也落 end——与非流式 onEnd
+		// 行为一致，start/end 配对不破（第十轮审计）
+		h.logUsageEnd(ctx, info, usage, modelName)
 	})
 	return ctx
 }
 
-// logUsageEnd 落 llm.call.end / llm.call.slow（流式/非流式共用）。
-func (h *TracingHandler) logUsageEnd(ctx context.Context, info *callbacks.RunInfo, usage *model.TokenUsage, _ string) {
+// logUsageEnd 落 llm.call.end / llm.call.slow（流式/非流式共用）。usage 可
+// nil（provider 未回传时缺 token 字段，但 end/slow 与 duration 仍产出）。
+func (h *TracingHandler) logUsageEnd(ctx context.Context, info *callbacks.RunInfo, usage *model.TokenUsage, modelName string) {
 	state, _ := ctx.Value(startStateKey{}).(startState)
+	if modelName == "" {
+		modelName = state.model
+	}
+	if modelName == "" {
+		modelName = modelOf(info)
+	}
 	dur := h.durationSince(state)
 	fields := []any{
 		"stage", state.stage,
 		"component", compOf(info),
-		"model", modelOf(info),
+		"model", modelName,
 		"duration_ms", dur.Milliseconds(),
-		"prompt_tokens", usage.PromptTokens,
-		"completion_tokens", usage.CompletionTokens,
-		"total_tokens", usage.TotalTokens,
-		"reasoning_tokens", usage.CompletionTokensDetails.ReasoningTokens,
+	}
+	if usage != nil {
+		fields = append(fields,
+			"prompt_tokens", usage.PromptTokens,
+			"completion_tokens", usage.CompletionTokens,
+			"total_tokens", usage.TotalTokens,
+			"reasoning_tokens", usage.CompletionTokensDetails.ReasoningTokens)
 	}
 	if h.opt.SlowThreshold > 0 && dur > h.opt.SlowThreshold {
 		h.log.Warn("llm.call.slow", fields...)
@@ -243,6 +275,7 @@ func (h *TracingHandler) durationSince(state startState) time.Duration {
 type startState struct {
 	start time.Time
 	stage string
+	model string // onStart 解析的真实模型名（Config.Model > info.Type 回退）
 }
 
 type startStateKey struct{}

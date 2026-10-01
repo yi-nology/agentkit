@@ -14,9 +14,9 @@ func TestEstimateTokensCountsToolCallArgs(t *testing.T) {
 		}},
 	}
 	got := EstimateTokens(msgs)
-	// CJK 保守口径（v0.12.1，第九轮审计）：4 runes→3；工具入参 36 runes→25
-	if got != 3+25 {
-		t.Fatalf("工具入参应计入估算（CJK 口径）: got %d want 28", got)
+	// per-rune 分类计量（v0.12.2，第十轮）：纯 ASCII 按 1 unit——4→2、36→12
+	if got != 2+12 {
+		t.Fatalf("工具入参应计入估算（分类口径）: got %d want 14", got)
 	}
 }
 
