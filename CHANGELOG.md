@@ -1,0 +1,176 @@
+# Changelog
+
+## v0.8.4 (2026-09-10)
+
+- **agentrun**: `Event` 观测面补全——新增 `EventReasoning` 事件类型（推理型模型
+  assistant 消息的 `reasoning_content` 以 reasoning 事件先行外发，先于同消息的
+  tool_call/text）；`Event` 新增 `Args` 字段，`tool_call` 事件携带原始 JSON 参数串
+  （观测/进度展示可看到调用命令）。新增回归测试锁死事件序列
+  （reasoning → tool_call(带 Args) → tool_result → text）。
+
+## v0.8.3 (2026-09-08)
+
+- **router**: `Classify` 门槛自守——MinConfidence 置信度下限与分类合法性
+  （结果不在路由表，含 "none"）在 Classify 统一校验，未过门槛返回携带原因的
+  错误（Decision 仍返回供可观测）。此前门槛只在 `Do` 分发路径生效，只取
+  Classify 决策自行分发的编排器配置了 MinConfidence 也从不生效（死配置）。
+  **行为变化**：依赖 Classify 无条件放行的调用方升级后低置信场景将收到错误。
+- **knowledge/rag**: 可靠性修复——`Local.Rescan` 记录 WalkDir 读取错误：根目录
+  stat 通过但不可 readdir 时不再静默换入空索引（全部读失败保留旧索引，部分失败
+  告警后照常换入）；`OpenAIEmbedder.Embed` 防御远端响应负数 index（原会 panic），
+  缺失槽位由维度校验兜底报错；`MilvusStore.Index` 改为 Delete+Upsert——文件变短
+  后不再残留过期 chunk 行，Index 真正幂等（与 Local.Rescan 全量重建同语义，
+  Milvus 集成测试验证）。
+- **llm**: 可靠性修复——`StageRouter.UsedTokens` 按 `BudgetHolder`（新可选接口，
+  Client/Resilient 实现）暴露的预算指针身份去重：各链共享同一任务 Budget 时
+  原实现按链数倍增上报（argus runner 生产装配已踩中）；`ClassifyLLMError` 截断
+  marker 提到数字状态码 marker 之前——Client 自产截断错误文本含
+  `completion_tokens=<n>`，n 恰为 401/404/429 等值时原会被误判为鉴权失败/限速，
+  "截断→提升 MaxOutputTokens 重试"机制确定性失效。
+- **worker**: 可靠性修复——`LeaderElector` 停机竞态：让位职责移入竞选 goroutine
+  （退出前若持有则 Release），Stop 与在途 tick 穿插时不再泄漏租约/onGained 不再
+  在 Stop 后触发/Stop 返回后 IsLeader 必为 false，ctx 取消导致的续约失败不再误报
+  onLost；`Pool` 的 Queue 调用（Claim/心跳/过期重置）补 panic 隔离——调用方 Queue
+  实现 panic 不再杀死 worker（池静默减员）或心跳 goroutine（在途任务被对端复位
+  双跑）；`Pool.Stop` 心跳改为排空完成后才停——原实现在停机第一时刻就停心跳，
+  grace 窗口超过 StaleRunningAfter 剩余预算时在途任务会被对端复位双跑。
+- **acpx**: `childEnv` 修复 KEY=VALUE 字面透传契约——原实现只按名透传父进程值，
+  字面值（父进程无同名时）被静默丢弃、（有同名时）被父进程值覆盖；现字面注入
+  优先且每 key 唯一（与 mcp.whitelistEnv 同语义）。
+- **acpx**: 适配器文件重组——`agents.go`/`agents2.go` 按 agent 家族拆为
+  `claude.go`/`codex.go`/`opencode.go`/`generic.go`/`kimi.go`/`gemini.go`/`mimo.go`，
+  测试文件同步按类型拆分（跨家命名测试归 `registry_test.go`）。纯文件移动，
+  无 API 变化；此后新增 agent = 新增一个文件 + registry 一行注册。
+- **knowledge/rag**: Local 检索与索引性能优化（等价变换，公共 API 与打分语义不变）——
+  IDF 在 rescan 时预计算（检索路径零 `math.Log`）；topK 改固定容量小顶堆选择
+  （替代全量收集 + 全排序）；tokenize 改字节偏移迭代 + CJK bigram 原串切片 +
+  ASCII 词写入即小写（消除 `[]rune` 全量拷贝）；rune 计数改 `utf8.RuneCountInString`；
+  非过期路径检索加锁次数 2→1。基准（M5，800/8000 chunks）：检索 -24%/-70%，
+  检索内存 -99.9%（2.15MB→944B/op，35→10 allocs），rescan -61%（allocs -79%）。
+  新增 `TestTokenize` 锁死分词语义（bigram/单字补齐/非 Han 边界），
+  `progress` 补 Publish 基准留档（subs=1 时 27ns/op，无需优化）。
+
+## v0.8.1 (2026-09-07)
+
+- **llm**: `StageRouter` — per-stage Generator multiplexing implementing `Generator`
+  (exact match first, then longest prefix — registering "R1" covers "R1a";
+  unmatched stages fall to the default chain). Enables per-stage model routing
+  (big-window model for long inputs, fast model for judgments, strong model for
+  quality-critical stages) without touching call sites. `UsedTokens` aggregates
+  all registered chains; budget injection stays the caller's responsibility.
+- **docs**: `docs/FRAMEWORK.md` — complete framework documentation (positioning &
+  design principles, 6-layer architecture, all 19 packages with APIs/examples/
+  contracts, seven-architecture matrix, horizontal capability deep-dives
+  (reliability/cost/multi-replica/security), Argus production reference, release
+  discipline & pitfalls checklist).
+
+## v0.8.0 (2026-09-07)
+
+Seven-architecture coverage sweep（Single Agent / ReAct / Plan-and-Execute /
+Reflection / Router+Skill / Blackboard / Graph Workflow）——support matrix and
+migration guide in `docs/patterns.md`.
+
+### Added
+
+- **agentrun**: `PlanAndExecute` — thin, batteries-included wrapper over eino adk
+  prebuilt planexecute (Planner/Executor/Replanner composition, tool-calling plan
+  schema, optional planner instruction via input shaping)
+- **reflection**: new package — Generate→Critique(structured pass/issues)→Revise
+  convergence loop with per-round audit trail; self-contradictory critiques
+  (pass=true with issues) treated as fail
+- **router**: new package — LLM intent classification → route dispatch with
+  confidence threshold and optional fallback; decision (route/confidence/reason)
+  fully observable
+- **blackboard**: new package — thread-safe shared board (ordered entries +
+  since-cursor incremental reads) and `Convene` specialist rotation until
+  consensus or round cap; complements eino adk supervisor (centered assignment)
+
+### Notes
+
+- Graph Workflow / Supervisor / Sequential-Parallel-Loop remain eino-native by
+  design (`compose.Graph` + adk workflow) — agentkit packages serve as node
+  building blocks; see docs/patterns.md for the composition guidance.
+
+## v0.7.3 (2026-09-07)
+
+- **worker**: leader-election primitive for multi-replica deployments — `LeaseStore` interface (one conditional UPSERT to implement over SQL) + `LeaderElector` (ttl/interval-based campaign, `IsLeader()`, onGained/onLost callbacks, graceful yield on Stop). Complements the DB-as-queue sharding: task plane scales via `ClaimNextPending`, control plane ("only one may run" components like outbound pollers) converges via lease.
+
+## v0.7.2 (2026-09-07)
+
+- **obsx**: `Options.OnUsage func(component, model, stage string, prompt, completion int)` — real token-usage callback fired on every traced model call. Covers the RawModel bypass (ReAct agents driving `BaseChatModel` directly) that `llm.Client.OnUsage` cannot see; stage comes from the ctx marker. Consumer (Argus) uses it for per-task cost accounting.
+
+## v0.7.1 (2026-09-07)
+
+Exported building blocks requested by consumers (Argus adapter_cli dedup):
+
+- **acpx**: `RunProcess(ProcessRequest)` — the process-group discipline (Setpgid → TERM group → grace → SIGKILL), env whitelist, stdout cap (configurable `MaxStdout`) and `ErrTimeout`/`ErrCanceled` sentinels, for callers that wrap external CLIs without the Agent abstraction
+- **textutil**: `SplitRunes(s, n)` — even rune-safe chunking for large-text LLM pipelines
+
+## v0.7.0 (2026-09-06)
+
+Full-library audit fixes: 3 Critical + ~20 Important across 16 packages, each with regression tests.
+
+### Security
+
+- **mcp**: stdio subprocess env is now a real whitelist (PATH/HOME/TMPDIR base set + `Env` entries) instead of inheriting the full parent environment; `Env` entries are variable names looked up from the current process (or literal `KEY=VALUE`). Previously all parent secrets leaked to external MCP servers, contradicting the documented security model
+- **acpx**: prompt is guarded before being passed as positional/flag argument — prompts starting with `-` get a newline prefix so CLI flag parsers cannot consume them as flags (prompt injection could bypass sandbox flags when the LLM fills the prompt)
+- **workcopy**: `prepare` error path scrubbed the wrong argument — git failure details were dropped and token redaction never applied; error now keeps git output with token redacted
+
+### Reliability
+
+- **acpx**: single-line stdout flood no longer bypasses the 8MB cap (line buffer capped at 1MB, oversized lines dropped and resynced at next newline); timeout/cancel now uses `cmd.Cancel` (TERM group) + `WaitDelay` (SIGKILL) so the documented grace period actually works, and caller cancellation is no longer misreported as timeout (`ErrTimeout`/`ErrCanceled` sentinels, errors wrapped with `%w`); partial trailing line is flushed on failure paths too
+- **llm**: `finish_reason=length` no longer panics when `Usage` is missing; deterministic 4xx (400/402/404/405/413/422 + auth/invalid-model markers) classified non-retryable via structured status code first, then digit-boundary text matching ("429" no longer matches "1429ms"); `AttemptTimeout` now bounds each attempt instead of the whole retry cycle
+- **llm/breaker**: half-open probe can no longer wedge a model out of the fallback chain — breaker adds a probe deadline (`DefaultProbeTimeout`) and ignores failures recorded for rejected requests during open (cooldown no longer extended indefinitely); resilient pairs `Failure` on ctx-cancel and nil-model paths after `Allow`
+- **breaker**: probe-stale recovery + no cooldown extension, regression-tested
+- **worker**: `Stop` before `Start` no longer burns the shutdown path (mutex-based lifecycle, re-`Start` guarded); task panic only loses that task (worker survives, stale-reset requeues it); heartbeat joins the stop WaitGroup with per-call timeouts
+- **progress**: manual `cancel()` now wakes the ctx listener goroutine (Background-ctx subscribers no longer leak)
+- **workcopy**: `Sweep` no longer deletes in-use worktrees (rc>0 kept regardless of TTL — configure TTL above the longest task; crash leaks still handled by orphan sweep); singleflight race between shared result and `Release` fixed (registration moved inside the flight, bounded retry)
+- **knowledge/rag**: `MilvusStore.Index` upserts by deterministic primary key — repeated restarts no longer accumulate duplicate rows; existing collections are validated (dim/metric) and loaded
+- **skill**: progressive disclosure closes the frontmatter-name gap — `Meta.Name` is the canonical ref name (use_skill/allowed basis), frontmatter name becomes display alias `Meta.Title`; `AsSkillTool` normalizes alias inputs via the new `AliasResolver` capability
+
+### API
+
+- **toolprior**: `WithCallLimit` over-limit now returns a model-visible `LIMIT_REACHED: ...` text (nil error) instead of a Go error — eino ToolsNode propagates tool errors as whole-run aborts, discarding all partial progress; `Ordered` sorts Info-failed entries last as documented; call counter widened to int64; `Table.Add` panics on nil Tool (fail fast at registration)
+- **agentrun**: `Config.ToolsFactory` builds a fresh tool table per attempt — use with `RunWithRetry` so `WithCallLimit` budgets reset instead of carrying over; new `RunWithEventsAndRetry` makes retries observable; `tool_result` events added; empty final reply is distinguished from "no final reply"
+- **acpx/mcp/skill/rag**: eino tool wrappers pass through the framework context instead of `context.Background()` (cancellation/timeout now reaches subprocesses and Milvus calls)
+
+### Polish (minor)
+
+- **acpx**: Codex adopts the result-priority strategy on failure paths and accumulates per-turn usage (consistency with claude/mimo); test fixtures cleaned up (`t.Setenv`, malformed JSON fixture)
+- **llm**: `Client.Generate/GenerateJSON` no longer mutate the caller's message slice; `Attempt.Duration` actually recorded; `OnFallback` reports the actual next model; all-breakers-open returns a distinct error instead of "全部 0 个模型失败"; backoff jitter guard for sub-nanosecond `BaseDelay`; dead truncation-retry branch removed from `GenerateJSON`; `OpenAIProviderConfig.MaxOutputTokens < 0` omits the `max_tokens` param (inference-model compat); `CostTracker` capped at 10k records; unused credential fields dropped from `OpenAIProvider`
+- **knowledge/rag**: `sqrtF` uses `math.Sqrt` (hand-rolled Newton iterations drifted up to 60%); `Rescan` keeps the old index when the root dir is missing (no silent empty knowledge base); chunk hard cap (4000 runes) guards Milvus VarChar limit on pasted base64/logs/unclosed code fences; `NProbe <= 0` falls back to default; search-param errors no longer swallowed; filter keys whitelisted (file/heading) against expression injection; `Local.Retrieve` honors ctx; default-value logic extracted to a pure function shared with tests
+- **workcopy**: `cloneURL` preserves the original scheme (no forced https upgrade for intranet http); `GIT_TERMINAL_PROMPT=0` set on all git calls
+- **mcp**: empty Allow-hit results reported via `OnError` (typo'd tool names no longer silently invisible); `NewPool` ignores empty names and keeps the first duplicate
+- **skill**: `..` rejected only as a path segment (names like `v1..2` allowed); frontmatter quotes stripped only when paired; symlink boundary and cache semantics documented; prompt-injection caveat documented for `ListPrompt`
+- **obsx**: missing OnStart state no longer produces astronomic durations (1.7 万年) or spurious slow-call warnings; package doc example signature fixed
+- **safejson**: horizontal rules (`***`/`___`), table rows, reference definitions and tab-ordered lists now neutralized; emphasis text (`***bold***`) not falsely flagged
+- **severity**: trailing `/**` no longer matches the directory itself (.gitignore semantics); `?` matches one rune (multibyte filenames)
+- **textutil**: negative length no longer panics; no full `[]rune` allocation when no truncation is needed
+- **audit**: nil-logger/-receiver safe; test name now matches behavior
+- **progress**: dropped-event counter (`Bus.Dropped()`)
+- **README**: package table now covers all 16 packages; acpx protocol/sandbox support matrix corrected (9 adapters); Resilient / toolprior / mcp / agentrun / obsx quick-start sections added; glob example fixed
+
+## v0.1.0 (2026-09-01)
+
+Initial release — extracted from Argus v3.0.5 code review platform.
+
+### Packages
+
+- **llm**: LLM client with retry (exponential backoff + jitter), rate limiting (token bucket), budget tracking (TokenAccountant interface), fitInput context window guard, GenerateJSON with truncation retry
+- **breaker**: Circuit breaker (closed → open → half-open → closed), per-key Breakers registry
+- **worker**: DB-as-queue worker pool with TaskQueue interface, heartbeat-based crash recovery, two-phase graceful shutdown
+- **knowledge/rag**: Local RAG (markdown chunking + ASCII/CJK tokenization + TF-IDF scoring), eino tool adapter
+- **progress**: Generic event bus `Bus[T]` with multi-subscriber broadcast, 64-buffered channels, lossy drop
+- **skill**: File-based content/methodology resolver with path traversal protection, in-process cache, checksum
+- **severity**: Severity normalization, SHA256 fingerprinting, glob matching (`**`, `*`, `?`)
+- **safejson**: Markdown/HTML anti-injection (headings, fences, quotes, lists, HTML comments)
+- **audit**: Structured audit logging
+- **textutil**: Rune-safe text truncation
+- **workcopy**: Git working copy sandbox with WorktreeKey, singleflight dedup, TTL sweep, orphan cleanup
+
+### Dependencies
+
+- ekit v0.20.1
+- eino v0.9.18
+- golang.org/x/sync v0.22.0
+- golang.org/x/time v0.15.0
