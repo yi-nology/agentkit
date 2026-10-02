@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cloudwego/eino/components/tool"
@@ -56,7 +57,7 @@ func (s *Searxng) Search(ctx context.Context, query string, topK int) ([]Result,
 	}
 	hc := s.HTTP
 	if hc == nil {
-		hc = &http.Client{Timeout: 10 * time.Second}
+		hc = fallbackHTTP() // 连接复用（此前每次调用现场 new client）
 	}
 	q := url.Values{}
 	q.Set("q", query)
@@ -113,3 +114,8 @@ func (s *Searxng) AsTool() tool.BaseTool {
 	}
 	return t
 }
+
+// fallbackHTTP nil-HTTP 兜底 client（进程级单例——连接池复用）。
+var fallbackHTTP = sync.OnceValue(func() *http.Client {
+	return &http.Client{Timeout: 10 * time.Second}
+})

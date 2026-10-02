@@ -10,6 +10,7 @@ package reflection
 import (
 	"context"
 	"fmt"
+	"git.enjoye.top/enjoydream/agentkit/textutil"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
@@ -49,6 +50,9 @@ type Result struct {
 	// Rounds 每轮记录（Round[0] = 初稿）。
 	Rounds []Round
 	// Converged 是否通过 Rubric 收敛（false = 达到轮次上限返回末稿）。
+	// Stalled 稿差判停提前终止（修订稿与上一稿几乎相同——同稿重发形态，
+	// 再烧轮次无意义；Text 为该重复稿）。
+	Stalled   bool
 	Converged bool
 }
 
@@ -93,9 +97,16 @@ func Refine(ctx context.Context, cfg *Config) (*Result, error) {
 			break // 无修订机会了
 		}
 		// 修订：上一稿 + 全量 issues（不只增量——合并评审口径更稳）
+		prev := draft
 		draft, err = generateDraft(ctx, client, cfg, draft, verdict.Issues)
 		if err != nil {
 			return nil, fmt.Errorf("reflection: 第 %d 轮修订失败: %w", i+1, err)
+		}
+		// 稿差判停（第十轮落地，重构机会 3）：修订稿与上一稿几乎相同（同稿
+		// 重发）时继续烧轮次无意义——提前终止，Converged=false 如实标注
+		if textutil.Similarity(prev, draft) >= 0.98 {
+			res.Stalled = true
+			break
 		}
 	}
 	res.Text = draft

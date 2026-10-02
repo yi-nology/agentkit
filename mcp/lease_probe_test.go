@@ -59,7 +59,7 @@ func TestModernProbeEvictsDeadConnection(t *testing.T) {
 // TestReapIdleInvalidatesCatalog 回归（v0.10.29）：闲置回收必须连带目录失效——
 // 否则重建连接后命中旧目录不重新列举，闲置期间工具面变化永久不可见。
 func TestReapIdleInvalidatesCatalog(t *testing.T) {
-	p := NewPool(ServerConfig{Name: "srv"})
+	p := NewPool(ServerConfig{Name: "srv", URL: "http://seed.invalid/mcp"})
 	injectClient(t, p, "srv", mustInProcessClient(t, newTestServer(t)))
 	setConn(p, "srv", func(st *connState) {
 		st.catalog = []toolEntry{{}}

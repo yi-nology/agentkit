@@ -240,6 +240,19 @@ func (p *Pool) Tools(ctx context.Context, specs []ToolSpec) (ToolsResult, error)
 		return ToolsResult{}, fmt.Errorf("mcp: ToolSpec 引用未配置的 server %q（已配置: %v）",
 			missing, p.Servers())
 	}
+	// stdio/http 二选一前置校验（第九轮挂账落地）：此前要到 dial 期才暴露，
+	// 经 OnError 容忍后难以排查；配置错误在这里一次性显式报出
+	for i, spec := range specs {
+		if cfgs[i].Name == "" {
+			continue
+		}
+		if len(cfgs[i].Command) == 0 && cfgs[i].URL == "" {
+			return ToolsResult{}, fmt.Errorf("mcp: server %q stdio（command）与 http（url）均未配置", spec.Server)
+		}
+		if len(cfgs[i].Command) > 0 && cfgs[i].URL != "" {
+			return ToolsResult{}, fmt.Errorf("mcp: server %q 同时配置了 command 与 url（二选一）", spec.Server)
+		}
+	}
 
 	results := make([][]tool.BaseTool, len(specs))
 	var (

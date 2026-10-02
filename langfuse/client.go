@@ -60,6 +60,10 @@ type Query struct {
 type Batch struct {
 	Traces     []Trace
 	TotalItems int
+
+	// Skipped 详情拉取失败被跳过的条数（两段式降级计数——单条 404/瞬时失败
+	// 不再弃掉整批；调用方可据此决策重试）
+	Skipped int
 }
 
 type listResp struct {
@@ -83,30 +87,50 @@ func (c *Client) FetchBatch(ctx context.Context, q Query) (Batch, error) {
 		limit = pageSize
 	}
 
-	var batch Batch
-	for page := 1; len(batch.Traces) < limit; page++ {
+	// 两段式（第十轮重构落地）：先翻页收齐轻量列表（可整段重试，失败=致命），
+	// 再逐条详情（单条失败降级跳过计数——列表取回后 trace 被删的 404 不再
+	// 弃掉整批已合并详情）。seen 去重：删除/补录旧时间戳 trace 会使后续页
+	// 整体位移，跨页 ID 去重兜底。
+	type row struct {
+		id   string
+		name string
+	}
+	var rows []row
+	seen := map[string]bool{}
+	var total int
+	for page := 1; len(rows) < limit; page++ {
 		u := fmt.Sprintf("%s/api/public/traces?%s", c.host, listQuery(q, page, pageSize).Encode())
 		var resp listResp
 		if err := c.get(ctx, u, &resp); err != nil {
-			return batch, err
+			return Batch{}, err // 翻页失败=致命（此时无部分产物可保）
 		}
-		batch.TotalItems = resp.Meta.TotalItems
+		total = resp.Meta.TotalItems
 		for _, tr := range resp.Data {
-			if len(batch.Traces) >= limit {
+			if len(rows) >= limit {
 				break
 			}
-			detail, err := c.GetTrace(ctx, tr.ID)
-			if err != nil {
-				return batch, fmt.Errorf("langfuse: trace %s: %w", tr.ID, err)
+			if tr.ID == "" || seen[tr.ID] {
+				continue
 			}
-			if detail.Name == "" {
-				detail.Name = tr.Name
-			}
-			batch.Traces = append(batch.Traces, detail)
+			seen[tr.ID] = true
+			rows = append(rows, row{id: tr.ID, name: tr.Name})
 		}
 		if page >= resp.Meta.TotalPages || len(resp.Data) == 0 {
 			break
 		}
+	}
+	var batch Batch
+	batch.TotalItems = total
+	for _, r := range rows {
+		detail, err := c.GetTrace(ctx, r.id)
+		if err != nil {
+			batch.Skipped++ // 单条详情失败：降级跳过计数，不弃整批
+			continue
+		}
+		if detail.Name == "" {
+			detail.Name = r.name
+		}
+		batch.Traces = append(batch.Traces, detail)
 	}
 	return batch, nil
 }

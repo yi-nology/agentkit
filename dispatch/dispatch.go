@@ -42,6 +42,55 @@ type Guard struct {
 
 // NewGuard 从边来源构建守卫。
 func NewGuard(src EdgeSource, maxDepth int) *Guard {
+	g := newGuardNoCycleCheck(src, maxDepth)
+	// allow 矩阵环检测（第十轮重构机会 2 落地）：a→b→a 乒乓环此前全靠宿主
+	// 深度计数自觉拦截——漏递增即无限派发。构造期对矩阵跑 DFS 环检测，
+	// 有环 fail-fast（自环同样拒绝——a 允许派发给 a 即无限递归面）。
+	adj := make(map[string][]string, len(g.allow))
+	for from, tos := range g.allow {
+		for to := range tos {
+			adj[from] = append(adj[from], to)
+		}
+	}
+	if hasCycle(adj) {
+		panic("dispatch: allow 矩阵含环（a→b→a 乒乓/自环形态）——派发守卫无法收敛，请修正矩阵或拆环")
+	}
+	return g
+}
+
+// hasCycle 邻接表 DFS 三色环检测。
+func hasCycle(edges map[string][]string) bool {
+	const (
+		white = 0
+		gray  = 1
+		black = 2
+	)
+	color := map[string]int{}
+	var visit func(n string) bool
+	visit = func(n string) bool {
+		color[n] = gray
+		for _, next := range edges[n] {
+			switch color[next] {
+			case gray:
+				return true // 回边=环
+			case white:
+				if visit(next) {
+					return true
+				}
+			}
+		}
+		color[n] = black
+		return false
+	}
+	for n := range edges {
+		if color[n] == white && visit(n) {
+			return true
+		}
+	}
+	return false
+}
+
+func newGuardNoCycleCheck(src EdgeSource, maxDepth int) *Guard {
 	g := &Guard{allow: make(map[string]map[string]struct{}), maxDepth: maxDepth}
 	for _, slug := range src.Slugs() {
 		edges := make(map[string]struct{}, 8)

@@ -20,7 +20,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 
 	"git.enjoye.top/enjoydream/agentkit/textutil"
@@ -43,6 +42,13 @@ type Ref struct {
 	Line int
 }
 
+// refEnt 内部引用条目（File int 化 side-table——千文件级百万 Ref 下字符串
+// header 重复约 8MB；查询出口即时物化 File 字符串，公开 API 不变）。
+type refEnt struct {
+	file int32
+	line int32
+}
+
 // fileEntry 参与引用查询的已解析文件（引用查询惰性扫描，不预建全量索引）。
 type fileEntry struct {
 	rel string
@@ -53,13 +59,46 @@ type fileEntry struct {
 // Index 代码图索引（只读；多 goroutine 并发查询安全——refs 与 files 均在
 // NewIndex 建完后冻结，查询侧零共享可变状态）。
 type Index struct {
-	defs  map[string][]Symbol // 小写名 → 定义
-	refs  map[string][]Ref    // 精确标识符 → 出现位置（含定义行，References 查询时剔除）
-	calls map[string][]Ref    // 标识符 → 调用形态出现位置（IDENT 紧跟 '(' 的 token 对；v0.12.0 起建索引期与 refs 同遍采集，查询 O(1)）
-	poly  map[string][]PolySymbol
-	files []fileEntry
-	skip  int // 解析失败文件数（坏语法）
-	idxed int
+	defs      map[string][]Symbol // 小写名 → 定义
+	refs      map[string][]refEnt // 精确标识符 → 出现位置（含定义行，References 查询时剔除）
+	calls     map[string][]refEnt // 标识符 → 调用形态出现位置（IDENT 紧跟 '(' 的 token 对）
+	fileNames []string            // 文件 ID → rel 路径（refEnt side-table）
+	poly      map[string][]PolySymbol
+	files     []fileEntry
+	skip      int // 解析失败文件数（坏语法）
+	idxed     int
+}
+
+// fileID rel 路径 → 紧凑文件 ID（同文件高频重复，dedup 后 O(1) 查）。
+func (x *Index) fileID(rel string) int32 {
+	for i, n := range x.fileNames {
+		if n == rel {
+			return int32(i)
+		}
+	}
+	x.fileNames = append(x.fileNames, rel)
+	return int32(len(x.fileNames) - 1)
+}
+
+// fileIDOf rel → 文件 ID 的只读查找（不存在返回 false——defs 可能来自
+// poly 侧等未入 files 表的来源）。
+func (x *Index) fileIDOf(rel string) (int32, bool) {
+	for i, n := range x.fileNames {
+		if n == rel {
+			return int32(i), true
+		}
+	}
+	return 0, false
+}
+
+// refsOf 内部条目 → 公开 Ref（File 物化）。
+func (x *Index) refsOf(name string) []Ref {
+	ents := x.refs[name]
+	out := make([]Ref, len(ents))
+	for i, e := range ents {
+		out[i] = Ref{File: x.fileNames[e.file], Line: int(e.line)}
+	}
+	return out
 }
 
 // skipDirs 索引跳过的目录名（噪声目录最小集；小写查表——大小写不敏感文件
@@ -142,10 +181,11 @@ func NewIndex(dir string, maxFiles int) (*Index, error) {
 // References 原先每次查询都全量 go/scanner 重扫（ReAct 反复查同名时 O(files×tokens)）；
 // 建索引期一次付清，查询侧 O(1) 查表 + 过滤定义行。含定义行，查询时剔除。
 func (x *Index) buildRefs() {
-	x.refs = make(map[string][]Ref, 64)
-	x.calls = make(map[string][]Ref, 64)
+	x.refs = make(map[string][]refEnt, 64)
+	x.calls = make(map[string][]refEnt, 64)
 	var sc scanner.Scanner
 	for _, f := range x.files {
+		fid := x.fileID(f.rel)
 		// 同名同行去重用 name→line 单层 map（第八轮审计：此前 map-of-maps +
 		// 每 token 一次 "rel:line" 拼接，千文件级数百万 token 的构建期内存/
 		// 分配放大 2~3 倍）
@@ -166,14 +206,14 @@ func (x *Index) buildRefs() {
 			if tok == token.LPAREN && prevTok == token.IDENT {
 				if lastCall[prevLit] != prevLine {
 					lastCall[prevLit] = prevLine
-					x.calls[prevLit] = append(x.calls[prevLit], Ref{File: f.rel, Line: prevLine})
+					x.calls[prevLit] = append(x.calls[prevLit], refEnt{file: fid, line: int32(prevLine)})
 				}
 			}
 			if tok == token.IDENT {
 				line := f.tf.Line(pos)
 				if lastLine[lit] != line {
 					lastLine[lit] = line
-					x.refs[lit] = append(x.refs[lit], Ref{File: f.rel, Line: line})
+					x.refs[lit] = append(x.refs[lit], refEnt{file: fid, line: int32(line)})
 				}
 			}
 			prevTok, prevLit, prevLine = tok, lit, f.tf.Line(pos)
@@ -252,17 +292,18 @@ func (x *Index) References(name string, limit int) []Ref {
 	if limit <= 0 {
 		limit = 50
 	}
-	defLines := map[string]bool{}
-	for _, s := range x.defs[strings.ToLower(name)] {
-		defLines[s.File+":"+strconv.Itoa(s.Line)] = true
+	defLines := map[int32]bool{} // (fileID<<20)|line —— 免字符串拼接
+	for _, ds := range x.defs[strings.ToLower(name)] {
+		if fid, ok := x.fileIDOf(ds.File); ok {
+			defLines[fid<<20|int32(ds.Line)] = true
+		}
 	}
 	var out []Ref
 	for _, r := range x.refs[name] {
-		key := r.File + ":" + strconv.Itoa(r.Line)
-		if defLines[key] {
+		if defLines[r.file<<20|r.line] {
 			continue
 		}
-		out = append(out, r)
+		out = append(out, Ref{File: x.fileNames[r.file], Line: int(r.line)})
 		if len(out) >= limit {
 			break
 		}

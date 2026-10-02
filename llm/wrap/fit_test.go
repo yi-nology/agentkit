@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"git.enjoye.top/enjoydream/agentkit/textutil"
 	"strings"
 	"sync"
 	"testing"
@@ -133,7 +134,7 @@ func TestFitMessagesTruncateLongestUser(t *testing.T) {
 	if len([]rune(out[1].Content)) >= 8000 {
 		t.Fatal("user 消息应被截断")
 	}
-	if !strings.Contains(out[1].Content, truncNote) {
+	if !strings.Contains(out[1].Content, textutil.FitInputNote) {
 		t.Fatal("截断应带留痕注记")
 	}
 	if !strings.HasPrefix(out[1].Content, "\n") {

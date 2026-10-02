@@ -99,6 +99,37 @@ func NewTracingHandler(log logx.Logger, opt Options) callbacks.Handler {
 		Build()
 }
 
+// DrainStreamUsage 排空回调副本流取末个非 nil usage 与末个非空模型名
+// （全仓单源——llm.NewUsageHandler 与本包 TracingHandler 共用；调用方负责
+// Close，本函数不关流。last-non-nil 语义：无 usage 的尾帧不清空已捕获值）。
+func DrainStreamUsage(sr *schema.StreamReader[callbacks.CallbackOutput]) (usage *model.TokenUsage, modelName string) {
+	for {
+		v, err := sr.Recv()
+		if err != nil {
+			return usage, modelName
+		}
+		switch t := v.(type) {
+		case *model.CallbackOutput:
+			if t == nil {
+				continue
+			}
+			if u := TokenUsageOf(t); u != nil {
+				usage = u
+			}
+			if t.Config != nil && t.Config.Model != "" {
+				modelName = t.Config.Model
+			}
+		case *schema.Message:
+			if t == nil {
+				continue
+			}
+			if u := TokenUsageOf(&model.CallbackOutput{Message: t}); u != nil {
+				usage = u
+			}
+		}
+	}
+}
+
 // isModelCall 组件过滤：只认 ChatModel（eino 官方契约：ConvCallbackInput
 // 返回 nil 即非模型调用应跳过——但 Lambda 的 []*schema.Message 输入也会被
 // 包装成功，故显式判组件）。
@@ -196,33 +227,7 @@ func (h *TracingHandler) onStreamEnd(ctx context.Context, info *callbacks.RunInf
 	// 排空会把真流式阻塞成批出（第九轮审计 C 级，与 llm.NewUsageHandler 同修）
 	async.GoSafe(func() {
 		defer output.Close()
-		var usage *model.TokenUsage // last-non-nil（第十轮审计：无 usage 的尾帧
-		// 会把已捕获的 usage 覆写成 nil——观测面与记账面矛盾）
-		var modelName string
-		for {
-			v, err := output.Recv()
-			if err != nil {
-				break
-			}
-			switch t := v.(type) {
-			case *model.CallbackOutput:
-				if t != nil {
-					if u := TokenUsageOf(t); u != nil {
-						usage = u
-					}
-					if t.Config != nil && t.Config.Model != "" {
-						modelName = t.Config.Model
-					}
-				}
-			case *schema.Message:
-				if t == nil {
-					continue
-				}
-				if u := TokenUsageOf(&model.CallbackOutput{Message: t}); u != nil {
-					usage = u
-				}
-			}
-		}
+		usage, modelName := DrainStreamUsage(output)
 		// usage 缺失（未开 IncludeUsage 的 provider）也落 end——与非流式 onEnd
 		// 行为一致，start/end 配对不破（第十轮审计）
 		h.logUsageEnd(ctx, info, usage, modelName)

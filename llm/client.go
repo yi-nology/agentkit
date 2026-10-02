@@ -362,14 +362,9 @@ func (c *Client) fitInput(msgs []*schema.Message) {
 	if c.ContextTokens <= 0 {
 		return
 	}
-	reserved := c.MaxOutputTokens
-	if reserved <= 0 {
-		reserved = c.ContextTokens / 20
-	}
-	// CJK 感知口径（第九轮审计：此前 ×2 是 0.5 token/rune 假设，与 estimateTokens
-	// 已切的 CJK 口径（中文≈0.67 token/rune）漂移——CJK 会话在截断触发前
-	// 真实 token 可超窗 ~34%，落点是「上下文超限」确定性失败）
-	limit := (c.ContextTokens - reserved) * 3 / 2 * 9 / 10
+	// 预算公式单源 textutil.FitCharsLimit（第十轮收口：与 wrap.FitModel 双份
+	// 手写漂移无编译期信号；CJK 感见 ×3/2 语义见彼处注释）
+	limit := textutil.FitCharsLimit(c.ContextTokens, c.MaxOutputTokens)
 	if limit <= 0 {
 		return
 	}
@@ -390,6 +385,6 @@ func (c *Client) fitInput(msgs []*schema.Message) {
 		keep = 0
 	}
 	cloned := *msgs[longest]
-	cloned.Content = "\n" + textutil.TruncNote(msgs[longest].Content, keep, "输入超出模型窗口预算，已截断留痕")
+	cloned.Content = "\n" + textutil.TruncNote(msgs[longest].Content, keep, textutil.FitInputNote)
 	msgs[longest] = &cloned
 }

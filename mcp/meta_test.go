@@ -33,7 +33,7 @@ func newEchoMetaServer(t *testing.T) *server.MCPServer {
 
 // TestRequestMetaInjected metaFn 产物应逐键注入请求侧 _meta（server 侧可读）。
 func TestRequestMetaInjected(t *testing.T) {
-	p := NewPool(ServerConfig{Name: "srv"})
+	p := NewPool(ServerConfig{Name: "srv", URL: "http://seed.invalid/mcp"})
 	p.RequestMeta = func(ctx context.Context) map[string]any {
 		if v, ok := ctx.Value(ctxMetaKey{}).(map[string]any); ok {
 			return v

@@ -44,7 +44,6 @@ const (
 	minClearSavings = 256 * 2
 	// toolPlaceholder 被清理工具结果的占位文案（固定短文案，可测试可预期）。
 	toolPlaceholder = "[旧工具结果内容已清理：microcompact]"
-	truncNote       = "输入超出模型窗口预算，已截断留痕"
 )
 
 // phRunes 占位符 rune 长度（L1/L3 的「置换后必须变小」守卫基准——字节口径的
@@ -165,7 +164,7 @@ func FitMessages(msgs []*schema.Message, limitChars int) ([]*schema.Message, Fit
 			}
 			if keep < l {
 				cloned := *out[longest]
-				cloned.Content = "\n" + textutil.TruncNote(out[longest].Content, keep, truncNote)
+				cloned.Content = "\n" + textutil.TruncNote(out[longest].Content, keep, textutil.FitInputNote)
 				nl := utf8.RuneCountInString(cloned.Content)
 				total -= l - nl
 				sizes[longest] = nl
@@ -197,7 +196,7 @@ func FitMessages(msgs []*schema.Message, limitChars int) ([]*schema.Message, Fit
 		if keep <= 0 {
 			cloned.Content = toolPlaceholder
 		} else {
-			cloned.Content = textutil.TruncNote(out[big].Content, keep, truncNote)
+			cloned.Content = textutil.TruncNote(out[big].Content, keep, textutil.FitInputNote)
 		}
 		nl := utf8.RuneCountInString(cloned.Content)
 		total -= l - nl
@@ -389,7 +388,7 @@ func (f *FitModel) fit(msgs []*schema.Message) ([]*schema.Message, int) {
 	if reserved <= 0 {
 		reserved = f.WindowTokens / 20
 	}
-	limit := (f.WindowTokens - reserved) * 3 / 2 * 9 / 10 // CJK 感知（×3/2，与 llm fitInput v0.12.1 同口径——第十轮补齐：只改 Client 漏了 wrap，冷启动 CJK 超限原样存续）
+	limit := textutil.FitCharsLimit(f.WindowTokens, f.MaxOutput) // 单源（×3/2 CJK 语义见彼处注释）
 	if limit <= 0 {
 		return msgs, runeTotal(msgs)
 	}

@@ -26,6 +26,7 @@ type Breaker struct {
 	consecutive   int
 	openUntil     time.Time
 	probing       bool
+	probeGen      uint64 // 探测世代：放行探测时 +1，上报携带 gen 甄别迟到
 	probeDeadline time.Time
 }
 
@@ -53,21 +54,32 @@ func (b *Breaker) WithProbeTimeout(d time.Duration) *Breaker {
 // 调用契约：返回 true 后必须恰好配对一次 Success、Failure 或 Abandon（探测
 // 失联超过 DefaultProbeTimeout 后本方法会放行新探测，不再无限等待旧探测）。
 func (b *Breaker) Allow(now time.Time) bool {
+	ok, _ := b.AllowGen(now)
+	return ok
+}
+
+// AllowGen Allow 的世代形态：放行探测时返回递增 gen，供 SuccessGen/FailureGen/
+// AbandonGen 携带上报——陈旧 gen（超时兜底已放行新探测后旧探测迟到上报）被
+// 显式忽略，不再依赖时间窗甄别（v0.12.4 世代化；gen==0 表示 closed 态直行，
+// 旧三方法仍可用）。
+func (b *Breaker) AllowGen(now time.Time) (bool, uint64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.openUntil.IsZero() {
-		return true // closed
+		return true, 0 // closed（gen=0：closed 态上报不走世代甄别）
 	}
 	if now.Before(b.openUntil) {
-		return false // 熔断中
+		return false, 0 // 熔断中
 	}
 	if b.probing && now.Before(b.probeDeadline) {
-		return false // 半开探测已在途
+		return false, 0 // 半开探测已在途
 	}
-	// 首次探测，或旧探测已超时失联——放行新探测
+	// 首次探测，或旧探测已超时失联——放行新探测（世代 +1：旧探测的迟到
+	// 上报因 gen 不匹配被显式忽略）
 	b.probing = true
+	b.probeGen++
 	b.probeDeadline = now.Add(b.probeTimeout)
-	return true
+	return true, b.probeGen
 }
 
 // Success 关闭熔断（配对 Allow==true 的成功结果）。
@@ -87,6 +99,53 @@ func (b *Breaker) Success() {
 func (b *Breaker) Abandon() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.probing = false
+	b.probeDeadline = time.Time{}
+}
+
+// SuccessGen Success 的世代形态：gen 与当前探测不匹配（陈旧迟到上报）时忽略。
+func (b *Breaker) SuccessGen(gen uint64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if gen != 0 && b.probing && gen != b.probeGen {
+		return // 陈旧探测的成功：不关闭（当前探测窗口不受旧探测污染）
+	}
+	b.consecutive = 0
+	b.openUntil = time.Time{}
+	b.probing = false
+	b.probeDeadline = time.Time{}
+}
+
+// FailureGen Failure 的世代形态：gen 与当前探测不匹配（陈旧迟到上报）时
+// **完全忽略**——旧探测已被失联宣告，其结果对新窗口无意义（重熔会振荡，
+// 计数会污染；迟到甄别的结构性解，替代时间窗缓冲启发）。
+func (b *Breaker) FailureGen(now time.Time, gen uint64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if gen != 0 && b.probing && gen != b.probeGen {
+		return // 陈旧探测的迟到失败：忽略
+	}
+	b.consecutive++
+	b.probeDeadline = time.Time{}
+	if b.probing {
+		// 当前探测失败：重新熔断
+		b.openUntil = now.Add(b.cooldown)
+		b.probing = false
+		b.consecutive = b.trip
+		return
+	}
+	if b.consecutive >= b.trip && !b.openAt(now) {
+		b.openUntil = now.Add(b.cooldown)
+	}
+}
+
+// AbandonGen Abandon 的世代形态：gen 不匹配时忽略（旧探测已失联，无占位可解）。
+func (b *Breaker) AbandonGen(gen uint64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if gen != 0 && gen != b.probeGen {
+		return
+	}
 	b.probing = false
 	b.probeDeadline = time.Time{}
 }
@@ -197,6 +256,18 @@ func (bs *Breakers) Failure(name string) { bs.get(name).Failure(bs.Now()) }
 
 // Abandon 按 key 放弃在途半开探测（取消/终止语义，不计失败）。
 func (bs *Breakers) Abandon(name string) { bs.get(name).Abandon() }
+
+// AllowGen/SuccessGen/FailureGen/AbandonGen 世代形态（Breaker 同名方法的
+// 多路转发——调用方持有 gen 跨请求上报）。
+func (bs *Breakers) AllowGen(name string) (bool, uint64) {
+	return bs.get(name).AllowGen(bs.Now())
+}
+
+func (bs *Breakers) SuccessGen(name string, gen uint64) { bs.get(name).SuccessGen(gen) }
+
+func (bs *Breakers) FailureGen(name string, gen uint64) { bs.get(name).FailureGen(bs.Now(), gen) }
+
+func (bs *Breakers) AbandonGen(name string, gen uint64) { bs.get(name).AbandonGen(gen) }
 
 // Opened 按 key 判定是否熔断中。只读——未登记的 key 返回 false，不为查询
 // 创建状态条目（监控轮询不该撑大内部 map；Allow/Success/Failure 才是登记时机）。

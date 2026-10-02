@@ -6,6 +6,7 @@ require (
 	git.enjoye.top/enjoydream/ekit v0.33.0
 	github.com/Masterminds/semver/v3 v3.3.1
 	github.com/cloudwego/eino v0.9.21
+	github.com/lib/pq v1.12.3
 	github.com/mark3labs/mcp-go v1.1.1
 	github.com/milvus-io/milvus-sdk-go/v2 v2.4.2
 	golang.org/x/sync v0.22.0

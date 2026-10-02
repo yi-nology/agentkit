@@ -45,6 +45,7 @@ type Pool struct {
 
 	mu         sync.Mutex // 保护 start/stop 生命周期状态
 	started    bool
+	stopped    bool // Stop 置位：单次生命周期（二次 Start 与 Stop 后 Start 都 no-op）
 	loopCtx    context.Context
 	runCtx     context.Context
 	hbCtx      context.Context // 心跳独立于 loopCtx：排空窗口内任务仍需续期
@@ -69,8 +70,15 @@ func (p *Pool) Start(ctx context.Context) {
 	if p.started {
 		p.mu.Unlock()
 		// 二次 Start 静默 no-op 是文档化契约——留观测面供误重启排查
-		//（第九轮审计速赢：Stop 后 Start 同样落此分支）
-		p.logger().Warn("agentkit.worker.start_ignored", "reason", "already_started_or_stopped")
+		//（第九轮审计速赢：Stop 后 Start 同样落此分支，reason 区分形态）
+		p.logger().Warn("agentkit.worker.start_ignored", "reason", "already_started")
+		return
+	}
+	if p.stopped {
+		p.mu.Unlock()
+		// Stop 后 Start：单次生命周期契约（字段不重置、旧 goroutine 已收）——
+		// 需要重启应构造新 Pool（工厂语义，v2 若开）
+		p.logger().Warn("agentkit.worker.start_ignored", "reason", "stopped_pool_not_restartable")
 		return
 	}
 	p.started = true
@@ -200,6 +208,9 @@ func (p *Pool) Stop(grace time.Duration) {
 		case <-hbDone:
 		case <-time.After(10 * time.Second): // 心跳调用各自限时 5s，兜底不悬挂
 		}
+		p.mu.Lock()
+		p.stopped = true
+		p.mu.Unlock()
 		log.Info("agentkit.worker.stopped")
 	})
 }

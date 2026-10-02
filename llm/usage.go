@@ -121,55 +121,15 @@ func NewUsageHandler(onRecord Sink) callbacks.Handler {
 			// ctx/info 为只读值，goroutine 内读取安全；Iteration 为 atomic。
 			async.GoSafe(func() {
 				defer output.Close()
-				rec, ok := drainStreamUsage(ctx, info, output)
-				if ok {
-					onRecord(rec)
+				usage, _ := obsx.DrainStreamUsage(output)
+				if usage == nil {
+					return
 				}
+				onRecord(recordFromUsage(ctx, info, usage, ""))
 			})
 			return ctx
 		}).
 		Build()
-}
-
-// drainStreamUsage 排空回调副本流取末个非 nil usage（全仓单源——llm 面板
-// 与 obsx 追踪共用；调用方负责 Close 已由 defer 保证）。
-func drainStreamUsage(ctx context.Context, info *callbacks.RunInfo, sr *schema.StreamReader[callbacks.CallbackOutput]) (UsageRecord, bool) {
-	var last *model.TokenUsage
-	var finish string
-	for {
-		v, err := sr.Recv()
-		if err != nil {
-			break
-		}
-		// 流元素两种形态都收：eino-ext 原生分片 *schema.Message；
-		// 经 callbacks 转换层的 *model.CallbackOutput
-		switch t := v.(type) {
-		case *model.CallbackOutput:
-			if t == nil {
-				continue
-			}
-			if u := obsx.TokenUsageOf(t); u != nil {
-				last = u
-			}
-			if t.Message != nil && t.Message.ResponseMeta != nil {
-				finish = t.Message.ResponseMeta.FinishReason
-			}
-		case *schema.Message:
-			if t == nil {
-				continue // typed-nil 防御（第十轮审计：ResponseMeta 解引用 panic）
-			}
-			if u := obsx.TokenUsageOf(&model.CallbackOutput{Message: t}); u != nil {
-				last = u
-			}
-			if t.ResponseMeta != nil {
-				finish = t.ResponseMeta.FinishReason
-			}
-		}
-	}
-	if last == nil {
-		return UsageRecord{}, false
-	}
-	return recordFromUsage(ctx, info, last, finish), true
 }
 
 // recordFromUsage 已知 usage 的记录构造（非流式/流式两路共用单源）。

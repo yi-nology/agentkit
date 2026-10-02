@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"git.enjoye.top/enjoydream/agentkit/textutil"
@@ -161,17 +160,18 @@ func (x *Index) GoCallers(name string, limit int) []Ref {
 	if limit <= 0 {
 		limit = 50
 	}
-	defLines := map[string]bool{}
-	for _, s := range x.defs[strings.ToLower(name)] {
-		defLines[s.File+":"+strconv.Itoa(s.Line)] = true
+	defLines := map[int32]bool{}
+	for _, ds := range x.defs[strings.ToLower(name)] {
+		if fid, ok := x.fileIDOf(ds.File); ok {
+			defLines[fid<<20|int32(ds.Line)] = true
+		}
 	}
 	var out []Ref
 	for _, r := range x.calls[name] {
-		key := r.File + ":" + strconv.Itoa(r.Line)
-		if defLines[key] {
+		if defLines[r.file<<20|r.line] {
 			continue
 		}
-		out = append(out, r)
+		out = append(out, Ref{File: x.fileNames[r.file], Line: int(r.line)})
 		if len(out) >= limit {
 			break
 		}

@@ -252,3 +252,41 @@ func TestBreakerWithProbeTimeout(t *testing.T) {
 		t.Fatal("非正时限应保持缺省")
 	}
 }
+
+// TestStaleProbeGenIgnored 世代化回归：超时兜底放行新探测（gen=2）后，旧探测
+// （gen=1）的迟到 Success/Failure 完全忽略——不关闭熔断（防并发双探测）、
+// 不重熔/不污染计数。
+func TestStaleProbeGenIgnored(t *testing.T) {
+	b := New(2, time.Minute).WithProbeTimeout(50 * time.Millisecond)
+	now := time.Now()
+	if !b.Allow(now) {
+		t.Fatal("closed 应放行")
+	}
+	b.Failure(now)
+	b.Failure(now) // 连续 2 次失败开熔断，openUntil=now+60s
+	// 探测 1（gen=1）放行后失联超时，兜底放行探测 2（gen=2）
+	ok1, gen1 := b.AllowGen(now.Add(61 * time.Second))
+	if !ok1 || gen1 != 1 {
+		t.Fatalf("探测1: ok=%v gen=%d", ok1, gen1)
+	}
+	ok2, gen2 := b.AllowGen(now.Add(62 * time.Second))
+	if !ok2 || gen2 != 2 {
+		t.Fatalf("探测2: ok=%v gen=%d", ok2, gen2)
+	}
+	// 旧探测（gen1）迟到成功：忽略——不得清 probing（否则第三个请求被放行
+	// = 并发双探测，正是注释声明要防的形态）
+	b.SuccessGen(gen1)
+	if ok3, _ := b.AllowGen(now.Add(62*time.Second + 10*time.Millisecond)); ok3 {
+		t.Fatal("陈旧成功不得解除探测占位（并发双探测）")
+	}
+	// 旧探测（gen1）迟到失败：忽略——不得重熔新窗口
+	b.FailureGen(now.Add(62*time.Second+20*time.Millisecond), gen1)
+	if ok4, _ := b.AllowGen(now.Add(62*time.Second + 30*time.Millisecond)); ok4 {
+		t.Fatal("陈旧失败不得重熔（新探测仍在途，应继续被拒）")
+	}
+	// 当前探测（gen2）成功：正常关闭
+	b.SuccessGen(gen2)
+	if !b.Allow(now.Add(63 * time.Second)) {
+		t.Fatal("当前探测成功应关闭熔断")
+	}
+}

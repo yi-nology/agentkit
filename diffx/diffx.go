@@ -27,7 +27,8 @@ const sep = "diff --git "
 
 // SplitUnifiedDiff 将拼接的 unified diff 按文件路径切分为 map[path]完整块
 // （块保留 "diff --git " 前缀，与常见存储/展示形态一致）。无路径的块忽略；
-// 空输入返回空 map。
+// 空输入返回空 map。同路径多块（merge/拆分提交）后者覆盖——需要保序保重复
+// 用 SplitChunks。
 func SplitUnifiedDiff(raw string) map[string]string {
 	result := make(map[string]string)
 	if raw == "" {

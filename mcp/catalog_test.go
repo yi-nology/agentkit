@@ -48,7 +48,7 @@ func newAnnotatedServer(t *testing.T) *server.MCPServer {
 func TestCatalogListOnce(t *testing.T) {
 	srv := newAnnotatedServer(t)
 	cli := &countingClient{MCPClient: mustInProcessClient(t, srv)}
-	p := NewPool(ServerConfig{Name: "srv"})
+	p := NewPool(ServerConfig{Name: "srv", URL: "http://seed.invalid/mcp"})
 	injectClient(t, p, "srv", cli)
 
 	for i := 0; i < 3; i++ {
@@ -68,7 +68,7 @@ func TestCatalogListOnce(t *testing.T) {
 // TestHintsExtracted 注解随目录提取：显式注解 + mcp-go 缺省注解两形态。
 func TestHintsExtracted(t *testing.T) {
 	srv := newAnnotatedServer(t)
-	p := NewPool(ServerConfig{Name: "srv"})
+	p := NewPool(ServerConfig{Name: "srv", URL: "http://seed.invalid/mcp"})
 	injectClient(t, p, "srv", mustInProcessClient(t, srv))
 
 	if _, err := p.Tools(context.Background(), []ToolSpec{{Server: "srv"}}); err != nil {
@@ -101,7 +101,7 @@ func TestHintsExtracted(t *testing.T) {
 func TestCatalogInvalidatedOnEvict(t *testing.T) {
 	srv := newAnnotatedServer(t)
 	cli1 := &countingClient{MCPClient: mustInProcessClient(t, srv)}
-	p := NewPool(ServerConfig{Name: "srv"})
+	p := NewPool(ServerConfig{Name: "srv", URL: "http://seed.invalid/mcp"})
 	injectClient(t, p, "srv", cli1)
 	if _, err := p.Tools(context.Background(), []ToolSpec{{Server: "srv"}}); err != nil {
 		t.Fatalf("Tools 失败: %v", err)
@@ -136,7 +136,7 @@ func TestConvToolIsErrorObservation(t *testing.T) {
 		func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			return mcp.NewToolResultError("目标不存在"), nil
 		})
-	p := NewPool(ServerConfig{Name: "srv"})
+	p := NewPool(ServerConfig{Name: "srv", URL: "http://seed.invalid/mcp"})
 	injectClient(t, p, "srv", mustInProcessClient(t, srv))
 	tr, err := p.Tools(context.Background(), []ToolSpec{{Server: "srv", Allow: []string{"boom"}}})
 	if err != nil {

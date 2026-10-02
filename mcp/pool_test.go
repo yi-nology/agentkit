@@ -65,7 +65,7 @@ func TestToolsWhitelist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := NewPool(ServerConfig{Name: "calc"})
+	p := NewPool(ServerConfig{Name: "calc", URL: "http://seed.invalid/mcp"})
 	injectClient(t, p, "calc", cli)
 	defer p.Close()
 
@@ -104,7 +104,7 @@ func TestToolsWhitelist(t *testing.T) {
 func TestToolsEmptyAllowAll(t *testing.T) {
 	srv := newTestServer(t)
 	cli, _ := client.NewInProcessClient(srv)
-	p := NewPool(ServerConfig{Name: "calc"})
+	p := NewPool(ServerConfig{Name: "calc", URL: "http://seed.invalid/mcp"})
 	injectClient(t, p, "calc", cli)
 	defer p.Close()
 
@@ -119,7 +119,7 @@ func TestToolsEmptyAllowAll(t *testing.T) {
 }
 
 func TestToolsUnknownServer(t *testing.T) {
-	p := NewPool(ServerConfig{Name: "a"})
+	p := NewPool(ServerConfig{Name: "a", URL: "http://seed.invalid/mcp"})
 	_, err := p.Tools(context.Background(), []ToolSpec{{Server: "nope"}})
 	if err == nil || !strings.Contains(err.Error(), "未配置") {
 		t.Fatalf("引用未配置 server 应报错: %v", err)
@@ -134,7 +134,7 @@ func TestToolsPartialFailureTolerated(t *testing.T) {
 	var errCount atomic.Int32
 	p := NewPool(
 		ServerConfig{Name: "broken", Command: []string{"/nonexistent/mcp-server"}},
-		ServerConfig{Name: "good"},
+		ServerConfig{Name: "good", URL: "http://seed.invalid/mcp"},
 	)
 	injectClient(t, p, "good", cli)
 	p.OnError = func(server string, err error) {
@@ -200,7 +200,7 @@ func TestDialRejectsOptionCommand(t *testing.T) {
 func TestPoolClose(t *testing.T) {
 	srv := newTestServer(t)
 	cli, _ := client.NewInProcessClient(srv)
-	p := NewPool(ServerConfig{Name: "calc"})
+	p := NewPool(ServerConfig{Name: "calc", URL: "http://seed.invalid/mcp"})
 	injectClient(t, p, "calc", cli)
 
 	p.Close()

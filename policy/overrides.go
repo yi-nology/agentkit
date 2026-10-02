@@ -40,5 +40,16 @@ func LoadOverrides(fsys fs.FS, path string) (*Policy, error) {
 	if p.FullMaxRisk <= 0 || p.FullMaxRisk > base.FullMaxRisk {
 		p.FullMaxRisk = base.FullMaxRisk
 	}
+	// 规则逐条校验（第十轮挂账：运行期 fail-safe 兜底之外，加载期对漏写/
+	// 拼错的 verdict fail-fast——启动即败，宁拒不启动不带错跑的既定纪律）
+	for i, r := range p.Rules {
+		if r.Verdict != VerdictUnknown && !isValidVerdict(r.Verdict) {
+			return nil, fmt.Errorf("policy: %s 规则[%d]（%s）verdict %q 非法（auto_proceed|need_human|deny|unknown）",
+				path, i, r.ID, r.Verdict)
+		}
+		if r.ID == "" {
+			return nil, fmt.Errorf("policy: %s 规则[%d] 缺 id", path, i)
+		}
+	}
 	return p, nil
 }

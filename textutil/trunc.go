@@ -136,3 +136,24 @@ func TruncNote(s string, n int, note string) string {
 	}
 	return out
 }
+
+// FitInputNote 窗口预算截断的统一注记文案（llm.fitInput 与 llm/wrap 共用
+// 单源——此前两处字面量漂移无编译期信号）。
+const FitInputNote = "输入超出模型窗口预算，已截断留痕"
+
+// FitCharsLimit 模型窗口的 rune 预算：(窗口-预留)×3/2×0.9（CJK 感知系数
+// 1.5 token/rune 上界——v0.12.1 起两处共用；×0.9 留 10% 余量）。窗口无效
+// 或预留缺省（<=0 取 窗口/20）不可算时返回 0（调用方跳过拟合）。
+func FitCharsLimit(windowTokens, reserveTokens int) int {
+	if windowTokens <= 0 {
+		return 0
+	}
+	if reserveTokens <= 0 {
+		reserveTokens = windowTokens / 20
+	}
+	limit := (windowTokens - reserveTokens) * 3 / 2 * 9 / 10
+	if limit <= 0 {
+		return 0
+	}
+	return limit
+}
