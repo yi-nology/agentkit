@@ -100,13 +100,20 @@ func (b *Breaker) Failure(now time.Time) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.consecutive++
+	deadline := b.probeDeadline // 迟到上报甄别用（清零前快照）
 	b.probeDeadline = time.Time{}
 	if b.probing {
-		// 半开探测失败：重新熔断
-		b.openUntil = now.Add(b.cooldown)
-		b.probing = false
-		b.consecutive = b.trip
-		return
+		// 迟到上报甄别（第十轮最小修）：超时兜底放行新探测后，旧探测的
+		// 迟到 Failure 会误判为「当前探测失败」把新探测窗口瞬间重新熔断
+		//（状态振荡）。仅在当前探测的时限窗内（含缓冲）才接受为探测失败，
+		// 否则按 closed 态普通失败计。世代化 API 见重构机会（v2）。
+		if !now.Before(deadline.Add(-2 * time.Second)) {
+			b.openUntil = now.Add(b.cooldown)
+			b.probing = false
+			b.consecutive = b.trip
+			return
+		}
+		b.probing = false // 陈旧上报：不重熔断，落回普通失败计数
 	}
 	if b.consecutive >= b.trip && !b.openAt(now) {
 		b.openUntil = now.Add(b.cooldown)

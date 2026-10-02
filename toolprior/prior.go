@@ -98,7 +98,7 @@ func (t *Table) sortedEntries(ctx context.Context) []resolvedEntry {
 }
 
 // Ordered 按优先级稳定排序返回工具表（同优先级保持注册序）。
-// Info 失败的条目排在末尾（排序键不可得时不遮挡可用工具）。
+// Info 失败的条目在本优先级档内排后（跨档仍按优先级——StrategyPrompt 与 Ordered 共用同一视图）（排序键不可得时不遮挡可用工具）。
 func (t *Table) Ordered(ctx context.Context) []tool.BaseTool {
 	rs := t.sortedEntries(ctx)
 	out := make([]tool.BaseTool, 0, len(rs))

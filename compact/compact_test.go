@@ -280,3 +280,41 @@ func TestMicrocompactIdempotent(t *testing.T) {
 		t.Fatalf("已清除结果不应重复清除: %d vs %d", cleared, len(first.ClearedIDs))
 	}
 }
+
+// TestMicrocompactShortResultNotCleared 回归（第十轮落地）：≤ 占位符 token 数
+// 的短结果不清（置换后必须变小——与 wrap L1/L3 同守卫）。
+func TestMicrocompactShortResultNotCleared(t *testing.T) {
+	msgs := []Message{
+		{Role: RoleUser, Text: strings.Repeat("背景", 2000)},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "1", Name: "t", ArgsJSON: "{}"}}},
+		{Role: RoleTool, ToolCallID: "1", ToolName: "t", Text: "OK"}, // 短结果
+		{Role: RoleAssistant, Text: "done"},
+	}
+	res := MaybeMicrocompact(msgs, MicroConfig{
+		ThresholdTokens: 100,
+		Enabled:         boolPtr(true),
+	}, time.Time{}, time.Now())
+	if res.Trigger == "" {
+		t.Fatal("应触发")
+	}
+	for _, m := range res.Messages {
+		if m.Role == RoleTool && m.Text != "OK" {
+			t.Fatalf("短结果不应被清除: %q", m.Text)
+		}
+	}
+}
+
+// TestMicrocompactWithUsageOverride provider 口径优先回归（第十轮落地）：
+// 本地估算远低于阈值、真实用量超阈值时按真实量触发。
+func TestMicrocompactWithUsageOverride(t *testing.T) {
+	msgs := []Message{{Role: RoleUser, Text: "short"}} // 本地估算 ~2 token
+	res := MaybeMicrocompactWithUsage(msgs, MicroConfig{
+		ThresholdTokens: 100,
+		Enabled:         boolPtr(true),
+	}, time.Time{}, time.Now(), 5000)
+	if res.Trigger != TriggerTokens {
+		t.Fatalf("provider 用量应优先触发: %q", res.Trigger)
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }

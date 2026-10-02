@@ -30,7 +30,10 @@ func Split(history []Turn, keep int) (recent, evicted []Turn) {
 	if keep <= 0 || len(history) <= keep {
 		return history, nil
 	}
-	return history[len(history)-keep:], history[:len(history)-keep]
+	// evicted 显式拷贝（第十轮）：切片别名下调用方 append(evicted) 会写穿
+	// recent 的底层数组，长期持有 evicted 会钉住整块底层数组
+	evicted = append([]Turn(nil), history[:len(history)-keep]...)
+	return history[len(history)-keep:], evicted
 }
 
 // Render 会话历史 → 注入文本（"用户:/助手:" 行 + 单轮截断）。

@@ -3,8 +3,10 @@ package llm
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/eino/callbacks"
+	"github.com/cloudwego/eino/components"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 )
@@ -137,5 +139,38 @@ func TestUsageHandlerClientAccountedSkips(t *testing.T) {
 		&model.CallbackOutput{TokenUsage: &model.TokenUsage{PromptTokens: 10}})
 	if n != 1 {
 		t.Fatalf("无标记应发射: %d", n)
+	}
+}
+
+// TestUsageHandlerStreamBranch 流式分支回归（第十轮补覆盖）：usage 在中间
+// 帧、其后有无 usage 的尾帧——记录仍产出（last-non-nil）；排空异步进行，
+// handler 返回不被阻塞。
+func TestUsageHandlerStreamBranch(t *testing.T) {
+	// 构造三帧流：usage 帧、空帧、无 usage 尾帧
+	sr, w := schema.Pipe[callbacks.CallbackOutput](3)
+	go func() {
+		w.Send(&model.CallbackOutput{
+			Config:     &model.Config{Model: "m1"},
+			TokenUsage: &model.TokenUsage{PromptTokens: 11, CompletionTokens: 7, TotalTokens: 18},
+		}, nil)
+		w.Send(&model.CallbackOutput{}, nil)
+		w.Send(&model.CallbackOutput{Config: &model.Config{Model: "m1"}}, nil)
+		w.Close()
+	}()
+	done := make(chan struct{})
+	ctx := callbacks.InitCallbacks(context.Background(),
+		&callbacks.RunInfo{Type: "test", Component: components.ComponentOfChatModel},
+		NewUsageHandler(func(r UsageRecord) {
+			if r.PromptTokens == 11 {
+				close(done)
+			}
+		}))
+	// 触发流式时机：回交流消费一帧证明 handler 返回不被排空阻塞
+	_, out := callbacks.OnEndWithStreamOutput(ctx, sr)
+	_, _ = out.Recv()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("last-non-nil usage 应产出记录")
 	}
 }

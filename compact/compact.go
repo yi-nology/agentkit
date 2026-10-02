@@ -326,7 +326,21 @@ type MicroResult struct {
 // MaybeMicrocompact 轻量压缩：把旧工具结果替换为占位符。lastAssistantDone
 // 为最近一次 assistant 完成时刻（零值 = 不评估 idle 触发）。
 func MaybeMicrocompact(msgs []Message, cfg MicroConfig, lastAssistantDone, now time.Time) MicroResult {
+	return maybeMicrocompact(msgs, cfg, lastAssistantDone, now, 0)
+}
+
+// MaybeMicrocompactWithUsage TokenOverride 形态：provider 真实用量（>0）优先
+// 于本地估算——此前触发只认本地估算，中文场景估算低估约半，micro 到点时
+// 真实 token 已近两倍超窗，轻量先手永远晚于 auto-compact（马后炮）。
+func MaybeMicrocompactWithUsage(msgs []Message, cfg MicroConfig, lastAssistantDone, now time.Time, usageTokens int) MicroResult {
+	return maybeMicrocompact(msgs, cfg, lastAssistantDone, now, usageTokens)
+}
+
+func maybeMicrocompact(msgs []Message, cfg MicroConfig, lastAssistantDone, now time.Time, usageTokens int) MicroResult {
 	before := EstimateTokens(msgs)
+	if usageTokens > 0 {
+		before = usageTokens
+	}
 	res := MicroResult{TokensBefore: before, Messages: msgs, ThresholdTokens: cfg.ThresholdTokens}
 	if cfg.Enabled != nil && !*cfg.Enabled {
 		res.Reason = MicroDisabled
@@ -406,9 +420,16 @@ func microTrigger(cfg MicroConfig, lastAssistantDone, now time.Time, tokens int)
 func applyClears(msgs []Message, clearGroups [][]int) (out []Message, clearedIDs []string, saved int) {
 	out = make([]Message, len(msgs))
 	copy(out, msgs)
+	ph := msgTokens(Message{Role: RoleTool, Text: ClearedPlaceholder})
 	for _, g := range clearGroups {
 		for _, idx := range g {
 			was := msgTokens(msgs[idx])
+			// 置换后必须变小（第十轮落地，与 llm/wrap L1/L3 同守卫）：
+			// ≤ 占位符 token 数的短结果（"OK" 级）清了反涨——此前 saved 计入
+			// 负数且白腐蚀信息（混合大小结果场景总节省超阈值照常应用）
+			if was <= ph {
+				continue
+			}
 			out[idx].Text = ClearedPlaceholder
 			saved += was - msgTokens(out[idx])
 			clearedIDs = append(clearedIDs, msgs[idx].ToolCallID)
@@ -419,7 +440,8 @@ func applyClears(msgs []Message, clearGroups [][]int) (out []Message, clearedIDs
 
 // collectClearableGroups 收集可清除工具结果的分组：组 = 同一 assistant 轮次
 // 内的连续工具结果（随轮次整体清除）；孤儿结果（前文无带调用的 assistant）
-// 单独成组。跳过：非白名单工具（白名单非空时）、出错结果（未开清除）、已清除。
+// 不入组不清理（保守——与 llm/wrap.toolGroups 同语义）。跳过：非白名单工具
+// （白名单非空时）、出错结果（未开清除）、已清除。
 func collectClearableGroups(msgs []Message, cfg MicroConfig) [][]int {
 	allow := map[string]bool{}
 	for _, n := range cfg.CompactableTools {
@@ -452,7 +474,9 @@ func collectClearableGroups(msgs []Message, cfg MicroConfig) [][]int {
 			continue
 		}
 		if current == nil {
-			groups = append(groups, []int{i}) // 孤儿结果单独成组
+			// 孤儿结果（无所属 assistant 轮）不清——与 llm/wrap.toolGroups
+			// 的保守语义对齐（第十轮落地：此前单独成组照清，两份同名概念
+			// 在边角输入上行为相反）
 			continue
 		}
 		current = append(current, i)

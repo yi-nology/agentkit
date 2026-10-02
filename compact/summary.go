@@ -79,6 +79,15 @@ func FormatSummary(modelOutput string) string {
 		return ""
 	}
 	out = analysisRe.ReplaceAllLiteralString(out, "")
+	// 截断宽容剥离（第十轮）：闭合 </summary> 未命中但裸 <summary> 存在
+	//（摘要请求被 max-tokens 截断的形态）——取其后段落，不带标签残渣地
+	// 「部分成功」优于字面标签连同截断正文注入续接消息
+	if loc := summaryRe.FindStringSubmatchIndex(out); loc == nil {
+		if i := strings.Index(out, "<summary>"); i >= 0 {
+			out = strings.TrimSpace(out[:i]) + "\n\nSummary:\n" +
+				strings.TrimSpace(out[i+len("<summary>"):])
+		}
+	}
 	// 摘要正文按字面替换（ReplaceAllString 会把 $name/$1 当模板展开——
 	// 代码摘要里的 ${VAR}/$HOME 会被静默清空）
 	if loc := summaryRe.FindStringSubmatchIndex(out); loc != nil {

@@ -14,13 +14,13 @@ const InterruptedToolResult = "[Tool execution was interrupted before resume]"
 func RepairInterrupted(msgs []Message) []Message {
 	answered := map[string]bool{}
 	for _, m := range msgs {
-		if m.Role == "tool" && m.ToolCallID != "" {
+		if m.Role == RoleTool && m.ToolCallID != "" {
 			answered[m.ToolCallID] = true
 		}
 	}
 	var holes []string // 依次发现的未应答调用 id
 	for _, m := range msgs {
-		if m.Role != "assistant" {
+		if m.Role != RoleAssistant {
 			continue
 		}
 		for _, tc := range m.ToolCalls {
@@ -40,17 +40,17 @@ func RepairInterrupted(msgs []Message) []Message {
 	var pendingHoles []string // 当前调用轮的未应答调用（等既有结果落完再补，保持调用同序）
 	flush := func() {
 		for _, id := range pendingHoles {
-			out = append(out, Message{Role: "tool", ToolCallID: id, Text: InterruptedToolResult})
+			out = append(out, Message{Role: RoleTool, ToolCallID: id, Text: InterruptedToolResult})
 			delete(holeSet, id)
 		}
 		pendingHoles = nil
 	}
 	for _, m := range msgs {
-		if m.Role != "tool" {
+		if m.Role != RoleTool {
 			flush() // 调用轮的结果串结束：占位补在串尾（与调用同序，provider 不拒）
 		}
 		out = append(out, m)
-		if m.Role == "assistant" {
+		if m.Role == RoleAssistant {
 			for _, tc := range m.ToolCalls {
 				if tc.ID != "" && holeSet[tc.ID] {
 					pendingHoles = append(pendingHoles, tc.ID)
