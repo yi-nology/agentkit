@@ -1,5 +1,50 @@
 # Changelog
 
+## v0.12.4 (2026-10-02)
+
+挂账全清轮：历轮审计记录在案的全部「延后/留观察/重构机会」一次性落地。
+API 全部为兼容式新增（无破坏）。
+
+### Changed（挂账落地）
+
+- **codeintel**：refs/calls 内部存储 `Ref.File` int 化（fileNames side-table
+  + 查询出口物化——公开 API 不变；千文件级百万 Ref 下字符串 header 重复
+  约 8MB 消除；defLines 判定同步 int 键化免字符串拼接）。
+- **textutil/llm/wrap**：窗口预算公式与截断注记收口单源——`FitCharsLimit`
+ （(窗口-预留)×3/2×0.9，CJK 感知语义注释单点）+ `FitInputNote`（注记文案
+  常量）；client.fitInput 与 wrap.FitModel 两处手写公式/字面量删除（漂移
+  无编译期信号的结构性根除）。
+- **obsx/llm**：流式排空单源导出 `obsx.DrainStreamUsage`（last-non-nil
+  usage + 末帧模型名）——llm.NewUsageHandler 的内联 drainStreamUsage
+  删除，两包共用一份实现（「同修法修歪」的结构性根除）。
+- **breaker**：世代化 API（兼容式）——`AllowGen` 放行探测返回递增 gen，
+  `SuccessGen/FailureGen/AbandonGen` 携带上报：陈旧 gen（超时兜底已放行
+  新探测后旧探测迟到上报）**完全忽略**，替代第十轮的时间窗缓冲启发
+  （Breakers 多路形态同步 Gen 变体）。旧三方法保留（gen=0 语义不变）。
+- **mcp**：Tools 校验段前置 stdio/http 二选一校验（均未配置/同时配置
+  启动即显式报错——此前 dial 期经 OnError 容忍后难排查）。
+- **langfuse**：FetchBatch 两段式——先翻页收齐轻量列表（失败=致命），
+  再逐条详情（单条失败降级跳过计数 `Batch.Skipped`，不弃整批）；跨页
+  ID seen 去重（删除/补录旧时间戳 trace 的位移兜底）。
+- **websearch**：nil-HTTP 兜底 client 改进程级单例（连接池复用）。
+- **reflection**：稿差判停——修订稿与上一稿 Similarity≥0.98（同稿重发
+  形态）提前终止并标注 `Result.Stalled`，不再烧满轮次。
+- **dispatch**：allow 矩阵构造期环检测（DFS 三色）——a→b→a 乒乓/自环
+  fail-fast panic（此前全靠宿主深度计数自觉，漏递增即无限派发）。
+- **policy**：LoadOverrides 对规则逐条加载期校验（verdict 合法域 + id
+  非空）——漏写/拼错 fail-fast 启动即败，运行期 fail-safe 兜底之外的前置防线。
+- **worker**：二次 Start 与 Stop 后 Start 的 Warn reason 区分
+ （already_started / stopped_pool_not_restartable）+ `stopped` 生命周期
+  字段显式化。
+
+### Added
+
+- **worker/pglease**：DSN 门控集成测试（`AGENTKIT_PG_TEST_DSN` 环境变量
+  非空时跑真 PG 五语义点：空闲获取/本人续约/他人持有拒/过期可夺/非持有者
+  Release no-op；空时 t.Skip——仓内 go test 不依赖外部环境）。
+- **breaker**：世代化回归测试（陈旧 Success 不解除占位/陈旧 Failure 不重熔）。
+- **diffx**：SplitUnifiedDiff 同路径覆盖语义注释钉住（保序需求指 SplitChunks）。
+
 ## v0.12.3 (2026-10-02)
 
 第十轮审计遗留项收口轮：第九轮 compact 三 I + 会话治理/基础件 L 级全清 +

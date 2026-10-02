@@ -1466,6 +1466,12 @@ flowchart TD
   DiffPath/HunkLines）+ textutil.FirstNonEmpty——收编 argus diffprep/inject
 - **v0.10.39**：工具链三件下沉——workcopy 浅克隆补全 / 确定性 SAST / 配置卫生
   助手（并发会话发布）
+- **v0.12.4（挂账全清轮）**：历轮延后/留观察/重构机会全落地（兼容式）——
+  codeintel Ref int 化；窗口公式/注记/流式排空三处单源收口（FitCharsLimit/
+  FitInputNote/DrainStreamUsage）；breaker 世代化 API（AllowGen + Gen 变体，
+  陈旧上报完全忽略）；mcp 二选一前置校验；langfuse 两段式+seen 去重；
+  reflection 稿差判停；dispatch 矩阵环检测；policy 加载期规则校验；
+  pglease DSN 门控集成测试
 - **v0.12.3（十轮遗留收口轮）**：compact 三 I 落地（置换守卫/WithUsage
   触发通道/孤儿不清）+ resume 反向补洞与 Role 收口 + summary 截断宽容剥离 +
   conversation Split 拷贝 + breaker 迟到探测甄别 + usage 流式分支测试补齐
