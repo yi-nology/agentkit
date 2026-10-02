@@ -1466,6 +1466,9 @@ flowchart TD
   DiffPath/HunkLines）+ textutil.FirstNonEmpty——收编 argus diffprep/inject
 - **v0.10.39**：工具链三件下沉——workcopy 浅克隆补全 / 确定性 SAST / 配置卫生
   助手（并发会话发布）
+- **v0.12.3（十轮遗留收口轮）**：compact 三 I 落地（置换守卫/WithUsage
+  触发通道/孤儿不清）+ resume 反向补洞与 Role 收口 + summary 截断宽容剥离 +
+  conversation Split 拷贝 + breaker 迟到探测甄别 + usage 流式分支测试补齐
 - **v0.12.2（第十轮审计修复轮）**：4 面——v0.12.1 修复复查（logredact 引号
   值半泄漏/复合键漏网、obsx 覆写语义、wrap/compact 口径分裂补齐与 per-rune
   分类计量）+ llm 残余首审（Failover.Stream nil panic、PriceOfMatched、

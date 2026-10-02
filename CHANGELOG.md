@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.12.3 (2026-10-02)
+
+第十轮审计遗留项收口轮：第九轮 compact 三 I + 会话治理/基础件 L 级全清 +
+usage 流式分支测试欠账补齐。
+
+### Fixed
+
+- **compact**（第九轮三 I 落地）：
+  - microcompact 置换守卫——≤ 占位符 token 数的短结果不清（"OK" 级结果
+    清了反涨：占位 11 token vs 原文 1 token，混合场景下白腐蚀信息且
+    saved 计负；与 llm/wrap L1/L3 同守卫）；
+  - `MaybeMicrocompactWithUsage`——provider 真实用量优先的触发通道
+    （此前只认本地估算，中文低估约半，micro 到点时真实 token 已近两倍
+    超窗、轻量先手永远晚于 auto-compact）；
+  - 孤儿结果（无所属 assistant 轮）不清——与 wrap.toolGroups 保守语义
+    对齐（此前单独成组照清，两份同名概念行为相反）。
+- **compact/resume**：孤儿结果反向补洞（有 tool 消息但其 assistant 丢失
+  ——provider 对孤儿 tool 消息同样 4xx 拒绝，恢复期起不来）；Role 常量
+  收口（魔法字符串残留）。
+- **compact/summary**：截断宽容剥离——闭合 `</summary>` 未命中但裸
+  `<summary>` 存在时（max-tokens 截断形态）取其后段落，不带标签残渣
+  注入续接消息。
+- **conversation**：Split 的 evicted 显式拷贝（切片别名下调用方
+  append 会写穿 recent 底层数组）。
+- **breaker**：迟到探测上报甄别（最小修）——超时兜底放行新探测后，旧
+  探测的迟到 Failure 不再把新窗口瞬间重新熔断（仅在当前探测时限窗内
+  才接受为探测失败）；世代化 API 留 v2 重构机会。
+- **toolprior**：Ordered 注释如实（Info 失败条目在本档内排后，跨档仍按
+  优先级）。
+
+### Added
+
+- **llm**：`NewUsageHandler` 流式分支回归测试（usage 中间帧 + 无 usage
+  尾帧的 last-non-nil；异步排空不阻塞 handler 返回）——第十轮指出的
+  零覆盖欠账。
+
 ## v0.12.2 (2026-10-02)
 
 第十轮审计修复轮：4 面——v0.12.1 修复复查 + llm 残余文件首审 +
