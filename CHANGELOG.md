@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.12.5 (2026-10-03)
+
+MCP 2025-06-18 structured tool output 的**目录层保真透传**：outputSchema 元数据
+进入目录与工具能力面。API 全部为兼容式新增（无破坏）；类型化通道行为不变。
+
+### Added
+
+- **mcp.OutputSchemer / mcp.OutputSchemaOf**：工具出参 schema 的可选能力接口
+  （eino tool.BaseTool 为封闭接口，schema 进不了 ToolInfo，走类型断言；断言失败=
+  未声明，消费方按「未声明」处理）。
+- **mcp/rawlist.go 有线保真通道**：mcp-go 类型化 Tool 反序列化丢 anyOf
+  （ToolArgumentsSchema 仅五类键，outputSchema 联合声明经类型化 tools/list 即
+  残废）——生产建连本就自建 transport，句柄入 connState 后 tools/list 走原始
+  JSON-RPC 自解析，input/outputSchema 双双无损。现代协议（2026-07-28）逐请求
+  `_meta.protocolVersion` + `clientCapabilities`（空集=无可选能力）与
+  `MCP-Protocol-Version` 头双写且一致，与 client.do 的 applyRequestMeta/
+  applyStandardHeaders 同口径。
+- **宁缺勿假回退**：transport 未登记（测试注入 InProcess client 等）回落类型化
+  通道，outputSchema 置空——不做有损透传（typed 通道 anyOf 静默丢失有对照测试
+  实锤：type 键还在、联合没了）。
+
+### Changed
+
+- **mcp/catalog**：toolEntry 增 rawInput/outputSchema 原文（rawInput 优先于类型化
+  InputSchema——anyOf 入参同理有损）；invokableTool 增 `OutputSchema()`；
+  listTools 增 transport 句柄与协议版本参数。
+- **mcp/pool**：dial/dialStdio/dialHTTP 三元返回 transport 句柄；connState 登记
+  `tr`/`protoVersion`（registerConn 落库；modern 由版本派生）；initializeClient
+  返回协商协议版本（*client.Client 具体断言保留——lease.go PingServer 分流依赖）。
+- **装饰器链转发 OutputSchema**：mcp errorAsObservation/selfHealTool（自愈换
+  inner 后 schema 随新工具走）、toolprior limitedTool、policy auditTool。
+
+### 消费方对齐说明
+
+bianque 的程序化校验走其仓内 serverkit 声明注册表（同模块编译进双端、零线上
+依赖），不消费本能力面——两条路线独立成立：本能力面面向 agentkit 通用消费方
+（运行时目录元数据完整性），与 bianque 侧单源注册表互不依赖。
+
 ## v0.12.4 (2026-10-02)
 
 挂账全清轮：历轮审计记录在案的全部「延后/留观察/重构机会」一次性落地。

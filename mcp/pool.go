@@ -144,6 +144,12 @@ type connState struct {
 	inFlight int       // 在途工具调用（ReapIdle 跳过）
 	catalog  []toolEntry
 	modern   bool
+	// protoVersion 协商协议版本（Initialize 后可知；raw 目录通道的现代协议
+	// _meta/头双写依据。v0.12.5）。
+	protoVersion string
+	// tr transport 句柄（dial 登记一次后只读——目录 raw 通道用；测试注入的 cli
+	// 无此句柄=nil，listTools 自动回落类型化通道）。
+	tr transport.Interface
 }
 
 // NewPool 创建连接池（建连延后到 Tools 调用时——允许启动期 MCP server 未就绪）。
@@ -460,7 +466,7 @@ func (p *Pool) dialAndRegister(ctx context.Context, cfg ServerConfig) (client.MC
 	// cli.Start 注册 server→client 请求/通知 handler（elicitation 等带外通道；
 	// 不调 Start 则 handler 恒 nil，带外请求一律 METHOD_NOT_FOUND）——对已
 	// Start 的 transport 幂等，仅补挂 handler（第八轮审计）。
-	cli, err := p.dial(p.baseCtx, cfg)
+	cli, tr, err := p.dial(p.baseCtx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: %s 建连失败: %w", cfg.Name, err)
 	}
@@ -470,7 +476,7 @@ func (p *Pool) dialAndRegister(ctx context.Context, cfg ServerConfig) (client.MC
 			return nil, fmt.Errorf("mcp: %s client 启动失败: %w", cfg.Name, serr)
 		}
 	}
-	cli, isModern, err := initializeClient(cctx, cli, p.ElicitationHandler)
+	cli, protoVersion, err := initializeClient(cctx, cli, p.ElicitationHandler)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: %s %w", cfg.Name, err)
 	}
@@ -480,7 +486,7 @@ func (p *Pool) dialAndRegister(ctx context.Context, cfg ServerConfig) (client.MC
 		// 与自愈 redial 同走此路，evict 指针比对基于装饰器一致。
 		cli = &metaClient{MCPClient: cli, metaFn: p.RequestMeta}
 	}
-	return p.registerConn(cfg.Name, st, cli, isModern)
+	return p.registerConn(cfg.Name, st, cli, tr, protoVersion)
 }
 
 // connForDial 取/建 server 状态（建连前）；池已关闭报错。
@@ -507,7 +513,8 @@ func (st *connState) cachedClient() client.MCPClient {
 // initializeClient MCP 协议要求先 Initialize 才可调用；返回代际标记
 // （Initialize 后才可知，现代协议 Ping 是 no-op，探活路径须分流）。
 // 失败时关闭连接——调用方拿到 error 即连接已回收。
-func initializeClient(ctx context.Context, cli client.MCPClient, elicitation client.ElicitationHandler) (client.MCPClient, bool, error) {
+// 返回协商协议版本（raw 目录通道的现代协议判据；断言失败（测试桩）=空串=旧协议路径）。
+func initializeClient(ctx context.Context, cli client.MCPClient, elicitation client.ElicitationHandler) (client.MCPClient, string, error) {
 	initReq := mcp.InitializeRequest{}
 	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 	initReq.Params.ClientInfo = mcp.Implementation{Name: "agentkit", Version: "1.0"}
@@ -517,19 +524,19 @@ func initializeClient(ctx context.Context, cli client.MCPClient, elicitation cli
 	}
 	if _, err := cli.Initialize(ctx, initReq); err != nil {
 		_ = cli.Close()
-		return nil, false, fmt.Errorf("Initialize 失败: %w", err)
+		return nil, "", fmt.Errorf("Initialize 失败: %w", err)
 	}
-	isModern := false
+	protoVersion := ""
 	// 包装前 concrete 类型仍可断言（lease.go PingServer 分流依据）
 	if cc, ok := cli.(*client.Client); ok {
-		isModern = mcp.IsModernProtocol(cc.ProtocolVersion())
+		protoVersion = cc.ProtocolVersion()
 	}
-	return cli, isModern, nil
+	return cli, protoVersion, nil
 }
 
 // registerConn 连接入池：双检占位 + 与 Close 交错的两次 closed 核对
 // （写入后池已关则摘掉回收，防泄漏）。已存在连接时关掉传入的这条。
-func (p *Pool) registerConn(name string, st *connState, cli client.MCPClient, isModern bool) (client.MCPClient, error) {
+func (p *Pool) registerConn(name string, st *connState, cli client.MCPClient, tr transport.Interface, protoVersion string) (client.MCPClient, error) {
 	p.mu.Lock()
 	closed := p.closed
 	p.mu.Unlock()
@@ -546,8 +553,10 @@ func (p *Pool) registerConn(name string, st *connState, cli client.MCPClient, is
 		return existing, nil
 	}
 	st.cli = cli
+	st.tr = tr
 	st.lastUsed = time.Now()
-	st.modern = isModern
+	st.modern = mcp.IsModernProtocol(protoVersion)
+	st.protoVersion = protoVersion
 	st.mu.Unlock()
 
 	// 与 Close 交错兜底：写入后若池已关，摘掉并回收，防泄漏
@@ -595,7 +604,7 @@ func (st *connState) detachLocked() client.MCPClient {
 // transport 直构 + client.NewClient 装配（mcp-go v1.1 起 client 级选项——elicitation
 // 等——只能在 NewClient 时挂，便捷构造器不接收）；stdio 便捷构造器自动 Start 的行为
 // 在此显式化（直构不 Start 子进程不会拉起）。
-func (p *Pool) dial(ctx context.Context, cfg ServerConfig) (client.MCPClient, error) {
+func (p *Pool) dial(ctx context.Context, cfg ServerConfig) (client.MCPClient, transport.Interface, error) {
 	clientOpts := func() []client.ClientOption {
 		if p.ElicitationHandler == nil {
 			return nil
@@ -608,15 +617,15 @@ func (p *Pool) dial(ctx context.Context, cfg ServerConfig) (client.MCPClient, er
 	case cfg.URL != "":
 		return p.dialHTTP(ctx, cfg, clientOpts()...)
 	default:
-		return nil, fmt.Errorf("mcp: server %s stdio（command）与 http（url）均未配置", cfg.Name)
+		return nil, nil, fmt.Errorf("mcp: server %s stdio（command）与 http（url）均未配置", cfg.Name)
 	}
 }
 
 // dialStdio stdio 传输建连：argv[0] 只允许可执行名（防 argument injection），
 // 环境只给白名单（procx.ChildEnv，绝不继承全量 os.Environ()）。
-func dialStdio(ctx context.Context, cfg ServerConfig, clientOpts ...client.ClientOption) (client.MCPClient, error) {
+func dialStdio(ctx context.Context, cfg ServerConfig, clientOpts ...client.ClientOption) (client.MCPClient, transport.Interface, error) {
 	if cfg.Command[0] == "" || strings.HasPrefix(cfg.Command[0], "-") {
-		return nil, fmt.Errorf("mcp: server %s 非法 command %q", cfg.Name, cfg.Command[0])
+		return nil, nil, fmt.Errorf("mcp: server %s 非法 command %q", cfg.Name, cfg.Command[0])
 	}
 	// 经 CommandFunc 接管 exec.Cmd：环境白名单纪律单一事实源。
 	// 子进程生命周期必须与 dial ctx 解绑（WithoutCancel）：dial ctx 是连接级短预算
@@ -630,13 +639,13 @@ func dialStdio(ctx context.Context, cfg ServerConfig, clientOpts ...client.Clien
 			return cmd, nil
 		}))
 	if err := t.Start(ctx); err != nil {
-		return nil, fmt.Errorf("mcp: server %s stdio 启动失败: %w", cfg.Name, err)
+		return nil, nil, fmt.Errorf("mcp: server %s stdio 启动失败: %w", cfg.Name, err)
 	}
-	return client.NewClient(t, clientOpts...), nil
+	return client.NewClient(t, clientOpts...), t, nil
 }
 
 // dialHTTP streamable http 传输建连（可挂 OAuth）。
-func (p *Pool) dialHTTP(ctx context.Context, cfg ServerConfig, clientOpts ...client.ClientOption) (client.MCPClient, error) {
+func (p *Pool) dialHTTP(ctx context.Context, cfg ServerConfig, clientOpts ...client.ClientOption) (client.MCPClient, transport.Interface, error) {
 	cfg = p.expandServerEnv(cfg) // ${VAR} dial 期展开（见 expandServerEnv）
 	httpOpts := []transport.StreamableHTTPCOption{
 		transport.WithHTTPHeaders(cfg.Headers),
@@ -646,7 +655,7 @@ func (p *Pool) dialHTTP(ctx context.Context, cfg ServerConfig, clientOpts ...cli
 	}
 	if cfg.OAuth != nil {
 		if cfg.OAuth.TokenStore == nil {
-			return nil, fmt.Errorf("mcp: server %s OAuth 配置缺 TokenStore（缺省内存 store 会在重连后丢授权态）", cfg.Name)
+			return nil, nil, fmt.Errorf("mcp: server %s OAuth 配置缺 TokenStore（缺省内存 store 会在重连后丢授权态）", cfg.Name)
 		}
 		// OAuth 客户端（批次五十六 C）：静态 headers 保留（可与 Bearer 共存——
 		// 代理网关类附加头），token 注入由 transport 内 oauthHandler 承担（PKCE 恒开）。
@@ -660,11 +669,11 @@ func (p *Pool) dialHTTP(ctx context.Context, cfg ServerConfig, clientOpts ...cli
 			PKCEEnabled:           true,
 		}))
 	}
-	t, err := transport.NewStreamableHTTP(cfg.URL, httpOpts...)
+	tt, err := transport.NewStreamableHTTP(cfg.URL, httpOpts...)
 	if err != nil {
-		return nil, fmt.Errorf("mcp: server %s http transport 构造失败: %w", cfg.Name, err)
+		return nil, nil, fmt.Errorf("mcp: server %s http transport 构造失败: %w", cfg.Name, err)
 	}
-	return client.NewClient(t, clientOpts...), nil
+	return client.NewClient(tt, clientOpts...), tt, nil
 }
 
 // firstPositive 非零胜出（Timeout/RequestTimeout/ProbeTimeout 三处回退单源）。

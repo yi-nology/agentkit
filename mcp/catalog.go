@@ -19,6 +19,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/eino-contrib/jsonschema"
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -65,16 +66,29 @@ func hintsOf(t mcp.Tool) ToolHints {
 	return h
 }
 
-// toolEntry 目录条目：原始工具定义 + 归一注解。
+// toolEntry 目录条目：原始工具定义 + 归一注解 + schema 原文（raw 通道时有值；
+// rawInput 优先于 tool.InputSchema——类型化反序列化对 anyOf 入参同样有损）。
 type toolEntry struct {
-	tool  mcp.Tool
-	hints ToolHints
+	tool         mcp.Tool
+	rawInput     json.RawMessage
+	outputSchema json.RawMessage
+	hints        ToolHints
 }
 
 // listTools 线上列举一页（与 eino-ext 同不翻页——工具目录场景页大小足够）。
-func listTools(ctx context.Context, cli client.MCPClient, timeout time.Duration) ([]toolEntry, error) {
+// tr 非 nil（生产建连登记的 transport 句柄）走原始通道，schema 双无损；nil（测试
+// 注入 client 等）回落类型化通道，outputSchema 置空——类型化反序列化对 anyOf 有损，
+// 宁缺勿假（消费方按「未声明」处理）。
+func listTools(ctx context.Context, cli client.MCPClient, tr transport.Interface, protoVersion string, timeout time.Duration) ([]toolEntry, error) {
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if tr != nil {
+		raw, rerr := fetchRawToolsList(cctx, tr, protoVersion)
+		if rerr != nil {
+			return nil, rerr
+		}
+		return parseRawToolsList(raw)
+	}
 	res, err := cli.ListTools(cctx, mcp.ListToolsRequest{})
 	if err != nil {
 		return nil, err
@@ -118,12 +132,15 @@ func convTool(cli client.MCPClient, e toolEntry) tool.BaseTool {
 // newInvokableTool 装配可调用工具；lease 非 nil 时调用期登记在途（闲置回收跳过）。
 func newInvokableTool(cli client.MCPClient, e toolEntry, lease func() func()) tool.BaseTool {
 	inputSchema := &jsonschema.Schema{}
-	if raw, err := json.Marshal(e.tool.InputSchema); err == nil {
-		_ = json.Unmarshal(raw, inputSchema)
+	inputRaw := e.rawInput
+	if len(inputRaw) == 0 {
+		inputRaw, _ = json.Marshal(e.tool.InputSchema)
 	}
+	_ = json.Unmarshal(inputRaw, inputSchema)
 	return &invokableTool{
-		cli:   cli,
-		lease: lease,
+		cli:          cli,
+		lease:        lease,
+		outputSchema: e.outputSchema,
 		info: &schema.ToolInfo{
 			Name:        e.tool.Name,
 			Desc:        e.tool.Description,
@@ -139,7 +156,12 @@ type invokableTool struct {
 	info *schema.ToolInfo
 	// lease 调用期在途登记（Pool.leaseUse）；nil = 不登记（测试桩）。
 	lease func() func()
+	// outputSchema 工具声明的出参 schema（raw 通道无损；typed 回退为空）。
+	outputSchema json.RawMessage
 }
+
+// OutputSchema 可选能力接口（schema.go OutputSchemer）。
+func (m *invokableTool) OutputSchema() json.RawMessage { return m.outputSchema }
 
 func (m *invokableTool) Info(context.Context) (*schema.ToolInfo, error) { return m.info, nil }
 
@@ -194,7 +216,7 @@ func (p *Pool) catalogFor(ctx context.Context, cfg ServerConfig, cli client.MCPC
 	}
 	st.mu.Unlock()
 
-	entries, err := listTools(ctx, cli, cfg.timeoutOr(DefaultTimeout))
+	entries, err := listTools(ctx, cli, st.tr, st.protoVersion, cfg.timeoutOr(DefaultTimeout))
 	if err != nil {
 		if ctx.Err() != nil {
 			// 调用方 ctx 取消 ≠ 连接死亡：健康连接不得摘除（与 dial 的

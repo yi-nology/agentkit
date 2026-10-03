@@ -23,6 +23,14 @@ func (w *errorAsObservation) Info(ctx context.Context) (*schema.ToolInfo, error)
 	return w.inner.Info(ctx)
 }
 
+// OutputSchema 出参 schema 透传（v0.12.5 OutputSchemer 可选能力面）。
+func (w *errorAsObservation) OutputSchema() json.RawMessage {
+	if o, ok := w.inner.(OutputSchemer); ok {
+		return o.OutputSchema()
+	}
+	return nil
+}
+
 func (w *errorAsObservation) InvokableRun(ctx context.Context, args string, opts ...tool.Option) (string, error) {
 	out, err := w.inner.InvokableRun(ctx, args, opts...)
 	if err == nil {

@@ -2,9 +2,12 @@ package policy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/cloudwego/eino/components/tool"
+
+	"git.enjoye.top/enjoydream/agentkit/mcp"
 )
 
 // auditTool 操作审计门工具装饰器：每次工具调用先过 Gate 裁决、回调留痕，deny 即
@@ -34,4 +37,12 @@ func AuditGate(g *Gate, op Op, onAudit func(Op, Decision), t tool.InvokableTool)
 		return t
 	}
 	return auditTool{gate: g, op: op, onAudit: onAudit, InvokableTool: t}
+}
+
+// OutputSchema 出参 schema 透传（v0.12.5 OutputSchemer 可选能力面）。
+func (t auditTool) OutputSchema() json.RawMessage {
+	if o, ok := t.InvokableTool.(mcp.OutputSchemer); ok {
+		return o.OutputSchema()
+	}
+	return nil
 }

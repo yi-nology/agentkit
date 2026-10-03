@@ -9,12 +9,13 @@ package mcp
 // 拿到后、调用时连接才死」的窗口（长会话里 tools 子进程中途死亡的真形态）。
 
 import (
-	"github.com/mark3labs/mcp-go/client"
-
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/mark3labs/mcp-go/client"
 	"os"
 	"strings"
 
@@ -57,6 +58,14 @@ type selfHealTool struct {
 
 func (t *selfHealTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 	return t.inner.Info(ctx)
+}
+
+// OutputSchema 动态透传：redial 换 inner 后 schema 随新工具走（server 侧可热改声明）。
+func (t *selfHealTool) OutputSchema() json.RawMessage {
+	if o, ok := t.inner.(OutputSchemer); ok {
+		return o.OutputSchema()
+	}
+	return nil
 }
 
 func (t *selfHealTool) InvokableRun(ctx context.Context, args string, opts ...tool.Option) (string, error) {

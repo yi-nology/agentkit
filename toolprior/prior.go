@@ -18,8 +18,12 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"encoding/json"
+
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
+
+	"git.enjoye.top/enjoydream/agentkit/mcp"
 )
 
 // 优先级档位（数值越小越优先；自定义档位可插在中间）。
@@ -157,6 +161,14 @@ func LimitCalls(t tool.InvokableTool, max int) tool.BaseTool {
 
 func (l *limitedTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 	return l.inner.Info(ctx)
+}
+
+// OutputSchema 出参 schema 透传（v0.12.5 OutputSchemer 可选能力面，mcp.OutputSchemaOf）。
+func (l *limitedTool) OutputSchema() json.RawMessage {
+	if o, ok := l.inner.(mcp.OutputSchemer); ok {
+		return o.OutputSchema()
+	}
+	return nil
 }
 
 func (l *limitedTool) InvokableRun(ctx context.Context, args string, opts ...tool.Option) (string, error) {
