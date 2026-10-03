@@ -28,7 +28,7 @@ func NewRegistry() *Registry {
 	r.Register(NewZCode())
 	r.Register(NewCodex())
 	r.Register(NewOpenCode())
-	r.Register(NewMinimax())
+	r.Register(NewMcode())
 	r.Register(NewKimi())
 	r.Register(NewGemini())
 	r.Register(NewQwen())

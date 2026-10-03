@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.13.0 (2026-10-04)
+
+acpx 新增 **Mcode(MiniMax Code CLI)专用适配器**,Minimax 通用预设收敛移除。
+API 破坏式变更一处(见 Removed);注册表键与清单名不变(minimax)。
+
+### Added
+
+- **acpx.Mcode**:`mcode exec <prompt> --output-format json` 专用适配器,参数与
+  信封经本机真实 CLI 0.6.2 核实。单 JSON 信封(exec.result)解析 output/
+  sessionId/usage 三通道;`--model provider/model`、`--session mvs_...`(实弹
+  验证跨轮记忆)、`--max-steps` 对应 MaxTurns。能力面 Model/Session/MaxTurns;
+  Sandbox 不声明——`--permission smart` 在 headless 下工作区外写也放行
+  ($HOME 实测建文件成功),无运行时硬边界可映射。
+- **失败信封纪律**:mcode 运行期失败 exit 仍为 0(假模型名实弹核实),失败只能
+  靠信封 status=failed + error{category,message} 识别——适配器如实上抛并经
+  EventError 全量转发,不因 exit 0 当成功(mimo 同纪律);未知 status 一律按
+  失败处置,宁可误报不静默。非 JSON 输出走全文兜底。
+- **ACPX_SMOKE 冒烟**:TestSmokeMcodeReal 覆盖首轮 usage/sessionID 解析与
+  --session 续聊记忆(ACPX_SMOKE=1 门控)。
+
+### Removed
+
+- **acpx.NewMinimax**(通用模板预设):bin 名 "minimax-code" 是不存在的命令,
+  该预设自发布起不可用;协议已实测收敛为 Mcode。家族内零引用(grep 实证),
+  注册表键 "minimax" 不变——经 NewRegistry 的消费方无感升级。
+
 ## v0.12.5 (2026-10-03)
 
 MCP 2025-06-18 structured tool output 的**目录层保真透传**：outputSchema 元数据

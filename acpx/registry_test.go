@@ -17,7 +17,7 @@ func TestNewAgentNames(t *testing.T) {
 		{NewQwen(), "qwen"},
 		{NewGemini(), "gemini"},
 		{NewMimo(), "mimo"},
-		{NewMinimax(), "minimax"},
+		{NewMcode(), "minimax"},
 	}
 	for _, c := range cases {
 		if c.a.Name() != c.want {
@@ -41,7 +41,7 @@ func TestBuiltinCapabilities(t *testing.T) {
 		{NewQwen(), Capability{Model: true, Sandbox: true}},
 		{NewKimi(), Capability{Model: true, Session: true}},
 		{NewMimo(), Capability{Model: true, Session: true}},
-		{NewMinimax(), Capability{}}, // 模板只含 {prompt}
+		{NewMcode(), Capability{Model: true, Session: true, MaxTurns: true}},
 	}
 	for _, c := range cases {
 		if got := c.a.Capabilities(); got != c.want {

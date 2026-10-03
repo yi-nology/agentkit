@@ -9,7 +9,7 @@ import (
 // 编译期断言。
 var _ Agent = (*GenericAgent)(nil)
 
-// ---------- GenericAgent（ZCode/MiniMax/任意 CLI 的通用出口） ----------
+// ---------- GenericAgent（任意 CLI 的通用出口） ----------
 
 // GenericAgent 通用 CLI agent：以显式 argv 模板驱动任意 agent。
 // 模板占位符：{prompt}（原样单参传入，无 shell 注入面）、{model}、{session}。
@@ -18,8 +18,8 @@ var _ Agent = (*GenericAgent)(nil)
 // ["run"]，绝不产生吞掉后续位置参数的悬空 flag）。
 // IsJSON=true 时按 {"text","sessionID","tokens":{"input","output"}} 解析输出。
 //
-// 用途：CLI 参数协议未稳定（MiniMax）或私有 agent 的快速接入；
-// 协议稳定后应收敛为专用适配器。
+// 用途：CLI 参数协议未稳定或私有 agent 的快速接入；协议稳定后应收敛为
+// 专用适配器（mcode 于 2026-10-04 收敛为 Mcode，Minimax 预设随之移除）。
 type GenericAgent struct {
 	AgentName string   // agent 标识（Name() 返回值）
 	Argv      []string // argv 模板
@@ -29,11 +29,6 @@ type GenericAgent struct {
 // NewGenericAgent 创建通用适配器。
 func NewGenericAgent(name string, argv []string, isJSON bool) *GenericAgent {
 	return &GenericAgent{AgentName: name, Argv: argv, IsJSON: isJSON}
-}
-
-// NewMinimax MiniMax 编码 agent 预设（CLI 约定待官方稳定，当前走通用模板）。
-func NewMinimax() *GenericAgent {
-	return NewGenericAgent("minimax", []string{"minimax-code", "run", "{prompt}"}, false)
 }
 
 // NewDsh dsh（DeepSeek Harness）预设：headless profile 单任务出口——
