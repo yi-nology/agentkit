@@ -69,7 +69,7 @@ git.enjoye.top/enjoydream/agentkit
 | `llm` | LLM 客户端（重试/限速/预算/fitInput/JSON + Resilient 降级链 + StageRouter + CostTracker + UsageHandler + 流恢复原语/空终态检测/busy 退避 v0.10.25） | eino, eino-ext openai, x/time |
 | `toolprior` | 工具优先级决策层（提示词/排序/限流三层约束） | eino |
 | `toolsched` | 工具并发调度器（注解驱动并行判定 + 依赖拓扑分组执行，v0.10.23） | ekit(async) |
-| `mcp` | MCP server 工具池（lazy 建连 + 白名单 + 工具目录缓存/注解归一 + OAuth + elicitation + 调用期自愈 + UnwrapMCPText） | eino, mcp-go, ekit(async) |
+| `mcp` | MCP server 工具池（lazy 建连 + 白名单 + 工具目录缓存/注解归一 + outputSchema 保真透传（raw tools/list + OutputSchemer 可选能力面，v0.12.5）+ OAuth + elicitation + 调用期自愈 + UnwrapMCPText） | eino, mcp-go, ekit(async) |
 | `agentrun` | ReAct 样板 + Plan-and-Execute 样板（ADK 封装 + 事件流 + 重试） | eino adk |
 | `reflection` | Reflection 架构原语（生成→批判→修订收敛循环） | eino |
 | `router` | Router 架构原语（LLM 意图分类→选路→分发） | eino |
